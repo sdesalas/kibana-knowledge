@@ -85,20 +85,20 @@ yarn start \
 
 ## Proposed short aliases
 
-Add to `~/.zshrc` (or the file that defines **`KIBANA_HOME`** / ports). Adjust names if they clash. All **`build_*`** / **`start_*`** examples assume **`KIBANA_HOME`** points at the Kibana repo root.
+Add to `~/.zshrc` (or the file that defines ports). **Run these from the Kibana repo root** (`cd` into the checkout first, or rely on your shell always starting there). Adjust names if they clash.
 
 ### 1. Build platform UI assets only (run before non-dev `serve`)
 
 **Distributable-style bundles (recommended before `serve` if you care about prod parity):**
 
 ```bash
-alias build-kibana-assets='(cd "${KIBANA_HOME}" && node scripts/build_kibana_platform_plugins --dist --no-examples)'
+alias build-kibana-assets='node scripts/build_kibana_platform_plugins --dist --no-examples'
 ```
 
 **Faster dev-shaped bundles (still fills `target/public`, skips `--dist`):**
 
 ```bash
-alias build-kibana-assets-dev='(cd "${KIBANA_HOME}" && node scripts/build_kibana_platform_plugins --no-examples)'
+alias build-kibana-assets-dev='node scripts/build_kibana_platform_plugins --no-examples'
 ```
 
 Omit **`--no-examples`** if you need example plugins locally.
@@ -114,40 +114,67 @@ alias start-kibana-dist='yarn start --dist --server.basePath="/kbn" --elasticsea
 Explicit form if **`yarn`** does not forward flags:
 
 ```bash
-alias start-kibana-dist='node "${KIBANA_HOME}/scripts/kibana" --dev --dist --server.basePath="/kbn" --elasticsearch.hosts="http://localhost:${ES_DEV_PORT}" --server.port=${KIBANA_DEV_PORT} --dev.basePathProxyTarget=${KIBANA_PROXY_PORT}'
+alias start-kibana-dist='node scripts/kibana --dev --dist --server.basePath="/kbn" --elasticsearch.hosts="http://localhost:${ES_DEV_PORT}" --server.port=${KIBANA_DEV_PORT} --dev.basePathProxyTarget=${KIBANA_PROXY_PORT}'
 ```
 
 ### 3. Non-dev `serve` — build first, then one port (no proxy)
 
-**Preferred:** a shell **function** so **build failure** does not start Kibana.
+**Build then serve:** **`&&`** skips Kibana if the optimizer exits non-zero.
 
 ```bash
-start-kibana-serve() {
-  (cd "${KIBANA_HOME}" && node scripts/build_kibana_platform_plugins --dist --no-examples) || return 1
-  (cd "${KIBANA_HOME}" && node scripts/kibana serve \
-    --server.basePath="/kbn" \
-    --server.rewriteBasePath=true \
-    --elasticsearch.hosts="http://localhost:${ES_DEV_PORT}" \
-    --server.port="${KIBANA_DEV_PORT}")
-}
+alias start-kibana-serve='node scripts/build_kibana_platform_plugins --dist --no-examples && node scripts/kibana serve \
+  --server.basePath="/kbn" \
+  --server.rewriteBasePath=true \
+  --elasticsearch.hosts="http://localhost:${ES_DEV_PORT}" \
+  --elasticsearch.username=kibana_system \
+  --elasticsearch.password=changeme \
+  --server.port="${KIBANA_DEV_PORT}"'
 ```
 
 - Browser: **`http://localhost:${KIBANA_DEV_PORT}/kbn`** (same port variable as dev; **no** **`KIBANA_PROXY_PORT`** here).
-- Ensure **`config/kibana.yml`** has valid **`elasticsearch.username`** / **`elasticsearch.password`** (or token) for that cluster.
+- **Elasticsearch auth:** non-dev **`serve`** does not apply dev defaults; these examples pass **`kibana_system`** / **`changeme`** on the CLI (same as typical local **`scripts/es`** / dev expectations). Use **`config/kibana.yml`** or different CLI values if your cluster uses other credentials.
 
 **If you want a two-step workflow** (build once, restart server often without rebuilding):
 
 ```bash
-alias build-kibana-assets='(cd "${KIBANA_HOME}" && node scripts/build_kibana_platform_plugins --dist --no-examples)'
+alias build-kibana-assets='node scripts/build_kibana_platform_plugins --dist --no-examples'
 
-alias start-kibana-serve-only='(cd "${KIBANA_HOME}" && node scripts/kibana serve \
+alias start-kibana-serve-only='node scripts/kibana serve \
   --server.basePath="/kbn" \
   --server.rewriteBasePath=true \
   --elasticsearch.hosts="http://localhost:${ES_DEV_PORT}" \
-  --server.port=${KIBANA_DEV_PORT})'
+  --elasticsearch.username=kibana_system \
+  --elasticsearch.password=changeme \
+  --server.port=${KIBANA_DEV_PORT}'
 ```
 
 Run **`build-kibana-assets`** after UI changes, or **`start-kibana-serve`** when you want a single command that always builds then serves.
+
+### Troubleshooting non-dev `serve`: `missing authentication credentials`
+
+If Elasticsearch logs or Kibana show **`security_exception`** / **`Unable to retrieve version information from Elasticsearch nodes`** with **missing authentication credentials**, Kibana is calling ES without a username/password or token.
+
+**Fix (pick one):**
+
+1. **Uncomment and set** in **`config/kibana.yml`** (use the **`kibana_system`** user and the password you configured for that user in Elasticsearch—often the same values you rely on when running **`yarn start`**, if the dev defaults were working, that is **`kibana_system`** / **`changeme`** only when your cluster was actually created with that password):
+
+   ```yaml
+   elasticsearch.username: "kibana_system"
+   elasticsearch.password: "your_password_here"
+   ```
+
+2. **Or** pass credentials on the CLI (the proposed **`start-kibana-serve`** aliases use **`kibana_system`** / **`changeme`**; override if your cluster differs; beware shell history):
+
+   ```bash
+   node scripts/kibana serve \
+     ... \
+     --elasticsearch.username=kibana_system \
+     --elasticsearch.password=changeme
+   ```
+
+3. **Or** use **`elasticsearch.serviceAccountToken`** in **`kibana.yml`** if you authenticate with a service token instead.
+
+After credentials match your node on **`http://localhost:${ES_DEV_PORT}`**, the version check should succeed.
 
 ## Quick decision
 
