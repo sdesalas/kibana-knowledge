@@ -123,6 +123,20 @@ A short summary (3–6 bullets) of what this PR reveals about how the codebase w
 - **Distinguish "this is wrong" from "I don't understand this yet."** The user is newer to this codebase than the PR author — default to the latter framing unless confident.
 - **No nitpicks on style, naming, or formatting** unless they genuinely affect correctness or comprehension. Those belong to linters and to more experienced reviewers.
 
+## Output file
+
+After completing the analysis, write the full review to a Markdown file:
+
+```
+.claude/reports/pr-review-<number>.md
+```
+
+Where `<number>` is the PR number (e.g. `pr-review-1234.md`). If the PR has no number (e.g. a pasted diff or local branch), use a short slug derived from the title or branch name (e.g. `pr-review-add-rate-limiting.md`).
+
+- Create `.claude/reports/` if it doesn't exist.
+- The file content should be identical to the analysis you produce in chat — same headers, same structure, no extra framing.
+- After writing the file, tell the user: *"Review saved to `.claude/reports/pr-review-<number>.md`."*
+
 ## Anti-patterns
 
 Avoid these. They're common failure modes when analyzing PRs.
