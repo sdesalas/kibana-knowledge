@@ -9,9 +9,11 @@ KIBANA_URL="http://localhost:5605/kbn"
 ES_URL="http://localhost:9204"
 AUTH="elastic:changeme"
 
-# 1. Fetch all alerting rules visible to Kibana.
+# 1. Fetch security-solution alerting rules visible to Kibana.
 rules_json=$(curl -s -u "$AUTH" \
-  "$KIBANA_URL/api/alerting/rules/_find?per_page=500")
+  --get "$KIBANA_URL/api/alerting/rules/_find" \
+  --data-urlencode "per_page=1000" \
+  --data-urlencode 'filter=alert.attributes.alertTypeId:siem.*')
 
 # 2. Count security-solution tasks in the task manager index.
 task_count=$(curl -s -u "$AUTH" \
@@ -23,7 +25,7 @@ task_count=$(curl -s -u "$AUTH" \
 # 3. Count security-solution alert SOs whose encrypted apiKey is actually set.
 api_key_count=$(curl -s -u "$AUTH" \
   -H 'content-type: application/json' \
-  "$ES_URL/.kibana_alerting_cases/_search?size=500&filter_path=hits.hits._source.alert.apiKey" \
+  "$ES_URL/.kibana_alerting_cases/_search?size=2000&filter_path=hits.hits._source.alert.apiKey" \
   -d '{
     "query": {
       "bool": {
