@@ -15,12 +15,16 @@ rules_json=$(curl -s -u "$AUTH" \
   --data-urlencode "per_page=1000" \
   --data-urlencode 'filter=alert.attributes.alertTypeId:siem.*')
 
-# 2. Count security-solution tasks in the task manager index.
-task_count=$(curl -s -u "$AUTH" \
+# 2. Count security-solution tasks (total + enabled) in the task manager index.
+tasks_json=$(curl -s -u "$AUTH" \
   -H 'content-type: application/json' \
-  "$ES_URL/.kibana_task_manager/_count" \
-  -d '{"query":{"prefix":{"task.taskType":"alerting:siem."}}}' \
-  | jq '.count')
+  "$ES_URL/.kibana_task_manager/_search?size=0&track_total_hits=true" \
+  -d '{
+    "query": { "prefix": { "task.taskType": "alerting:siem." } },
+    "aggs":  { "enabled": { "filter": { "term": { "task.enabled": true } } } }
+  }')
+task_count=$(jq         '.hits.total.value'           <<<"$tasks_json")
+task_enabled_count=$(jq '.aggregations.enabled.doc_count' <<<"$tasks_json")
 
 # 3. Count security-solution alert SOs whose encrypted apiKey is actually set.
 api_key_count=$(curl -s -u "$AUTH" \
@@ -46,7 +50,8 @@ owners=$(jq   '[.data[] | select(.api_key_owner != null)] | length' <<<"$rules_j
 
 # 5. Print a small report. All five numbers should be equal.
 printf 'rules:           %s\n' "$total"
-printf 'enabled:         %s\n' "$enabled"
+printf 'rules_enabled:   %s\n' "$enabled"
 printf 'tasks:           %s\n' "$task_count"
+printf 'tasks_enabled:   %s\n' "$task_enabled_count"
 printf 'api_key_owner:   %s\n' "$owners"
 printf 'apiKey present:  %s\n' "$api_key_count"
