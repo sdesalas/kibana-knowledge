@@ -2,7 +2,7 @@
 
 ## Scope
 
-This report compares the order in which the alerting rules client writes to the
+This report compares the **order** in which the alerting rules client writes to the
 **rule saved object** (in `.kibana`) and to the **Task Manager task** (in
 `.kibana_task_manager`).
 
