@@ -1,0 +1,16 @@
+{
+  "name": "puppetter3",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "postinstall": "npx puppeteer browsers install firefox",
+    "install-prebuilt-rules": "node install-prebuilt-rules/run.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer": "^24.40.0"
+  }
+}
