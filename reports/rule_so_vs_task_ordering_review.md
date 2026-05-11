@@ -3,7 +3,7 @@
 ## Scope
 
 This report compares the **order** in which the alerting rules client writes to the
-**rule saved object** (in `.kibana_alerting_rules`) and to the **Task Manager task** (in
+**rule saved object** (in `.kibana_alerting_cases`) and to the **Task Manager task** (in
 `.kibana_task_manager`).
 
 The starting hypothesis from the reviewer is that there are **two distinct
@@ -186,7 +186,7 @@ path away from philosophy A.
 > database and gives Kibana no transactional guarantees across 
 > the two indices that matter here.**
 
-The rule SO lives in `.kibana_alerting_rules` and the TM task lives in `.kibana_task_manager`.
+The rule SO lives in `.kibana_alerting_cases` and the TM task lives in `.kibana_task_manager`.
 Elasticsearch offers neither cross‑index transactions nor per‑document MVCC
 across indices, and Kibana does not run a saga / two‑phase‑commit layer over
 the saved‑objects client and the task‑manager client. 
