@@ -1,0 +1,106 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/common/constants.ts b/x-pack/solutions/security/plugins/security_solution/common/constants.ts
+index 2ca7a6b28f45..6c8a8bf87358 100644
+--- a/x-pack/solutions/security/plugins/security_solution/common/constants.ts
++++ b/x-pack/solutions/security/plugins/security_solution/common/constants.ts
+@@ -228,6 +228,16 @@ export enum SUPPRESSION_BEHAVIOR_ON_ALERT_CLOSURE_SETTING_ENUM {
+ /** This Kibana Advanced Setting sets the auto refresh interval for the detections all rules table */
+ export const DEFAULT_RULES_TABLE_REFRESH_SETTING = 'securitySolution:rulesTableRefresh' as const;
+ 
++/**
++ * This Kibana Advanced Setting controls the batch size used when chunking rules during
++ * the detection rules import flow. Larger batches reduce the number of round-trips at the
++ * cost of higher per-request memory and longer single-batch processing time.
++ */
++export const RULE_IMPORT_BATCH_SIZE_SETTING = 'securitySolution:ruleImportBatchSize' as const;
++
++/** Default batch size for chunking parsed rules during rule import. */
++export const DEFAULT_RULE_IMPORT_BATCH_SIZE = 10000 as const;
++
+ /** This Kibana Advanced Setting enables the Detection Engine Health UI */
+ export const ENABLE_DE_HEALTH_UI_SETTING =
+   'securitySolution:enableDetectionEngineHealthUI' as const;
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+index f6413ba30515..8333c69e3468 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+@@ -17,7 +17,11 @@ import {
+   ImportRulesRequestQuery,
+   ImportRulesResponse,
+ } from '../../../../../../../common/api/detection_engine/rule_management';
+-import { DETECTION_ENGINE_RULES_IMPORT_URL } from '../../../../../../../common/constants';
++import {
++  DEFAULT_RULE_IMPORT_BATCH_SIZE,
++  DETECTION_ENGINE_RULES_IMPORT_URL,
++  RULE_IMPORT_BATCH_SIZE_SETTING,
++} from '../../../../../../../common/constants';
+ import type { ConfigType } from '../../../../../../config';
+ import type { HapiReadableStream, SecuritySolutionPluginRouter } from '../../../../../../types';
+ import {
+@@ -42,8 +46,6 @@ import {
+ import { RULE_MANAGEMENT_IMPORT_EXPORT_SOCKET_TIMEOUT_MS } from '../../timeouts';
+ import { createPrebuiltRuleObjectsClient } from '../../../../prebuilt_rules/logic/rule_objects/prebuilt_rule_objects_client';
+ 
+-const CHUNK_PARSED_OBJECT_SIZE = 50;
+-
+ export const importRulesRoute = (
+   router: SecuritySolutionPluginRouter,
+   config: ConfigType,
+@@ -188,7 +190,10 @@ export const importRulesRoute = (
+             });
+ 
+           const experimentalFeatures = ctx.securitySolution.getConfig().experimentalFeatures;
+-          const ruleChunks = chunk(CHUNK_PARSED_OBJECT_SIZE, validatedResponseActionsRules);
++          const ruleImportBatchSize =
++            (await ctx.core.uiSettings.client.get<number>(RULE_IMPORT_BATCH_SIZE_SETTING)) ||
++            DEFAULT_RULE_IMPORT_BATCH_SIZE;
++          const ruleChunks = chunk(ruleImportBatchSize, validatedResponseActionsRules);
+ 
+           const importRuleResponse = await importRules({
+             ruleChunks,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/ui_settings.ts b/x-pack/solutions/security/plugins/security_solution/server/ui_settings.ts
+index 8a8c5e4460f3..1133565c2166 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/ui_settings.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/ui_settings.ts
+@@ -34,6 +34,7 @@ import {
+   DEFAULT_INTERVAL_VALUE,
+   DEFAULT_RULE_REFRESH_INTERVAL_ON,
+   DEFAULT_RULE_REFRESH_INTERVAL_VALUE,
++  DEFAULT_RULE_IMPORT_BATCH_SIZE,
+   DEFAULT_RULES_TABLE_REFRESH_SETTING,
+   DEFAULT_THREAT_INDEX_KEY,
+   DEFAULT_THREAT_INDEX_VALUE,
+@@ -53,6 +54,7 @@ import {
+   IP_REPUTATION_LINKS_SETTING_DEFAULT,
+   NEWS_FEED_URL_SETTING,
+   NEWS_FEED_URL_SETTING_DEFAULT,
++  RULE_IMPORT_BATCH_SIZE_SETTING,
+   SHOW_RELATED_INTEGRATIONS_SETTING,
+   SUPPRESSION_BEHAVIOR_ON_ALERT_CLOSURE_SETTING,
+   SUPPRESSION_BEHAVIOR_ON_ALERT_CLOSURE_SETTING_ENUM,
+@@ -286,6 +288,26 @@ export const initUiSettings = (
+       }),
+       solutionViews: ['classic', 'security'],
+     },
++    [RULE_IMPORT_BATCH_SIZE_SETTING]: {
++      name: i18n.translate('xpack.securitySolution.uiSettings.ruleImportBatchSizeLabel', {
++        defaultMessage: 'Rule import batch size',
++      }),
++      description: i18n.translate(
++        'xpack.securitySolution.uiSettings.ruleImportBatchSizeDescription',
++        {
++          defaultMessage:
++            '<p>Maximum number of rules processed per batch when importing detection rules. Larger values reduce round-trips at the cost of higher per-request memory and longer single-batch processing time.</p>',
++          values: { p: (chunks) => `<p>${chunks}</p>` },
++        }
++      ),
++      type: 'number',
++      value: DEFAULT_RULE_IMPORT_BATCH_SIZE,
++      category: [APP_ID],
++      requiresPageReload: false,
++      schema: schema.number({ min: 1 }),
++      solutionViews: ['classic', 'security'],
++      technicalPreview: true,
++    },
+     ...(experimentalFeatures.deHealthUIEnabled && {
+       [ENABLE_DE_HEALTH_UI_SETTING]: {
+         name: i18n.translate('xpack.securitySolution.uiSettings.deHealthUIEnabledLabel', {
