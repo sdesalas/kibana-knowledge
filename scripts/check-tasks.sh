@@ -8,7 +8,7 @@ set -e
 echo "starting.."
 
 KIBANA_URL="http://localhost:${KIBANA_DEV_PORT:-5601}/kbn"
-ES_URL="http://localhost:${ES_DEV_PORT:-9204}"
+ES_URL="http://localhost:${ES_DEV_PORT:-9200}"
 AUTH="elastic:changeme"
 
 echo "KIBANA_URL=$KIBANA_URL"
