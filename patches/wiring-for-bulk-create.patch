@@ -1,0 +1,476 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts b/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
+index 4d8aed997e1..8985bdb378a 100644
+--- a/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
++++ b/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
+@@ -22,6 +22,16 @@ export const allowedExperimentalValues = Object.freeze({
+    */
+   previewTelemetryUrlEnabled: false,
+ 
++  /**
++   * When enabled, prebuilt rule installation (POST .../prebuilt_rules/installation/_perform)
++   * and rule import (POST .../rules/_import) use the new alerting `rulesClient.bulkCreateRules`
++   * path, which handles both disabled and enabled rules (API key minting + task scheduling)
++   * in a single bulk call instead of the per-rule create loop.
++   *
++   * Release: TBD
++   */
++  bulkCreateRulesEnabled: false,
++
+   /**
+    * Enables extended rule execution logging to Event Log. When this setting is enabled:
+    * - Rules write their console error, info, debug, and trace messages to Event Log,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
+index 57218d0c3f2..fb24d84695d 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
+@@ -110,16 +110,15 @@ export const performRuleInstallationHandler = async (
+       ruleInstallQueue.push(...(await excludeLicenseRestrictedRules(allInstallableRules, mlAuthz)));
+     }
+ 
++    const { bulkCreateRulesEnabled } = ctx.securitySolution.getConfig().experimentalFeatures;
+     const BATCH_SIZE = 100;
+     while (ruleInstallQueue.length > 0) {
+       const rulesToInstall = ruleInstallQueue.splice(0, BATCH_SIZE);
+       const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
+ 
+-      const { results, errors } = await createPrebuiltRules(
+-        detectionRulesClient,
+-        ruleAssets,
+-        logger
+-      );
++      const { results, errors } = bulkCreateRulesEnabled
++        ? await detectionRulesClient.bulkCreatePrebuiltRules({ rules: ruleAssets })
++        : await createPrebuiltRules(detectionRulesClient, ruleAssets, logger);
+ 
+       const batchInstalledRules = results.map(({ result: rule }) =>
+         pick(rule, ['id', 'rule_id', 'version'])
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+index 648aba431cf..f6413ba3051 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+@@ -187,6 +187,7 @@ export const importRulesRoute = (
+                 ctx.securitySolution.getCheckOsqueryResponseActionAuthz(),
+             });
+ 
++          const experimentalFeatures = ctx.securitySolution.getConfig().experimentalFeatures;
+           const ruleChunks = chunk(CHUNK_PARSED_OBJECT_SIZE, validatedResponseActionsRules);
+ 
+           const importRuleResponse = await importRules({
+@@ -195,6 +196,7 @@ export const importRulesRoute = (
+             allowMissingConnectorSecrets: !!actionConnectors.length,
+             ruleSourceImporter,
+             detectionRulesClient,
++            experimentalFeatures,
+           });
+ 
+           const parseErrors = parsedRuleErrors.map((error) =>
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
+index 951873d631a..fd648beb183 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
+@@ -13,6 +13,7 @@ const createDetectionRulesClientMock = () => {
+   const mocked: DetectionRulesClientMock = {
+     createCustomRule: jest.fn(),
+     createPrebuiltRule: jest.fn(),
++    bulkCreatePrebuiltRules: jest.fn().mockResolvedValue({ results: [], errors: [] }),
+     updateRule: jest.fn(),
+     patchRule: jest.fn(),
+     deleteRule: jest.fn(),
+@@ -21,6 +22,11 @@ const createDetectionRulesClientMock = () => {
+     revertPrebuiltRule: jest.fn(),
+     importRule: jest.fn(),
+     importRules: jest.fn(),
++    bulkImportRules: jest.fn().mockResolvedValue({
++      responses: [],
++      taskIdsFailedToBeEnabled: [],
++    }),
++    bulkEnableTasks: jest.fn().mockResolvedValue({ taskIdsFailedToBeEnabled: [] }),
+     getRuleCustomizationStatus: jest.fn(),
+   };
+   return mocked;
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+index 95f1b6bd6cb..ee23f536a52 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+@@ -18,9 +18,12 @@ import type { MlAuthz } from '../../../../machine_learning/authz';
+ import type { ProductFeaturesService } from '../../../../product_features_service';
+ import { createPrebuiltRuleAssetsClient } from '../../../prebuilt_rules/logic/rule_assets/prebuilt_rule_assets_client';
+ import type { RuleImportErrorObject } from '../import/errors';
++import type { BulkImportRulesResult } from './methods/bulk_import_rules';
+ import type {
++  BulkCreatePrebuiltRulesArgs,
+   BulkDeleteRulesArgs,
+   BulkDeleteRulesReturn,
++  BulkImportRulesArgs,
+   CreateCustomRuleArgs,
+   CreatePrebuiltRuleArgs,
+   DeleteRuleArgs,
+@@ -33,7 +36,10 @@ import type {
+   UpgradePrebuiltRuleArgs,
+ } from './detection_rules_client_interface';
+ import { createRule } from './methods/create_rule';
++import { bulkCreatePrebuiltRules } from './methods/bulk_create_prebuilt_rules';
+ import { bulkDeleteRules } from './methods/bulk_delete_rules';
++import { bulkEnableTasks } from './methods/bulk_enable_tasks';
++import { bulkImportRules } from './methods/bulk_import_rules';
+ import { deleteRule } from './methods/delete_rule';
+ import { importRule } from './methods/import_rule';
+ import { importRules } from './methods/import_rules';
+@@ -115,6 +121,12 @@ export const createDetectionRulesClient = ({
+       });
+     },
+ 
++    async bulkCreatePrebuiltRules(args: BulkCreatePrebuiltRulesArgs) {
++      return withSecuritySpan('DetectionRulesClient.bulkCreatePrebuiltRules', async () => {
++        return bulkCreatePrebuiltRules({ actionsClient, rulesClient, mlAuthz, args });
++      });
++    },
++
+     async updateRule({ ruleUpdate }: UpdateRuleArgs): Promise<RuleResponse> {
+       return withSecuritySpan('DetectionRulesClient.updateRule', async () => {
+         return updateRule({
+@@ -202,5 +214,23 @@ export const createDetectionRulesClient = ({
+         });
+       });
+     },
++
++    async bulkImportRules(args: BulkImportRulesArgs): Promise<BulkImportRulesResult> {
++      return withSecuritySpan('DetectionRulesClient.bulkImportRules', async () => {
++        return bulkImportRules({
++          actionsClient,
++          rulesClient,
++          savedObjectsClient,
++          mlAuthz,
++          args,
++        });
++      });
++    },
++
++    async bulkEnableTasks(taskIds: string[]) {
++      return withSecuritySpan('DetectionRulesClient.bulkEnableTasks', async () => {
++        return bulkEnableTasks({ rulesClient, taskIds });
++      });
++    },
+   };
+ };
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts
+index 8ef4ec6c250..e8e975116e6 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts
+@@ -20,11 +20,17 @@ import type { RuleImportErrorObject } from '../import/errors';
+ import type { PrebuiltRuleAsset } from '../../../prebuilt_rules';
+ import type { PrebuiltRulesCustomizationStatus } from '../../../../../../common/detection_engine/prebuilt_rules/prebuilt_rule_customization_status';
+ import type { RuleAlertType } from '../../../rule_schema';
++import type { BulkCreatePrebuiltRulesResult } from './methods/bulk_create_prebuilt_rules';
++import type { BulkEnableTasksResult } from './methods/bulk_enable_tasks';
++import type { BulkImportRulesResult } from './methods/bulk_import_rules';
+ 
+ export interface IDetectionRulesClient {
+   getRuleCustomizationStatus: () => PrebuiltRulesCustomizationStatus;
+   createCustomRule: (args: CreateCustomRuleArgs) => Promise<RuleResponse>;
+   createPrebuiltRule: (args: CreatePrebuiltRuleArgs) => Promise<RuleResponse>;
++  bulkCreatePrebuiltRules: (
++    args: BulkCreatePrebuiltRulesArgs
++  ) => Promise<BulkCreatePrebuiltRulesResult>;
+   updateRule: (args: UpdateRuleArgs) => Promise<RuleResponse>;
+   patchRule: (args: PatchRuleArgs) => Promise<RuleResponse>;
+   deleteRule: (args: DeleteRuleArgs) => Promise<void>;
+@@ -33,6 +39,8 @@ export interface IDetectionRulesClient {
+   revertPrebuiltRule: (args: RevertPrebuiltRuleArgs) => Promise<RuleResponse>;
+   importRule: (args: ImportRuleArgs) => Promise<RuleResponse>;
+   importRules: (args: ImportRulesArgs) => Promise<Array<RuleResponse | RuleImportErrorObject>>;
++  bulkImportRules: (args: BulkImportRulesArgs) => Promise<BulkImportRulesResult>;
++  bulkEnableTasks: (taskIds: string[]) => Promise<BulkEnableTasksResult>;
+ }
+ 
+ export interface CreateCustomRuleArgs {
+@@ -43,6 +51,10 @@ export interface CreatePrebuiltRuleArgs {
+   params: RuleCreateProps;
+ }
+ 
++export interface BulkCreatePrebuiltRulesArgs {
++  rules: PrebuiltRuleAsset[];
++}
++
+ export interface UpdateRuleArgs {
+   ruleUpdate: RuleUpdateProps;
+ }
+@@ -86,3 +98,7 @@ export interface ImportRulesArgs {
+   ruleSourceImporter: IRuleSourceImporter;
+   allowMissingConnectorSecrets?: boolean;
+ }
++
++export interface BulkImportRulesArgs extends ImportRulesArgs {
++  skipTaskEnabling?: boolean;
++}
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts
+index a6e4e8bad29..2974fdf4fa0 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts
+@@ -215,4 +215,114 @@ describe('importRules', () => {
+       { rule_id: successfulRuleId, status_code: 200 },
+     ]);
+   });
++
++  describe('bulk path (skipTaskEnabling)', () => {
++    const experimentalFeatures = { bulkCreateRulesEnabled: true } as never;
++
++    it('dispatches every chunk with skipTaskEnabling: true and bulkEnables once at the end', async () => {
++      detectionRulesClient.bulkImportRules
++        .mockResolvedValueOnce({
++          responses: [getRulesSchemaMock()],
++          taskIdsFailedToBeEnabled: ['task-a', 'task-b'],
++        })
++        .mockResolvedValueOnce({
++          responses: [getRulesSchemaMock()],
++          taskIdsFailedToBeEnabled: ['task-c'],
++        });
++
++      await importRules({
++        ruleChunks: [[ruleToImport], [ruleToImport]],
++        overwriteRules: false,
++        detectionRulesClient,
++        ruleSourceImporter: mockRuleSourceImporter,
++        experimentalFeatures,
++      });
++
++      expect(detectionRulesClient.bulkImportRules).toHaveBeenCalledTimes(2);
++      for (const call of detectionRulesClient.bulkImportRules.mock.calls) {
++        expect(call[0].skipTaskEnabling).toBe(true);
++      }
++      expect(detectionRulesClient.bulkEnableTasks).toHaveBeenCalledTimes(1);
++      expect(detectionRulesClient.bulkEnableTasks).toHaveBeenCalledWith([
++        'task-a',
++        'task-b',
++        'task-c',
++      ]);
++    });
++
++    it('reports post-loop bulkEnable per-task failures by task id', async () => {
++      detectionRulesClient.bulkImportRules.mockResolvedValueOnce({
++        responses: [getRulesSchemaMock()],
++        taskIdsFailedToBeEnabled: ['task-a', 'task-b'],
++      });
++      detectionRulesClient.bulkEnableTasks.mockResolvedValueOnce({
++        taskIdsFailedToBeEnabled: ['task-b'],
++      });
++
++      const result = await importRules({
++        ruleChunks: [[ruleToImport]],
++        overwriteRules: false,
++        detectionRulesClient,
++        ruleSourceImporter: mockRuleSourceImporter,
++        experimentalFeatures,
++      });
++
++      const enableErrors = result.filter(
++        (r) =>
++          'error' in r &&
++          typeof r.error.message === 'string' &&
++          r.error.message.includes('please retry enable')
++      );
++      expect(enableErrors).toHaveLength(1);
++      expect((enableErrors[0] as { rule_id: string }).rule_id).toBe('task-b');
++    });
++
++    it('a throwing chunk does not abort the loop and prior chunks still get enabled', async () => {
++      detectionRulesClient.bulkImportRules
++        .mockResolvedValueOnce({
++          responses: [getRulesSchemaMock()],
++          taskIdsFailedToBeEnabled: ['task-a'],
++        })
++        .mockRejectedValueOnce(new Error('boom'))
++        .mockResolvedValueOnce({
++          responses: [getRulesSchemaMock()],
++          taskIdsFailedToBeEnabled: ['task-c'],
++        });
++
++      const r1 = { ...ruleToImport, rule_id: 'r1' };
++      const r2 = { ...ruleToImport, rule_id: 'r2' };
++      const r3 = { ...ruleToImport, rule_id: 'r3' };
++
++      const result = await importRules({
++        ruleChunks: [[r1], [r2], [r3]],
++        overwriteRules: false,
++        detectionRulesClient,
++        ruleSourceImporter: mockRuleSourceImporter,
++        experimentalFeatures,
++      });
++
++      expect(detectionRulesClient.bulkImportRules).toHaveBeenCalledTimes(3);
++      expect(detectionRulesClient.bulkEnableTasks).toHaveBeenCalledWith(['task-a', 'task-c']);
++      const boomErrors = result.filter((r) => 'error' in r && r.error.message === 'boom');
++      expect(boomErrors).toHaveLength(1);
++      expect((boomErrors[0] as { rule_id: string }).rule_id).toBe('r2');
++    });
++
++    it('skips bulkEnableTasks when no pending task ids accumulate', async () => {
++      detectionRulesClient.bulkImportRules.mockResolvedValueOnce({
++        responses: [getRulesSchemaMock()],
++        taskIdsFailedToBeEnabled: [],
++      });
++
++      await importRules({
++        ruleChunks: [[ruleToImport]],
++        overwriteRules: false,
++        detectionRulesClient,
++        ruleSourceImporter: mockRuleSourceImporter,
++        experimentalFeatures,
++      });
++
++      expect(detectionRulesClient.bulkEnableTasks).not.toHaveBeenCalled();
++    });
++  });
+ });
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts
+index 012c64c0ad8..12a2a5ac069 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts
+@@ -5,11 +5,17 @@
+  * 2.0.
+  */
+ 
+-import type { RuleToImport } from '../../../../../../common/api/detection_engine';
++import type { ExperimentalFeatures } from '../../../../../../common';
++import type { RuleResponse, RuleToImport } from '../../../../../../common/api/detection_engine';
+ import { type ImportRuleResponse, createBulkErrorObject } from '../../../routes/utils';
+ import type { IRuleSourceImporter } from './rule_source_importer';
+ import type { IDetectionRulesClient } from '../detection_rules_client/detection_rules_client_interface';
+-import { isRuleConflictError, isRuleImportError } from './errors';
++import {
++  createRuleImportErrorObject,
++  isRuleConflictError,
++  isRuleImportError,
++  type RuleImportErrorObject,
++} from './errors';
+ 
+ /**
+  * Takes a stream of rules to be imported and either creates or updates rules
+@@ -18,6 +24,9 @@ import { isRuleConflictError, isRuleImportError } from './errors';
+  * @param overwriteRules {boolean} - whether to overwrite existing rules
+  * with imported rules if their rule_id matches
+  * @param detectionRulesClient {object}
++ * @param experimentalFeatures - feature flags; when `bulkCreateRulesEnabled` is on,
++ *   per-chunk import is dispatched through `detectionRulesClient.bulkImportRules`
++ *   (single bulk alerting call) instead of the per-rule loop.
+  * @returns {Promise} an array of error and success messages from import
+  */
+ export const importRules = async ({
+@@ -26,12 +35,14 @@ export const importRules = async ({
+   detectionRulesClient,
+   ruleSourceImporter,
+   allowMissingConnectorSecrets,
++  experimentalFeatures,
+ }: {
+   ruleChunks: RuleToImport[][];
+   overwriteRules: boolean;
+   detectionRulesClient: IDetectionRulesClient;
+   ruleSourceImporter: IRuleSourceImporter;
+   allowMissingConnectorSecrets?: boolean;
++  experimentalFeatures?: ExperimentalFeatures;
+ }): Promise<ImportRuleResponse[]> => {
+   const response: ImportRuleResponse[] = [];
+ 
+@@ -39,31 +50,82 @@ export const importRules = async ({
+     return response;
+   }
+ 
+-  for (const rules of ruleChunks) {
+-    const importedRulesResponse = await detectionRulesClient.importRules({
+-      allowMissingConnectorSecrets,
+-      overwriteRules,
+-      ruleSourceImporter,
+-      rules,
+-    });
++  const useBulk = experimentalFeatures?.bulkCreateRulesEnabled ?? false;
++
++  if (!useBulk) {
++    for (const rules of ruleChunks) {
++      const importedRulesResponse = await detectionRulesClient.importRules({
++        allowMissingConnectorSecrets,
++        overwriteRules,
++        ruleSourceImporter,
++        rules,
++      });
++      response.push(...importedRulesResponse.map(toImportRuleResponse));
++    }
++    return response;
++  }
++
++  const pendingTaskIds: string[] = [];
+ 
+-    const importResponses = importedRulesResponse.map((rule) => {
+-      if (isRuleImportError(rule)) {
+-        return createBulkErrorObject({
+-          message: rule.error.message,
+-          statusCode: isRuleConflictError(rule) ? 409 : 400,
+-          ruleId: rule.error.ruleId,
+-        });
++  for (const rules of ruleChunks) {
++    try {
++      const result = await detectionRulesClient.bulkImportRules({
++        allowMissingConnectorSecrets,
++        overwriteRules,
++        ruleSourceImporter,
++        rules,
++        skipTaskEnabling: true,
++      });
++      response.push(...result.responses.map(toImportRuleResponse));
++      pendingTaskIds.push(...result.taskIdsFailedToBeEnabled);
++    } catch (err) {
++      // Hard chunk failure: continue so prior chunks' rules still get enabled.
++      const message = err instanceof Error ? err.message : String(err);
++      for (const rule of rules) {
++        response.push(
++          toImportRuleResponse(createRuleImportErrorObject({ ruleId: rule.rule_id, message }))
++        );
+       }
++    }
++  }
+ 
+-      return {
+-        rule_id: rule.rule_id,
+-        status_code: 200,
+-      };
+-    });
++  if (pendingTaskIds.length === 0) {
++    return response;
++  }
++
++  const pushTaskEnableFailures = (taskIds: string[], message: string) => {
++    for (const taskId of taskIds) {
++      response.push(toImportRuleResponse(createRuleImportErrorObject({ ruleId: taskId, message })));
++    }
++  };
+ 
+-    response.push(...importResponses);
++  try {
++    const { taskIdsFailedToBeEnabled } = await detectionRulesClient.bulkEnableTasks(pendingTaskIds);
++    pushTaskEnableFailures(
++      taskIdsFailedToBeEnabled,
++      'Rule was created but its task could not be enabled; please retry enable.'
++    );
++  } catch (err) {
++    const message = err instanceof Error ? err.message : String(err);
++    pushTaskEnableFailures(
++      pendingTaskIds,
++      `Rule was created but its task could not be enabled: ${message}. Please retry enable.`
++    );
+   }
+ 
+   return response;
+ };
++
++const toImportRuleResponse = (rule: RuleResponse | RuleImportErrorObject): ImportRuleResponse => {
++  if (isRuleImportError(rule)) {
++    return createBulkErrorObject({
++      message: rule.error.message,
++      statusCode: isRuleConflictError(rule) ? 409 : 400,
++      ruleId: rule.error.ruleId,
++    });
++  }
++  return {
++    rule_id: rule.rule_id,
++    status_code: 200,
++  };
++};
