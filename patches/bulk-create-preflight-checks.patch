@@ -1,0 +1,409 @@
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.test.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.test.ts
+index ea631aad4cd..93965f51815 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.test.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.test.ts
+@@ -179,6 +179,118 @@ describe('bulkCreateRules', () => {
+     expect(unsecuredSavedObjectsClient.bulkCreate).not.toHaveBeenCalled();
+     expect(taskManager.bulkSchedule).not.toHaveBeenCalled();
+     expect(rulesClientParams.createAPIKey).not.toHaveBeenCalled();
++    expect(authorization.bulkEnsureAuthorized).not.toHaveBeenCalled();
++  });
++
++  describe('preflightChecks (Phase 0)', () => {
++    test('runs a single bulkEnsureAuthorized per call with deduped (alertTypeId, consumer) pairs', async () => {
++      unsecuredSavedObjectsClient.bulkCreate.mockResolvedValue(
++        buildBulkResponse([{ id: 'mock-id-1' }, { id: 'mock-id-2' }, { id: 'mock-id-3' }])
++      );
++
++      await rulesClient.bulkCreateRules({
++        rules: [
++          { data: baseRule({ name: 'a' }) },
++          { data: baseRule({ name: 'b' }) },
++          { data: baseRule({ name: 'c', consumer: 'baz' }) },
++        ],
++      });
++
++      expect(authorization.bulkEnsureAuthorized).toHaveBeenCalledTimes(1);
++      expect(authorization.ensureAuthorized).not.toHaveBeenCalled();
++      const call = (authorization.bulkEnsureAuthorized as jest.Mock).mock.calls[0][0];
++      expect(call.ruleTypeIdConsumersPairs).toEqual([
++        { ruleTypeId: '123', consumers: ['bar'] },
++        { ruleTypeId: '123', consumers: ['baz'] },
++      ]);
++    });
++
++    test('per-rule registry failure is excluded from the batch and from the auth pairs', async () => {
++      let calls = 0;
++      ruleTypeRegistry.get.mockImplementation((typeId: string) => {
++        calls += 1;
++        if (calls === 1) throw new Error('rule type not found');
++        return {
++          id: typeId,
++          name: 'Test',
++          actionGroups: [{ id: 'default', name: 'Default' }],
++          recoveryActionGroup: { id: 'recovered', name: 'Recovered' },
++          defaultActionGroupId: 'default',
++          minimumLicenseRequired: 'basic',
++          isExportable: true,
++          async executor() {
++            return { state: {} };
++          },
++          category: 'test',
++          producer: 'alerts',
++          solution: 'stack',
++          validate: { params: { validate: (p: unknown) => p } },
++          validLegacyConsumers: [],
++        } as never;
++      });
++      unsecuredSavedObjectsClient.bulkCreate.mockResolvedValue(
++        buildBulkResponse([{ id: 'mock-id-2' }])
++      );
++
++      const result = await rulesClient.bulkCreateRules({
++        rules: [{ data: baseRule({ name: 'fails' }) }, { data: baseRule({ name: 'ok' }) }],
++      });
++
++      expect(result.errors).toHaveLength(1);
++      expect(result.errors[0].rule.name).toBe('fails');
++      expect(result.rules).toHaveLength(1);
++      // bulkEnsureAuthorized only sees the surviving (one) pair
++      expect(authorization.bulkEnsureAuthorized).toHaveBeenCalledTimes(1);
++      const call = (authorization.bulkEnsureAuthorized as jest.Mock).mock.calls[0][0];
++      expect(call.ruleTypeIdConsumersPairs).toEqual([{ ruleTypeId: '123', consumers: ['bar'] }]);
++    });
++
++    test('all-invalid input: no auth call, no audit log, no SO write', async () => {
++      ruleTypeRegistry.get.mockImplementation(() => {
++        throw new Error('rule type not found');
++      });
++
++      const result = await rulesClient.bulkCreateRules({
++        rules: [{ data: baseRule({ name: 'a' }) }, { data: baseRule({ name: 'b' }) }],
++      });
++
++      expect(result.rules).toHaveLength(0);
++      expect(result.errors).toHaveLength(2);
++      expect(result.total).toBe(2);
++      expect(authorization.bulkEnsureAuthorized).not.toHaveBeenCalled();
++      expect(authorization.ensureAuthorized).not.toHaveBeenCalled();
++      expect(unsecuredSavedObjectsClient.bulkCreate).not.toHaveBeenCalled();
++      expect(auditLogger.log).not.toHaveBeenCalled();
++    });
++
++    test('auth failure throws on the whole batch, emits a single CREATE audit log, no SO/TM writes', async () => {
++      (authorization.bulkEnsureAuthorized as jest.Mock).mockRejectedValueOnce(
++        new Error('Unauthorized')
++      );
++
++      await expect(
++        rulesClient.bulkCreateRules({
++          rules: [
++            { data: baseRule({ name: 'a' }) },
++            { data: baseRule({ name: 'b' }) },
++          ],
++        })
++      ).rejects.toThrow('Unauthorized');
++
++      expect(authorization.bulkEnsureAuthorized).toHaveBeenCalledTimes(1);
++      expect(unsecuredSavedObjectsClient.bulkCreate).not.toHaveBeenCalled();
++      expect(taskManager.bulkSchedule).not.toHaveBeenCalled();
++      expect(rulesClientParams.createAPIKey).not.toHaveBeenCalled();
++
++      const auditCalls = (auditLogger.log as jest.Mock).mock.calls;
++      const createEvents = auditCalls.filter(
++        ([event]) => event?.event?.action === RuleAuditAction.CREATE
++      );
++      expect(createEvents).toHaveLength(1);
++      // Single batch-level audit: no savedObject id attached.
++      expect(createEvents[0][0]?.kibana?.saved_object).toBeUndefined();
++      expect(createEvents[0][0]?.error).toBeDefined();
++    });
+   });
+ 
+   test('all-disabled happy path: single bulkCreate, no TM, no API keys', async () => {
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
+index 63ce9ce803a..1e2e260f338 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
+@@ -31,6 +31,7 @@ import {
+   collectNewKeysToInvalidate,
+   demotePreparedRules,
+   flushKeysToInvalidate,
++  preflightChecks,
+   prepareRule,
+   toSanitizedRule,
+ } from './utils';
+@@ -57,36 +58,43 @@ export async function bulkCreateRules<Params extends RuleParams = never>(
+ 
+   logger.debug(`Bulk creating batch of ${total} rules`);
+ 
+-  // Phase 1: per-rule prepare (validation + api key generation).
+   // NOTE: in order to minimise external calls, the values below get mutated
+   // at different stages in the process (ie if we fail schedule creation),
+   // so that we invalidate keys and create rule SOs in a single batch at the end.
+   const preparedRules = new Map<string, PreparedRule>();
+   const keysToInvalidate = new Set<string>();
+   const apiKeysMap = new Map<string, ApiKeyEntry>();
+-  const errors: BulkOperationError[] = [];
+-  const authzCache = new Map<string, Promise<void>>();
+ 
++  // Phase 0: per-rule schema/registry validation + bulk authorization.
++  const { validatedInputs, errors: preflightErrors } = await preflightChecks(
++    context,
++    inputsWithIds
++  );
++  const errors: BulkOperationError[] = [...preflightErrors];
++
++  if (validatedInputs.length === 0) {
++    return { rules: [], errors, total, taskIdsFailedToBeEnabled: [] };
++  }
++
++  // Phase 1: per-rule prepare (action/system action validation + api key mint).
+   await pMap(
+-    inputsWithIds,
+-    async ({ id, rule }) => {
++    validatedInputs,
++    async (input) => {
+       const { prepared, error } = await prepareRule({
+         context,
+         actionsClient,
+         username,
+-        id,
+-        rule,
+-        authzCache,
++        input,
+         errors,
+         apiKeysMap,
+       });
+-      if (prepared) preparedRules.set(id, prepared);
++      if (prepared) preparedRules.set(input.id, prepared);
+       else if (error) errors.push(error);
+     },
+     { concurrency: API_KEY_GENERATE_CONCURRENCY }
+   );
+ 
+-  // No survivors? Flush out any keys created and return
++  // No survivors after prepare? Flush out any keys created and return.
+   if (preparedRules.size === 0) {
+     await flushKeysToInvalidate(keysToInvalidate, context);
+     return { rules: [], errors, total, taskIdsFailedToBeEnabled: [] };
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/types.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/types.ts
+index 9f6c04878e7..bf3673371b5 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/types.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/types.ts
+@@ -6,6 +6,10 @@
+  */
+ 
+ import type { SavedObjectReference } from '@kbn/core/server';
++import type {
++  NormalizedAlertDefaultActionWithGeneratedValues,
++  NormalizedAlertSystemActionWithGeneratedValues,
++} from '../../../../rules_client/types';
+ import type { IntervalSchedule } from '../../../../../common';
+ import type { RuleParams } from '../../types';
+ import type { CreateRuleData } from '../create/types';
+@@ -30,13 +34,27 @@ export interface ApiKeyEntry {
+   apiKeyCreatedByUser: boolean | null;
+ }
+ 
++/**
++ * A bulk-create input that has already passed `preflightChecks`:
++ * `data.actions` / `data.systemActions` contain generated values (uuids,
++ * parsed KQL), the data shape has been validated against `createRuleDataSchema`,
++ * and `data.alertTypeId` is a registered rule type. Authorization for
++ * `(alertTypeId, consumer)` has also been ensured at the batch level.
++ */
++export interface ValidatedRuleInput<Params extends RuleParams = never> {
++  id: string;
++  data: Omit<CreateRuleData<Params>, 'actions' | 'systemActions'> & {
++    actions: NormalizedAlertDefaultActionWithGeneratedValues[];
++    systemActions: NormalizedAlertSystemActionWithGeneratedValues[];
++  };
++  allowMissingConnectorSecrets?: boolean;
++}
++
+ export interface PrepareRuleArgs<Params extends RuleParams> {
+   context: RulesClientContext;
+   actionsClient: Awaited<ReturnType<RulesClientContext['getActionsClient']>>;
+   username: string | null;
+-  id: string;
+-  rule: BulkCreateRulesItem<Params>;
+-  authzCache: Map<string, Promise<void>>;
++  input: ValidatedRuleInput<Params>;
+   errors: BulkCreateOperationError[];
+   apiKeysMap: Map<string, ApiKeyEntry>;
+ }
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts
+index 5adc4ed38fe..e77268dec98 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts
+@@ -7,12 +7,12 @@
+ 
+ import Boom from '@hapi/boom';
+ import Semver from 'semver';
++import { withSpan } from '@kbn/apm-utils';
+ import { i18n } from '@kbn/i18n';
+ import type { SavedObject } from '@kbn/core/server';
+ import type { TaskInstanceWithDeprecatedFields } from '@kbn/task-manager-plugin/server/task';
+ 
+ import { validateAndAuthorizeSystemActions } from '../../../../lib/validate_authorize_system_actions';
+-import { RULE_SAVED_OBJECT_TYPE } from '../../../../saved_objects';
+ import { parseDuration } from '../../../../../common';
+ import { WriteOperations, AlertingAuthorizationEntity } from '../../../../authorization';
+ import {
+@@ -50,6 +50,8 @@ import type {
+   ApiKeyEntry,
+   BulkCreateOperationError,
+   BulkCreateDisabledReason,
++  BulkCreateRulesItem,
++  ValidatedRuleInput,
+ } from './types';
+ 
+ export const getBulkCreateAsDisabledMessage = (message: string): string =>
+@@ -118,60 +120,95 @@ export const toSanitizedRule = <Params extends RuleParams = never>(
+   return transformRuleDomainToRule<Params>(ruleDomain, { isPublic: true }) as SanitizedRule<Params>;
+ };
+ 
+-export const prepareRule = async <Params extends RuleParams>({
+-  context,
+-  actionsClient,
+-  username,
+-  id,
+-  rule,
+-  authzCache,
+-  errors,
+-  apiKeysMap,
+-}: PrepareRuleArgs<Params>): Promise<{ prepared?: PreparedRule; error?: BulkOperationError }> => {
+-  const { allowMissingConnectorSecrets } = rule;
+-
+-  try {
+-    const { actions: genActions, systemActions: genSystemActions } = await addGeneratedActionValues(
+-      rule.data.actions,
+-      rule.data.systemActions,
+-      context
+-    );
+-    const data = { ...rule.data, actions: genActions, systemActions: genSystemActions };
++export const preflightChecks = async <Params extends RuleParams>(
++  context: RulesClientContext,
++  inputsWithIds: Array<{ id: string; rule: BulkCreateRulesItem<Params> }>
++): Promise<{
++  validatedInputs: Array<ValidatedRuleInput<Params>>;
++  errors: BulkCreateOperationError[];
++}> => {
++  const validatedInputs: Array<ValidatedRuleInput<Params>> = [];
++  const errors: BulkCreateOperationError[] = [];
+ 
++  for (const { id, rule } of inputsWithIds) {
+     try {
+-      createRuleDataSchema.validate(data);
+-    } catch (validationError) {
+-      throw Boom.badRequest(`Error validating create data - ${validationError.message}`);
+-    }
++      const { actions: genActions, systemActions: genSystemActions } =
++        await addGeneratedActionValues(rule.data.actions, rule.data.systemActions, context);
++      const data = { ...rule.data, actions: genActions, systemActions: genSystemActions };
+ 
+-    // ruleTypeRegistry.get throws 400 if not registered.
+-    context.ruleTypeRegistry.get(data.alertTypeId);
+-
+-    const authzKey = `${data.alertTypeId}::${data.consumer}`;
+-    if (!authzCache.has(authzKey)) {
+-      authzCache.set(
+-        authzKey,
+-        context.authorization.ensureAuthorized({
+-          ruleTypeId: data.alertTypeId,
+-          consumer: data.consumer,
+-          operation: WriteOperations.Create,
+-          entity: AlertingAuthorizationEntity.Rule,
+-        })
+-      );
++      try {
++        createRuleDataSchema.validate(data);
++      } catch (validationError) {
++        throw Boom.badRequest(`Error validating create data - ${validationError.message}`);
++      }
++
++      // ruleTypeRegistry.get throws 400 if not registered.
++      context.ruleTypeRegistry.get(data.alertTypeId);
++
++      validatedInputs.push({
++        id,
++        data,
++        allowMissingConnectorSecrets: rule.allowMissingConnectorSecrets,
++      });
++    } catch (err) {
++      errors.push({
++        message: err.message,
++        status: err.output?.statusCode,
++        rule: { id, name: rule.data?.name ?? 'n/a' },
++      });
+     }
++  }
++
++  if (validatedInputs.length === 0) {
++    return { validatedInputs, errors };
++  }
++
++  // Dedup (alertTypeId, consumer) pairs across the survivors and run a single
++  // bulk authorization check. Any failure aborts the whole batch.
++  const seenPairs = new Set<string>();
++  const ruleTypeIdConsumersPairs: Array<{ ruleTypeId: string; consumers: string[] }> = [];
++  for (const { data } of validatedInputs) {
++    const key = `${data.alertTypeId}::${data.consumer}`;
++    if (seenPairs.has(key)) continue;
++    seenPairs.add(key);
++    ruleTypeIdConsumersPairs.push({
++      ruleTypeId: data.alertTypeId,
++      consumers: [data.consumer],
++    });
++  }
++
++  await withSpan({ name: 'authorization.bulkEnsureAuthorized', type: 'rules' }, async () => {
+     try {
+-      await authzCache.get(authzKey)!;
+-    } catch (authzError) {
++      await context.authorization.bulkEnsureAuthorized({
++        ruleTypeIdConsumersPairs,
++        operation: WriteOperations.Create,
++        entity: AlertingAuthorizationEntity.Rule,
++      });
++    } catch (error) {
+       context.auditLogger?.log(
+         ruleAuditEvent({
+           action: RuleAuditAction.CREATE,
+-          savedObject: { type: RULE_SAVED_OBJECT_TYPE, id, name: data.name },
+-          error: authzError,
++          error,
+         })
+       );
+-      throw authzError;
++      throw error;
+     }
++  });
++
++  return { validatedInputs, errors };
++};
++
++export const prepareRule = async <Params extends RuleParams>({
++  context,
++  actionsClient,
++  username,
++  input,
++  errors,
++  apiKeysMap,
++}: PrepareRuleArgs<Params>): Promise<{ prepared?: PreparedRule; error?: BulkOperationError }> => {
++  const { id, data, allowMissingConnectorSecrets } = input;
+ 
++  try {
+     context.ruleTypeRegistry.ensureRuleTypeEnabled(data.alertTypeId);
+     const ruleType = context.ruleTypeRegistry.get(data.alertTypeId);
+     const validatedRuleTypeParams = validateRuleTypeParams(data.params, ruleType.validate.params);
+@@ -311,7 +348,7 @@ export const prepareRule = async <Params extends RuleParams>({
+     const error = {
+       message: err.message,
+       status: err.output?.statusCode,
+-      rule: { id, name: rule.data?.name ?? 'n/a' },
++      rule: { id, name: data?.name ?? 'n/a' },
+     };
+     return { error };
+   }
