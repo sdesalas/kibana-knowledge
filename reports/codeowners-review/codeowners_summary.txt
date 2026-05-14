@@ -1,0 +1,5 @@
+
+--- CODEOWNERS summary for @elastic/security-detection-rule-management ---
+Fully owned (only this team): 1900
+Shared with other teams:      357
+Total owned:                  2257

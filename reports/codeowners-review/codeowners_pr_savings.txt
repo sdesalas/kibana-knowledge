@@ -1,0 +1,82 @@
+Loading CODEOWNERS -> file map for @elastic/security-detection-rule-management ...
+  Files team-owned: 2257
+Loading 6 months ago of commits on main ...
+  Commits: 9668
+Wrote per-candidate PR lists -> codeowners_pr_savings_links.md
+
+=== 6 months ago (6 months) ===
+Commits on main:                                9668
+PRs that pinged @elastic/security-detection-rule-management: 192
+  Monthly average:                              32.0
+
+If ALL 15 candidates were dropped:
+  PRs still pinged (team-essential touched):    144  (24.0/mo)
+  PRs no longer pinged:                         48  (8.0/mo)
+  Review-load reduction:                        25.0%
+
+=== Per-candidate breakdown (6 months) ===
+  candidate                           PRs touched   /mo   uniq freed   /mo
+  kbn-openapi-bundler                           2   0.3            2   0.3
+  kbn-openapi-common                            3   0.5            0   0.0
+  kbn-openapi-generator                         9   1.5            4   0.7
+  kbn-zod-helpers                               4   0.7            2   0.3
+  kbn-rule-data-utils                          12   2.0           12   2.0
+  kbn-change-history                            6   1.0            4   0.7
+  kbn-securitysolution-utils                    3   0.5            3   0.5
+  server/routes                                11   1.8            7   1.2
+  api_integration/detections_response/utils          12   2.0            3   0.5
+  common/test                                   5   0.8            3   0.5
+  components/links_to_docs                      3   0.5            2   0.3
+  components/ml_popover                         3   0.5            1   0.2
+  components/missing_privileges                 2   0.3            1   0.2
+  components/popover_items                      1   0.2            1   0.2
+  alerting/change_tracking                      3   0.5            1   0.2
+
+
+=== Discovery: team-owned CODEOWNERS lines by review noise (6 months) ===
+(Sorted by 'uniquely freed' PRs. Lines already in CANDIDATES are tagged [C].)
+   line   PRs uniq  pattern
+   3014       51   16  /x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_management_ui  (@elastic/security-detection-rule-management)
+    644 [C]   12   12  src/platform/packages/shared/kbn-rule-data-utils  (@elastic/security-detection-rule-management @elastic/security-detection-engine @elastic/response-ops @elastic/actionable-obs-team)
+   3002       34    8  /x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management  (@elastic/security-detection-rule-management)
+   2998       23    7  /x-pack/solutions/security/test/security_solution_cypress/cypress/e2e/detection_response/rule_management  (@elastic/security-detection-rule-management)
+   2722 [C]   11    7  /x-pack/solutions/security/plugins/security_solution/server/routes  (@elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting)
+   3023       14    6  /x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_monitoring  (@elastic/security-detection-rule-management)
+   3013       27    5  /x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_management  (@elastic/security-detection-rule-management)
+   1015 [C]    6    4  x-pack/platform/packages/shared/kbn-change-history  (@elastic/security-detection-rule-management)
+    624 [C]    9    4  src/platform/packages/shared/kbn-openapi-generator  (@elastic/security-detection-rule-management)
+   3021       18    3  /x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules  (@elastic/security-detection-rule-management)
+   2724 [C]   12    3  x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/utils  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
+   3022       25    3  /x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management  (@elastic/security-detection-rule-management)
+   3012       21    3  /x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui  (@elastic/security-detection-rule-management)
+   1335 [C]    3    3  x-pack/solutions/security/packages/kbn-securitysolution-utils  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
+   2716 [C]    5    3  /x-pack/solutions/security/plugins/security_solution/common/test  (@elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting)
+   3017       21    2  /x-pack/solutions/security/plugins/security_solution/public/detection_engine/common  (@elastic/security-detection-rule-management)
+   3018       12    2  /x-pack/solutions/security/plugins/security_solution/public/rules  (@elastic/security-detection-rule-management)
+    721 [C]    4    2  src/platform/packages/shared/kbn-zod-helpers  (@elastic/security-detection-rule-management)
+   3000        5    2  /x-pack/solutions/security/plugins/security_solution/docs/testing/test_plans/detection_response/prebuilt_rules  (@elastic/security-detection-rule-management)
+    622 [C]    2    2  src/platform/packages/shared/kbn-openapi-bundler  (@elastic/security-detection-rule-management)
+   3005 [C]    3    2  /x-pack/solutions/security/plugins/security_solution/public/common/components/links_to_docs  (@elastic/security-detection-rule-management)
+   3007 [C]    2    1  /x-pack/solutions/security/plugins/security_solution/public/common/components/missing_privileges  (@elastic/security-detection-rule-management)
+   2530 [C]    3    1  /x-pack/platform/plugins/shared/alerting/server/rules_client/lib/change_tracking  (@elastic/security-detection-rule-management)
+   2725        5    1  x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/telemetry  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
+   3430        1    1  /.buildkite/scripts/steps/code_generation/security_solution_codegen.sh  (@elastic/security-detection-rule-management)
+   3026        2    1  /x-pack/solutions/security/plugins/security_solution/scripts/openapi  (@elastic/security-detection-rule-management)
+   3008 [C]    1    1  /x-pack/solutions/security/plugins/security_solution/public/common/components/popover_items  (@elastic/security-detection-rule-management)
+   3015        9    1  /x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_monitoring  (@elastic/security-detection-rule-management)
+   3006 [C]    3    1  /x-pack/solutions/security/plugins/security_solution/public/common/components/ml_popover  (@elastic/security-detection-rule-management)
+   2999        1    1  /x-pack/solutions/security/plugins/security_solution/docs/rfcs/detection_response  (@elastic/security-detection-rule-management @elastic/security-detection-engine)
+
+=== Lines with PR touches but 0 uniquely freed (still useful context) ===
+   line   PRs uniq  pattern
+   2680       17    0  /x-pack/solutions/security/plugins/security_solution/docs/openapi/ess/security_solution_detections_api_*  (@elastic/security-detection-rule-management)
+   2676       16    0  /x-pack/solutions/security/plugins/security_solution/docs/openapi/serverless/security_solution_detections_api_*  (@elastic/security-detection-rule-management)
+   2993       15    0  /x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/rule_management  (@elastic/security-detection-rule-management)
+   2994       11    0  /x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/rule_monitoring  (@elastic/security-detection-rule-management)
+   2732       10    0  /x-pack/solutions/security/packages/test-api-clients/supertest/detections.gen.ts  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
+   2992       10    0  /x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/prebuilt_rules  (@elastic/security-detection-rule-management)
+   2991        8    0  /x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/model/rule_schema  (@elastic/security-detection-rule-management @elastic/security-detection-engine)
+   2735        4    0  /x-pack/solutions/security/plugins/security_solution/common/api/initialization  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
+   2737        3    0  /x-pack/solutions/security/plugins/security_solution/server/lib/initialization  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
+    623 [C]    3    0  src/platform/packages/shared/kbn-openapi-common  (@elastic/security-detection-rule-management)
+   2728        3    0  /x-pack/solutions/security/test/security_solution_api_integration/config/services/detections_response/  (@elastic/security-detection-engine @elastic/security-detection-rule-management)
