@@ -1,0 +1,127 @@
+diff --git a/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.test.ts b/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.test.ts
+index e1b8a3f70c5..9318e9bf026 100644
+--- a/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.test.ts
++++ b/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.test.ts
+@@ -1379,6 +1379,65 @@ describe('TaskScheduling', () => {
+       );
+     });
+
++    test('jitters runAt and scheduledAt for enabled recurring tasks within min(interval, 5m)', async () => {
++      const taskScheduling = new TaskScheduling(taskSchedulingOpts);
++      const task1 = {
++        taskType: 'foo',
++        params: {},
++        state: {},
++        schedule: { interval: '1m' },
++      };
++      const task2 = {
++        taskType: 'foo',
++        params: {},
++        state: {},
++        schedule: { interval: '1h' },
++      };
++      await taskScheduling.bulkSchedule([task1, task2]);
++
++      const [scheduled] = mockTaskStore.bulkSchedule.mock.calls[0];
++      expect(scheduled).toHaveLength(2);
++
++      const fiveMinutesMs = 5 * 60 * 1000;
++      const oneMinuteMs = 60 * 1000;
++
++      // task1 (1m interval) → offset between 1ms and 60_000ms
++      const t1RunAt = scheduled[0].runAt!.getTime();
++      expect(scheduled[0].scheduledAt!.getTime()).toBe(t1RunAt);
++      expect(t1RunAt).toBeGreaterThanOrEqual(1);
++      expect(t1RunAt).toBeLessThanOrEqual(oneMinuteMs);
++
++      // task2 (1h interval, capped at 5m) → offset between 1ms and 300_000ms
++      const t2RunAt = scheduled[1].runAt!.getTime();
++      expect(scheduled[1].scheduledAt!.getTime()).toBe(t2RunAt);
++      expect(t2RunAt).toBeGreaterThanOrEqual(1);
++      expect(t2RunAt).toBeLessThanOrEqual(fiveMinutesMs);
++    });
++
++    test('does not jitter disabled tasks even if they have an interval schedule', async () => {
++      const taskScheduling = new TaskScheduling(taskSchedulingOpts);
++      const task = {
++        taskType: 'foo',
++        params: {},
++        state: {},
++        schedule: { interval: '1h' },
++        enabled: false,
++      };
++      await taskScheduling.bulkSchedule([task]);
++
++      const [scheduled] = mockTaskStore.bulkSchedule.mock.calls[0];
++      expect(scheduled).toEqual([
++        {
++          ...task,
++          id: undefined,
++          traceparent: 'parent',
++          enabled: false,
++        },
++      ]);
++      expect(scheduled[0].runAt).toBeUndefined();
++      expect(scheduled[0].scheduledAt).toBeUndefined();
++    });
++
+     test('doesnt allow naively rescheduling existing tasks that have already been scheduled', async () => {
+       const taskScheduling = new TaskScheduling(taskSchedulingOpts);
+       mockTaskStore.bulkSchedule.mockRejectedValueOnce({
+diff --git a/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts b/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts
+index 1d5a46b0080..80f3f666275 100644
+--- a/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts
++++ b/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts
+@@ -138,10 +138,13 @@ export class TaskScheduling {
+           ...omit(options, 'apiKey', 'request'),
+           taskInstance: ensureDeprecatedFieldsAreCorrected(taskInstance, this.logger),
+         });
++        const enabled = modifiedTask.enabled ?? true;
++        const runAt = enabled ? addJitter(modifiedTask.schedule?.interval) ?? {} : {};
+         return {
+           ...modifiedTask,
+           traceparent: traceparent || '',
+-          enabled: modifiedTask.enabled ?? true,
++          enabled,
++          ...runAt,
+         };
+       })
+     );
+@@ -189,11 +192,9 @@ export class TaskScheduling {
+         if (runSoon) {
+           // Run the first task now. Run all other tasks a random number of ms in the future,
+           // with a maximum of 5 minutes or the task interval, whichever is smaller.
+-          const taskToRun =
+-            i === 0
+-              ? { ...task, runAt: new Date(), scheduledAt: new Date() }
+-              : randomlyOffsetRunTimestamp(task);
+-          return { ...taskToRun, enabled: true };
++          return i === 0
++            ? { ...task, enabled: true, runAt: new Date(), scheduledAt: new Date() }
++            : { ...task, enabled: true, ...addJitter(task.schedule?.interval ?? '0s') };
+         }
+         return { ...task, enabled: true };
+       },
+@@ -364,17 +365,15 @@ export class TaskScheduling {
+   }
+ }
+
+-const randomlyOffsetRunTimestamp: (task: ConcreteTaskInstance) => ConcreteTaskInstance = (task) => {
++const addJitter = (interval?: string): { runAt: Date; scheduledAt: Date } | undefined => {
++  if (!interval) return undefined;
++
+   const now = Date.now();
+   const maximumOffsetTimestamp = now + 1000 * 60 * 5; // now + 5 minutes
+-  const taskIntervalInMs = parseIntervalAsMillisecond(task.schedule?.interval ?? '0s');
++  const taskIntervalInMs = parseIntervalAsMillisecond(interval);
+   const maximumRunAt = Math.min(now + taskIntervalInMs, maximumOffsetTimestamp);
+
+   // Offset between 1 and maximumRunAt ms
+   const runAt = new Date(now + Math.floor(Math.random() * (maximumRunAt - now) + 1));
+-  return {
+-    ...task,
+-    runAt,
+-    scheduledAt: runAt,
+-  };
++  return { runAt, scheduledAt: runAt };
+ };
