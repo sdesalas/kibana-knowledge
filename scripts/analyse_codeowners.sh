@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# list_codeowner_files.sh
+# analyse_codeowners.sh
 #
 # Print every tracked file in the repo that is owned by a given CODEOWNERS team.
 # IMPORTANT: Run script from Kibana repo root.
 #
 # Usage:
-#   ./list_codeowner_files.sh [team-handle]
+#   ./analyse_codeowners.sh [team-handle]
 #
 # Defaults to @elastic/security-detection-rule-management.
 #
