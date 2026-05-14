@@ -30,8 +30,8 @@ set -euo pipefail
 TEAM="${1:-@elastic/security-detection-rule-management}"
 
 if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-  echo "Not inside a git repository." >&2
-  echo "Please run this script from the Kibana repo root (the directory that contains .github/CODEOWNERS)." >&2
+  echo "Missing '.github/CODEOWNERS' file." >&2
+  echo "Please run this script from Kibana repo root." >&2
   exit 1
 fi
 CODEOWNERS_FILE="${REPO_ROOT}/.github/CODEOWNERS"
