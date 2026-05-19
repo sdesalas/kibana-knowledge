@@ -15,7 +15,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/parallel.env.sh}"
+ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/.env.sh}"
 IMPORT_FILE="${IMPORT_FILE:-${SCRIPT_DIR}/../../data/rules-import/1000enabled-rules.ndjson}"
 
 if [[ ! -f "$ENV_FILE" ]]; then

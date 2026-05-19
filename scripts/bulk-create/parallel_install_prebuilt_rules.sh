@@ -14,7 +14,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/parallel.env.sh}"
+ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/.env.sh}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "env file not found: ${ENV_FILE}" >&2
