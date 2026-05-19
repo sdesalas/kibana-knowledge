@@ -19,7 +19,7 @@ printf "1. "
 # 1. Fetch security-solution alerting rules visible to Kibana.
 rules_json=$(curl -s -u "$AUTH" \
   --get "$KIBANA_URL/api/alerting/rules/_find" \
-  --data-urlencode "per_page=1000" \
+  --data-urlencode "per_page=2000" \
   --data-urlencode 'filter=alert.attributes.alertTypeId:siem.*')
 
 printf "2. "
