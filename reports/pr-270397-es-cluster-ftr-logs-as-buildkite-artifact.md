@@ -7,9 +7,11 @@
 
 ## TL;DR
 
-**Yes — this is straightforward and arguably the right approach.** The Buildkite glue that Kibana already uses to upload ES logs is a single shared shell script (`.buildkite/scripts/lifecycle/post_command.sh`). It runs on every test step and currently uploads `.es/es*.log` and `.es/uiam*.log` (Docker stdout files) but **not** the native ES log directory (`.es/<cluster-name>/logs/`). Adding the ES native log folder as an artifact is a one-line change to the artifact glob list. Buildkite stores it as ordinary artifacts (downloadable individually or via the CLI / UI as a folder); if a single zipped download is desired, we can `tar -czf` the folder before upload.
+**Yes — this is straightforward, and the change should be scoped to `kibana-elasticsearch-snapshot-verify` only.** That pipeline is the right home for it: it is the snapshot integration-testing pipeline whose entire purpose is to validate a candidate ES snapshot against Kibana's FTR/Jest suites, so leaking the ES server logs to the ES team is genuinely useful there. On the regular PR / on-merge pipelines we have no signal-to-noise need for native ES logs and no reason to pay the artifact-storage cost.
 
-There is also one nuance worth flagging: in CI the actual on-disk path is **not** `.es/cluster-ftr/logs/*`. The `kbn-test-es-server` cluster name is prefixed with `CI_PARALLEL_PROCESS_PREFIX`, so on CI runners the path is closer to `.es/job-<JOB>-worker-<N>-cluster-ftr/logs/*`. The glob has to account for that.
+The mechanical change is small: produce `.es/cluster-ftr/logs/` as a single tarball at the end of test execution and upload it as a Buildkite artifact, gated on the pipeline slug. We do **not** want to add this to the shared `.buildkite/scripts/lifecycle/post_command.sh` artifact glob list, because that script runs after every test step in every Kibana pipeline.
+
+One nuance worth flagging: in CI the actual on-disk path is **not** `.es/cluster-ftr/logs/*`. The `kbn-test-es-server` cluster name is prefixed with `CI_PARALLEL_PROCESS_PREFIX`, so on CI runners the path is closer to `.es/job-<JOB>-worker-<N>-cluster-ftr/logs/*`. The glob/tar source has to account for that.
 
 ## Where these files come from
 
@@ -55,7 +57,7 @@ Elasticsearch writes its native logs to `${installPath}/logs/` by default — `k
 
 ## What Buildkite already uploads
 
-Artifact upload is centralised here and runs after **every** test step in **every** Kibana pipeline (including `kibana-elasticsearch-snapshot-verify`):
+Artifact upload for test steps is centralised in `.buildkite/scripts/lifecycle/post_command.sh`, which runs after every test step in **every** Kibana pipeline. Today it uploads `.es/es*.log` and `.es/uiam*.log` (Docker stdout files), but **not** the native ES log directory (`.es/<cluster-name>/logs/`):
 
 ```9:50:.buildkite/scripts/lifecycle/post_command.sh
 IS_TEST_EXECUTION_STEP="$(buildkite-agent meta-data get "${BUILDKITE_JOB_ID}_is_test_execution_step" --default '')"
@@ -74,11 +76,11 @@ if [[ "$IS_TEST_EXECUTION_STEP" == "true" ]]; then
   buildkite-agent artifact upload "$(printf '%s;' "${ARTIFACT_PATTERNS[@]}")"
 ```
 
-The flag `IS_TEST_EXECUTION_STEP` is set by the FTR / Jest / functional helpers (`is_test_execution_step` in `.buildkite/scripts/common/util.sh`, called from `.buildkite/scripts/steps/functional/common.sh`, `.../test/jest.sh`, `.../test/jest_integration.sh`, etc.), so the same logic already covers the `kibana-elasticsearch-snapshot-verify` pipeline (`verify.yml` invokes `pick_test_group_run_order.sh` which schedules the standard FTR / Jest scripts).
+Because this script is shared across all Kibana pipelines, **adding the new pattern to `ARTIFACT_PATTERNS` is the wrong place**: it would upload the ES native log folder for every PR, on-merge, periodic, flaky-test-runner, and quality-gate run. We want this only on `kibana-elasticsearch-snapshot-verify`.
 
-## Pipeline `kibana-elasticsearch-snapshot-verify` is just a wrapper
+## Pipeline `kibana-elasticsearch-snapshot-verify`
 
-The pipeline definition in `.buildkite/pipeline-resource-definitions/kibana-es-snapshots.yml` (`bk-kibana-elasticsearch-snapshot-verify`) points at `.buildkite/pipelines/es_snapshots/verify.yml`, which simply runs the standard FTR / scout test ordering steps:
+The pipeline definition in `.buildkite/pipeline-resource-definitions/kibana-es-snapshots.yml` (`bk-kibana-elasticsearch-snapshot-verify`) points at `.buildkite/pipelines/es_snapshots/verify.yml`, which runs the standard FTR / scout test ordering steps:
 
 ```41:57:.buildkite/pipelines/es_snapshots/verify.yml
   - command: .buildkite/scripts/steps/test/pick_test_group_run_order.sh
@@ -91,59 +93,54 @@ The pipeline definition in `.buildkite/pipeline-resource-definitions/kibana-es-s
       LIMIT_CONFIG_TYPE: integration,functional
 ```
 
-There is nothing special in this pipeline that would prevent or require pipeline-specific artifact handling. Whatever we add to `post_command.sh` will run for `kibana-elasticsearch-snapshot-verify` jobs as well as for `kibana-pull-request`, `kibana-on-merge`, etc.
+Those scripts (`ftr_configs.sh`, `jest_integration.sh`, etc.) are also shared across pipelines, so we cannot simply edit them either without affecting other pipelines.
 
 ## Recommended change
 
-There are two viable approaches.
+Gate the upload on the pipeline slug, and produce a single tarball per job. Two equally-valid implementations:
 
-### Option A — add the folder to the existing artifact glob (simplest)
+### Option A — gate inside `post_command.sh` (smallest diff)
 
-Add a single line to `ARTIFACT_PATTERNS` in `.buildkite/scripts/lifecycle/post_command.sh`:
+Add a snapshot-verify-only block near the end of the existing test-execution branch:
 
 ```bash
-ARTIFACT_PATTERNS=(
-  # ...existing entries...
-  '.es/es*.log'
-  '.es/uiam*.log'
-  '.es/*cluster-ftr*/logs/**/*'   # native ES log dir for FTR clusters
-)
+if [[ "$IS_TEST_EXECUTION_STEP" == "true" ]]; then
+  # ...existing buildkite-agent artifact upload...
+
+  if [[ "${BUILDKITE_PIPELINE_SLUG:-}" == "kibana-elasticsearch-snapshot-verify" ]]; then
+    if compgen -G '.es/*cluster-ftr*/logs' > /dev/null; then
+      ARCHIVE=".es/cluster-ftr-logs-${BUILDKITE_JOB_ID}.tar.gz"
+      tar -czf "$ARCHIVE" .es/*cluster-ftr*/logs 2>/dev/null || true
+      buildkite-agent artifact upload "$ARCHIVE"
+    fi
+  fi
+fi
 ```
 
 Notes:
 
-- Glob is `*cluster-ftr*` rather than `cluster-ftr` to also match the CI-prefixed name (`job-<JOB>-worker-<N>-cluster-ftr`).
-- Optionally extend to `.es/*/logs/**/*` to capture every test cluster (e.g. `cluster-ftr-remote`, `cluster-ftr-local` for CCS) and any future `clusterName` we introduce.
-- These end up as **individual** Buildkite artifacts (Buildkite does not auto-zip). They can still be downloaded as a folder using:
-  - the Buildkite UI's "Download all" on the artifacts pane, or
-  - the agent CLI: `buildkite-agent artifact download '.es/*cluster-ftr*/logs/**/*' . --build <build-id>`.
-- This is the lowest-risk change, mirrors how `.es/es*.log` is already shipped, and makes ES logs available for **every** failing FTR config (not just the large-bundled-package test), which is generally useful for ES-heavy investigations.
+- The glob is `*cluster-ftr*` rather than `cluster-ftr` to match the CI-prefixed cluster name (`job-<JOB>-worker-<N>-cluster-ftr`); see "Where these files come from" above.
+- Bash brace-expanding `.es/*cluster-ftr*/logs` into the `tar` argv is fine — there is one such directory per job (parallelism is at the Buildkite-job level, not within a job). If we ever start launching multiple ES clusters per job, the tar will simply pack all of them.
+- Using `BUILDKITE_JOB_ID` in the archive name keeps artifacts unique per parallel job in the Buildkite UI.
+- Empty/no-match cases are handled gracefully (`compgen -G` short-circuits).
 
-### Option B — produce a single zip per job (matches @sdesalas' "zip format" wording)
+### Option B — keep the gate out of the shared script
 
-If we want one self-contained archive per failing job (which is what the comment literally asks for), tar/zip the folder before upload:
+If we want to keep `post_command.sh` strictly pipeline-agnostic, drive the upload from the snapshot-verify pipeline instead. Add a small `post-command` hook (or a wrapper script invoked by it) that lives under `.buildkite/scripts/pipelines/es_snapshots/` and is wired into `verify.yml`'s test steps via an `env:` flag, e.g. `UPLOAD_ES_NATIVE_LOGS=true`. Then `post_command.sh` only acts on that flag:
 
 ```bash
-if compgen -G '.es/*cluster-ftr*/logs' > /dev/null; then
+if [[ "${UPLOAD_ES_NATIVE_LOGS:-}" == "true" ]] && compgen -G '.es/*cluster-ftr*/logs' > /dev/null; then
   ARCHIVE=".es/cluster-ftr-logs-${BUILDKITE_JOB_ID}.tar.gz"
   tar -czf "$ARCHIVE" .es/*cluster-ftr*/logs 2>/dev/null || true
   buildkite-agent artifact upload "$ARCHIVE"
 fi
 ```
 
-Place this just after the existing `buildkite-agent artifact upload` call (or list `'.es/cluster-ftr-logs-*.tar.gz'` in `ARTIFACT_PATTERNS`). This produces one artifact per job, which is friendlier for the ES team to download and share — they get a single tarball rather than dozens of files spread across the artifact pane.
+…and the env var is set only by `verify.yml` (top-level `env:` block, or per-step), not by any other pipeline. This is a touch more code but keeps the shared script free of pipeline-slug `if`s. Either approach satisfies the "snapshot-verify only" constraint; Option A is the smaller change.
 
-### Pipeline-specific gating (optional)
+### Why not "individual files via glob"
 
-If we want this only on the snapshot-verify pipeline (to avoid noise / artifact storage cost on every PR build), gate by pipeline slug:
-
-```bash
-if [[ "${BUILDKITE_PIPELINE_SLUG:-}" == "kibana-elasticsearch-snapshot-verify" ]]; then
-  # ...tar + upload...
-fi
-```
-
-In practice I would not gate it. ES logs are already small relative to the screenshots/videos we routinely upload, and having them on PR builds would short-circuit a lot of cross-team debugging.
+Buildkite does not auto-zip artifacts. We could list `'.es/*cluster-ftr*/logs/**/*'` instead of tarring, but per-file uploads create dozens of artifacts per job spread across the UI, and the ES team explicitly asked for "zip format" — a single tarball per job matches that request and is the friendlier handoff.
 
 ## Compared to the change in the PR
 
@@ -162,14 +159,15 @@ That captures the queries Kibana **issues** (from the Kibana process), interleav
 
 ## Risks / things to watch
 
-- **Volume.** Native ES logs include `gc.log` and the structured server log; on a slow / failing run they can be tens of MB per job. On heavy parallel CI it's still small relative to screenshots/videos but worth keeping an eye on artifact storage.
-- **Path drift.** `cluster-ftr` is the current default name (`name = 'ftr'`). CCS configs use `cluster-ftr-local` / `cluster-ftr-remote`. Future test setups could pick other names. A `*` glob (`.es/*/logs/**/*`) is more durable than hard-coding `cluster-ftr`.
-- **Docker / serverless ES.** When ES is run via Docker (serverless test configs), kbn-es uses `extractAndArchiveLogs` to capture container `docker logs` to `.es/<container-name>-<id>.log` — already partially covered by the existing `.es/es*.log` glob. Native log files are inside the container in that case and are not on the host filesystem, so the new glob would simply produce no matches for serverless runs (safe).
-- **Permissions.** `kibana-elasticsearch-snapshot-verify` grants `BUILD_AND_READ` to `everyone`, so the ES team already has access to download artifacts from those builds.
+- **Scope.** The change must be scoped to `kibana-elasticsearch-snapshot-verify` only. Editing the shared `ARTIFACT_PATTERNS` list directly would leak ES log uploads into every PR, on-merge, flaky-test-runner, and quality-gate run, which is not what we want.
+- **Path drift.** `cluster-ftr` is the current default name (`name = 'ftr'` in `run_elasticsearch.ts`). CCS configs use `cluster-ftr-local` / `cluster-ftr-remote`. The `*cluster-ftr*` glob covers all of these without picking up unrelated `.es/` subfolders.
+- **Docker / serverless ES.** When ES is run via Docker (serverless configs), kbn-es uses `extractAndArchiveLogs` to capture container `docker logs` to `.es/<container-name>-<id>.log` — already partially covered by the existing `.es/es*.log` glob. Native log files are inside the container in that case and are not on the host filesystem, so the new tar would simply produce no matches for serverless runs (safe — `compgen -G` short-circuits).
+- **Permissions.** `kibana-elasticsearch-snapshot-verify` grants `BUILD_AND_READ` to `everyone`, so the ES team can download artifacts from those builds.
+- **Volume.** Native ES logs (`gc.log`, structured server log, slow logs) can be tens of MB per job under load. Tarring keeps it to one compressed artifact per job; on a snapshot-verify run that's acceptable.
 
 ## Suggested response on the PR
 
-> Yes, this is straightforward — `post_command.sh` already uploads `.es/es*.log`; we'd just add a glob for the native ES log directory (`.es/*cluster-ftr*/logs/**/*`, or `.es/*/logs/**/*` to also cover CCS/multi-node cases). The CI-side cluster name has a `CI_PARALLEL_PROCESS_PREFIX`, so the glob has to accept `job-…-cluster-ftr` as well as bare `cluster-ftr`. If you want a single tarball per job (the "zip format" you mentioned), I'd add a small `tar -czf .es/cluster-ftr-logs-${BUILDKITE_JOB_ID}.tar.gz .es/*cluster-ftr*/logs` step right next to the existing artifact upload. Happy to land this as a separate PR so it benefits every FTR run, not just this one — and then we can drop the `elasticsearch.query` Kibana-side logger from this config.
+> Yes, this is straightforward — but I'd scope it to `kibana-elasticsearch-snapshot-verify` only, not to every FTR run. The plan: gate on `BUILDKITE_PIPELINE_SLUG == 'kibana-elasticsearch-snapshot-verify'` and `tar -czf .es/cluster-ftr-logs-${BUILDKITE_JOB_ID}.tar.gz .es/*cluster-ftr*/logs` next to the existing artifact upload (the `*cluster-ftr*` glob is needed because CI prefixes the cluster name with `job-<JOB>-worker-<N>-`). That gives the ES team a single zipped artifact per job from the snapshot-verify pipeline, without changing artifact behaviour anywhere else. If we land that, we can drop the `elasticsearch.query` Kibana-side logger from this config — the native ES server log inside that tarball gives the same information in the format the ES team is already used to.
 
 ## File references
 
