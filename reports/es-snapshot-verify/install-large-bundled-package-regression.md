@@ -220,6 +220,97 @@ The CI failure timeline (12 May onwards) and the local reproduction both point a
 
 ---
 
+## Raw ES HTTP calls and expected timings (normal / 11 May snapshot)
+
+This is the wire-level view: every HTTP request Kibana (or the FTR `es` service) makes to Elasticsearch during one iteration of the test, with payload shape and the per-call wall-clock you should expect on the **good** (11 May) snapshot. The good-snapshot baseline for the whole `it` block is ~30 s; the numbers below add up to roughly that.
+
+`{id}` is a typed SO id (e.g. `alert:9c1a…`, `security-rule:abc…`), `{ts}` is an ISO timestamp.
+All SO writes go through the SavedObjects API which uses `?refresh=wait_for` by default — that puts a floor of one ES refresh interval (`index.refresh_interval`, default 1 s; lower on `.kibana*` system indices) on each write batch.
+
+Numbers are order-of-magnitude estimates from a quiet Apple Silicon laptop with a single-node cluster on local SSD; CI is usually within 2–3× of these.
+
+### Phase A — `beforeEach`
+
+| # | Method + URL | Payload sketch | Normal-case latency |
+|---|---|---|---|
+| A1 | `POST /.kibana_alerting_cases/_search?size=10000` (via `deleteAllRules` → `bulk_actions/route.ts` → `fetchRulesByQueryOrIds`) | `{ "query": { "bool": { "filter": [{ "term": { "type": "alert" } }, { "term": { "alert.alertTypeId": "siem.<ruleType>" } } ] } }, "_source": [...] }` — empty result on first iter | 10–30 ms |
+| A2 | *(skipped first iter; otherwise `POST /_bulk?refresh=wait_for` with up to N delete ops for `.kibana_alerting_cases` + `.kibana_task_manager`)* | n/a | n/a here |
+| A3 | `POST /.kibana_security_solution/_delete_by_query?wait_for_completion=true&refresh=true` | `{ "query": { "query_string": { "query": "type:security-rule" } } }` — first iter matches 0 docs | 50–200 ms (empty); seconds when populated |
+| A4 | `POST /.kibana_alerting_cases/_search?size=1` (Fleet/SO find for `epm-packages` precursor — varies) | minimal | 5–20 ms |
+| A5 | `GET /.kibana/_doc/epm-packages:security_detection_engine` (Fleet `getInstallation`) | none | 5–20 ms |
+| A6 | If pkg installed: a fan-out of `DELETE /_ingest/pipeline/<id>`, `DELETE /_index_template/<id>`, `DELETE /_component_template/<id>`, `DELETE /_ilm/policy/<id>`, plus SO `delete`s for `epm-packages-assets` and `kibana_assets` (`security-rule`, dashboards, lens, etc.) | empty bodies; tens to low hundreds of small requests | 1–5 s total (mostly no-op since A3 already emptied `security-rule`) |
+| A7 | `POST /.kibana,.kibana_alerting_cases,.kibana_security_solution,.kibana_task_manager,.kibana_ingest,…/_refresh?ignore_unavailable=true` (via `refreshSavedObjectIndices`, ×4 across the iteration) | none | 50–200 ms each → ~0.3–0.8 s aggregate |
+| A8 | `POST /.kibana,…/_cache/clear?ignore_unavailable=true` (×4) | none | 20–100 ms each → ~0.1–0.4 s aggregate |
+
+**Phase A subtotal: ~2–6 s** (dominated by Fleet remove fan-out).
+
+### Phase B — pre-install `GET /api/detection_engine/rules/prepackaged/_status`
+
+After A3 the package zip is still on disk and gets re-installed lazily by `ensureLatestRulesPackageInstalled` once during the install handler (Phase C). For the **pre-install** status call here, only the SO finds run; the `security-rule` index is empty so most aggregations return 0 buckets.
+
+| # | Method + URL | Payload sketch | Normal-case latency |
+|---|---|---|---|
+| B1 | `POST /.kibana_security_solution/_search?size=0` (`fetchLatestAssets` aggregation) | `{ "query": { "bool": { "filter": [{ "term": { "type": "security-rule" } }, { "bool": { "must_not": [{ "term": { "security-rule.attributes.deprecated": true } }] } } ] } }, "aggs": { "rules": { "terms": { "field": "security-rule.attributes.rule_id", "size": 10000 }, "aggs": { "latest_version": { "top_hits": { "size": 1, "sort": [{ "security-rule.version": "desc" }] } } } } } }` — 0 buckets pre-install | 20–80 ms |
+| B2 | `POST /.kibana_alerting_cases/_search?size=1` (`findRules` with `params.immutable: false`) | `{ "query": { "bool": { "filter": [{ "term": { "type": "alert" } }, { "term": { "alert.attributes.params.immutable": false } } ] } } }` | 10–30 ms |
+| B3 | `POST /.kibana_alerting_cases/_search?size=10000` (`getExistingPrepackagedRules`, `params.immutable: true`) | same shape with `immutable: true`; 0 hits pre-install | 10–40 ms |
+| B4 | `POST /.kibana/_search?size=10000` (`checkTimelinesStatus`, `siem-ui-timeline` immutable templates) | `{ "query": { "bool": { "filter": [{ "term": { "type": "siem-ui-timeline" } }, { "term": { "siem-ui-timeline.attributes.timelineType": "template" } }, { "term": { "siem-ui-timeline.attributes.status": "immutable" } } ] } } }` | 10–40 ms |
+
+**Phase B subtotal: ~50–200 ms.**
+
+### Phase C — install `PUT /api/detection_engine/rules/prepackaged` (the slow one)
+
+This is where ≥ 95 % of the iteration's wall-clock lives even on the good snapshot.
+
+| # | Method + URL | Payload sketch | Normal-case latency |
+|---|---|---|---|
+| C1 | `POST /.kibana/_create/exception-list:endpoint_list` (idempotent; conflict → ignored) | endpoint-list SO body, ~1 KB | 10–40 ms (or 5–10 ms with conflict short-circuit) |
+| C2 | `POST /.kibana_security_solution/_search?size=0` (`ensureLatestRulesPackageInstalled` → `fetchLatestAssets({ size: 1 })`) | same agg as B1 but `terms.size: 1` — still 0 buckets at this point | 20–80 ms |
+| C3 | **Fleet install of bundled package** (triggered by C2 returning 0). Bundled mode → no EPR HTTP, but heavy local-zip → ES asset install. Issues many requests against `.kibana`: bulk_create of `epm-packages` + `epm-packages-assets` SOs, plus PUT of index templates, component templates, ingest pipelines, ILM policy, and ~30 000 `security-rule` SO writes via SO `bulk_create`. | Many `POST /_bulk?refresh=wait_for` chunks (default chunk = 1 000 SOs) against `.kibana_security_solution`; each chunk body is JSON ND, ~1–3 MB per chunk. Plus `PUT /_index_template/...`, `PUT /_component_template/...`, `PUT /_ingest/pipeline/...`, `PUT /_ilm/policy/...` — single-shot, small. | **~10–20 s** (≈30 chunks × 300–600 ms each, gated by `refresh=wait_for`). This is the second-heaviest contributor to the 30 s baseline. |
+| C4 | `POST /.kibana_security_solution/_search?size=0` (`fetchLatestAssets()` full) | same agg as B1, `terms.size: 10 000`, now matches **30 000 docs** and returns **3 000 buckets**, each with a `top_hits.size:1` document (~2–4 KB per hit) — total response ~10–20 MB | **1–5 s** on the good snapshot. *Prime suspect for the regression: a slowdown in `terms` + `top_hits` aggregation on this index can directly explain the ≥ 12× cliff.* |
+| C5 | `POST /.kibana_alerting_cases/_search?size=10000` (`getExistingPrepackagedRules`) | same as B3; still 0 hits | 10–40 ms |
+| C6 | **`POST /.kibana_alerting_cases/_create/alert:{uuid}?refresh=wait_for` × 3 000** (issued through `initPromisePool`, `concurrency = MAX_RULES_TO_UPDATE_IN_PARALLEL = 20`) | per request: `{ "type": "alert", "alert": { "name": ..., "alertTypeId": "siem.queryRule" / siem.<type>, "consumer": "siem", "params": { ...rule params... , "immutable": true, "ruleId": "..." }, "schedule": { "interval": "5m" }, "actions": [], "enabled": false, "tags": [...], "createdBy": "...", "updatedBy": "...", "apiKey": null, ... }, "references": [], "coreMigrationVersion": "...", "typeMigrationVersion": "10.x.x", "updated_at": "{ts}", "created_at": "{ts}" }` — ~2–6 KB per body | per-request 30–150 ms (dominated by `refresh=wait_for` waiting on the next 1 s refresh window). At concurrency 20 → ~3 000 / 20 = 150 sequential waves × 80–120 ms ≈ **12–18 s** total. **Heaviest single contributor** to the 30 s baseline. |
+| C7 | *(skipped — prebuilt rules install with `enabled: false`, so no Task Manager scheduling)*  Would otherwise be `POST /.kibana_task_manager/_create/task:{uuid}?refresh=wait_for` × N. | n/a | 0 ms here |
+| C8 | `POST /.kibana/_search` + a small handful of `POST /.kibana/_create/siem-ui-timeline:{id}` for the bundled timeline templates (and any `siem-ui-timeline-note` / `…-pinned-event` they reference) | ~5–20 small SO writes, ~1–2 KB each | 50–300 ms aggregate |
+| C9 | `upgradePrebuiltRules` — no-op on a fresh install (all rules came in via C6) | none | 0 ms |
+| C10 | `POST /.kibana*/_refresh?ignore_unavailable=true` + `POST /.kibana*/_cache/clear?ignore_unavailable=true` (called from `installPrebuiltRulesAndTimelines` test helper after the HTTP response) | none | ~100–300 ms aggregate |
+
+**Phase C subtotal: ~25–35 s on the good snapshot.** On the bad snapshot this balloons past 360 s and the test is killed by Mocha.
+
+### Phase D — post-install `GET /api/detection_engine/rules/prepackaged/_status`
+
+Same shape as Phase B but with populated indices.
+
+| # | Method + URL | Payload sketch | Normal-case latency |
+|---|---|---|---|
+| D1 | `POST /.kibana_security_solution/_search?size=0` (full `fetchLatestAssets()` agg) | as C4 — 3 000 buckets, ~10–20 MB response | **1–5 s** (same prime-suspect call as C4) |
+| D2 | `POST /.kibana_alerting_cases/_search?size=1` (`findRules` `immutable: false`) | as B2; 0 hits (we only installed immutable rules) | 10–30 ms |
+| D3 | `POST /.kibana_alerting_cases/_search?size=10000` (`getExistingPrepackagedRules`) | as B3; now returns **3 000 alert SOs** (~2–6 KB each, ~10 MB response) | 100–500 ms |
+| D4 | `POST /.kibana/_search?size=10000` (`checkTimelinesStatus`) | as B4 | 10–40 ms |
+| D5 | `POST /.kibana*/_refresh` + `POST /.kibana*/_cache/clear` (×2, from the helper) | none | ~150–400 ms |
+
+**Phase D subtotal: ~1.5–6 s.**
+
+### Roll-up
+
+| Phase | Calls per iteration | Expected ES wall-clock (good snapshot) |
+|---|---|---|
+| A — `beforeEach` | ~50–200 (mostly Fleet fan-out) | 2–6 s |
+| B — `_status` pre-install | 4 | 50–200 ms |
+| C — `PUT prepackaged` install | ~3 050 (3 000 of them are C6) | 25–35 s |
+| D — `_status` post-install | 5 | 1.5–6 s |
+| **Total** | **~3 100** | **~30–45 s** (matches observed ~30 s `it` runtime) |
+
+### Where the time most plausibly leaks on the bad snapshot
+
+Two calls dominate the budget and are the only places a single-call slowdown can credibly cost the ≥ 330 s the test loses:
+
+1. **C6 (`_create alert` × 3 000 with `refresh=wait_for`)** — anything that lengthens the per-write critical path (translog fsync, refresh, validation, mapping update, security/audit) by even 30–50 ms per write turns the ~15 s budget into >300 s at concurrency 20.
+2. **C4 / D1 (`terms` + `top_hits` agg on `.kibana_security_solution`)** — a regression in terms/top_hits or in the underlying doc-values reads on a 30 000-doc system index could push these from ~1–5 s to tens of seconds each, repeated 2× (C4 + D1, plus the smaller C2 and B1 variants).
+
+C3 (Fleet bulk SO install) is also a candidate (~10–20 s of writes against `.kibana_security_solution`), but its dominant primitive is `_bulk` with the SO `bulk_create` chunker, so a regression there should affect a much wider set of Kibana ESS tests — making C4/D1 (aggregation regression) or C6 (single-doc `_create` with `refresh=wait_for`) the more parsimonious explanations for a regression that only this test trips so hard.
+
+---
+
 ## Next steps for the investigator
 
 1. **Bisect the ES commit range** linked above. The range is `main` between the two snapshot SHAs and is small enough to skim diffs by hand (start with anything touching bulk indexing, mappings on `.kibana_alerting_cases`, security plugin, ILM, or analyzer/lucene upgrade-the-data flows). If you want to bisect by running ES locally, build ES from each candidate SHA and point the FTR config at the resulting tarball (see `src/platform/packages/shared/kbn-es` for how `ES_SNAPSHOT_MANIFEST` is consumed).
