@@ -311,6 +311,87 @@ C3 (Fleet bulk SO install) is also a candidate (~10–20 s of writes against `.k
 
 ---
 
+## HAR captures of Kibana → ES traffic
+
+Two scrubbed HAR captures of the Kibana → Elasticsearch wire traffic for one full iteration of the test are committed next to this report:
+
+| File | Size | HAR entries (`log.entries.length`) | Test outcome |
+| --- | --- | --- | --- |
+| [`may11.scrubbed.har.zip`](./may11.scrubbed.har.zip) | 8.3 MB zipped (283 MB raw) | **24 048** | passes in ~38 s |
+| [`may12.scrubbed.har.zip`](./may12.scrubbed.har.zip) | 2.4 MB zipped (72 MB raw)  | **1 520**  | times out at 360 s |
+
+### How they were captured
+
+A reverse-proxy mitmdump was inserted between Kibana and Elasticsearch:
+
+- ES kept running on `:9220` (FTR default), under HTTPS with the FTR self-signed cert.
+- `mitmdump --mode reverse:https://localhost:9220 --listen-port 9221 --ssl-insecure --set http2=false --set hardump=<path>.har` listened on `:9221` and forwarded to `:9220`.
+- Kibana was pointed at `https://localhost:9221` with `--elasticsearch.ssl.verificationMode=none`, leaving the FTR `es` service still talking to `:9220` directly (so direct ES calls made by FTR helpers do *not* appear in these HARs — only the calls Kibana itself makes).
+- During Kibana startup, mitmdump ran with `hardump` unset, then was `SIGINT`ed and restarted with `--set hardump=...` immediately before launching the FTR runner. This deliberately excludes Kibana startup / plugin bootstrap traffic from the capture so the file represents only the test iteration. Each capture covers exactly one `it('should install a package containing 15000 prebuilt rules without crashing')` execution including its `beforeEach` / `afterEach` hooks.
+- mitmdump flushes the HAR on `SIGINT`. Both files were then run through `./scrub_har.py` (in this same folder) which redacts `Authorization` header values and removes `traceparent` / `tracestate` headers (everything else, including timings, URLs, payloads, response bodies, is preserved). Finally `zip` was used since HAR JSON compresses ~35×.
+
+The plumbing for re-capturing these is in-tree and disabled-only:
+
+- `x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/prebuilt_rules/common/configs/edge_cases/ess_air_gapped_with_bundled_large_package.proxied.config.ts` — a thin wrapper config that filters out the inherited `--elasticsearch.hosts=...` arg and re-adds it pointing at `https://localhost:${ES_PROXY_PORT:-19220}`.
+- Listed under `disabled:` in `.buildkite/ftr-manifests/ftr_security_stateful_configs.yml` so `functional_tests_server` will load it locally but it never runs on CI.
+
+### What the entry counts already tell us
+
+**1 520 entries vs 24 048 entries in the same 6-minute wall-clock window is a ~16× reduction in completed Kibana → ES round-trips.** mitmdump only emits a HAR entry when the *response* is received, so any request still in-flight when the timeout fires (and mitm is killed) is silently dropped from the file. That makes the May 12 HAR a snapshot of "everything Kibana managed to actually finish talking to ES about before the test was killed".
+
+This is consistent with the C6 + C4/D1 hypothesis above and is *inconsistent* with a uniform per-request slowdown:
+
+- A uniform 10–20× per-call slowdown would give us roughly the same number of entries, just with each entry's `time` field much larger.
+- A small number of long-pole calls hanging for tens of seconds each, holding up the remainder, would give us **far fewer** completed entries — which is what we see.
+
+The most likely "long pole" candidates are still the same two from the wire-level analysis above:
+
+1. **C6** — `_create alert` × 3 000 with `refresh=wait_for`. If a handful of these stall at the refresh step or the security/audit pipeline, the `initPromisePool(concurrency=20)` wave queues up behind them and no further C6 entries land in the HAR.
+2. **C4 / D1** — `terms` + `top_hits` aggregation on `.kibana_security_solution`. If this single call goes from ~1–5 s to >360 s, the test never even gets to start C6, and the HAR would only contain phases A + B + the front portion of C up to the hung agg.
+
+The exact shape of the May 12 HAR (does it include any C6 entries at all? does C4 appear with a `time` close to 360 000 ms?) immediately distinguishes between these two hypotheses.
+
+### Suggested analysis pass on the HARs
+
+Quick ways to extract the diagnostic signal without loading the full file into a browser (the raw 283 MB May 11 HAR will stall most HAR viewers — work with the scrubbed zips or unzip into a tmp dir):
+
+```bash
+# Unzip into a scratch dir (raw .har is .gitignored)
+mkdir -p .knowledge/reports/es-snapshot-verify/har && \
+  unzip -p .knowledge/reports/es-snapshot-verify/may12.scrubbed.har.zip > \
+            .knowledge/reports/es-snapshot-verify/har/may12.scrubbed.har
+
+# Top 20 slowest requests with method + URL
+jq -r '.log.entries
+  | sort_by(-.time)
+  | .[0:20]
+  | .[]
+  | "\(.time | tostring | .[:8])ms  \(.request.method) \(.request.url)"' \
+  .knowledge/reports/es-snapshot-verify/har/may12.scrubbed.har
+
+# Count requests by method + URL-stem (drop query strings + numeric ids)
+jq -r '.log.entries
+  | map(.request.url
+        | sub("\\?.*$"; "")
+        | sub("/[0-9a-f]{8}-[0-9a-f-]+"; "/{uuid}")
+        | sub("/_create/[a-z\\-]+:.*$"; "/_create/{soid}"))
+  | group_by(.)
+  | map({ url: .[0], count: length })
+  | sort_by(-.count)
+  | .[]
+  | "\(.count)  \(.url)"' \
+  .knowledge/reports/es-snapshot-verify/har/may12.scrubbed.har
+
+# Show the timing of the LAST entry in the bad-run HAR (i.e. the last thing Kibana
+# heard back from ES before the test gave up):
+jq '.log.entries[-1] | { time: .time, method: .request.method, url: .request.url, status: .response.status }' \
+  .knowledge/reports/es-snapshot-verify/har/may12.scrubbed.har
+```
+
+The same queries run against `may11.scrubbed.har` give the baseline shape; diffing the top-slowest lists between the two HARs is the most direct way to pin the regressing ES call.
+
+---
+
 ## Next steps for the investigator
 
 1. **Bisect the ES commit range** linked above. The range is `main` between the two snapshot SHAs and is small enough to skim diffs by hand (start with anything touching bulk indexing, mappings on `.kibana_alerting_cases`, security plugin, ILM, or analyzer/lucene upgrade-the-data flows). If you want to bisect by running ES locally, build ES from each candidate SHA and point the FTR config at the resulting tarball (see `src/platform/packages/shared/kbn-es` for how `ES_SNAPSHOT_MANIFEST` is consumed).
@@ -342,6 +423,57 @@ time node scripts/functional_test_runner \
   --config x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/prebuilt_rules/common/configs/edge_cases/ess_air_gapped_with_bundled_large_package.config.ts
 
 # === Cleanup between snapshots (if Ctrl-C didn't kill ES/Kibana) ===
-lsof -i :9220 -i :5620 -n -P | awk 'NR>1 && /LISTEN/ {print $2}' | xargs -r kill -9
+lsof -i :9220 -i :5620 -i :9221 -n -P | awk 'NR>1 && /LISTEN/ {print $2}' | xargs -r kill -9
 ps -ef | grep -E 'cluster-ftr|controller.app|functional_tests_server' | grep -v grep | awk '{print $2}' | xargs -r kill -9
+```
+
+### Re-capturing a HAR (Kibana → ES traffic via mitmdump)
+
+Three terminals: mitm, FTR server, FTR runner. Replace the manifest URL to flip snapshots; everything else stays identical.
+
+```bash
+# === Terminal A (mitm warm-up; NOT recording yet) ===
+# Lets Kibana boot and talk to ES, but does not pollute the HAR with startup traffic.
+mitmdump \
+  --mode reverse:https://localhost:9220 \
+  --listen-port 9221 \
+  --ssl-insecure \
+  --set http2=false \
+  --set flow_detail=0 \
+  -q
+
+# === Terminal B (FTR server, proxied) ===
+export ES_SNAPSHOT_MANIFEST="https://storage.googleapis.com/kibana-ci-es-snapshots-daily/9.5.0/archives/20260511-022512_32342fb5/manifest.json"   # or the 12 May URL
+export NODE_OPTIONS=--max-old-space-size=8192
+export ES_PROXY_PORT=9221
+node scripts/functional_tests_server \
+  --config x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/prebuilt_rules/common/configs/edge_cases/ess_air_gapped_with_bundled_large_package.proxied.config.ts
+# Wait for: [INFO ][status] Kibana is now available
+
+# === Back to Terminal A — Ctrl-C, then relaunch WITH HAR capture ===
+# Kibana's ES client will reconnect through the new mitm within ~1 s.
+mitmdump \
+  --mode reverse:https://localhost:9220 \
+  --listen-port 9221 \
+  --ssl-insecure \
+  --set http2=false \
+  --set flow_detail=0 \
+  --set hardump=$PWD/.knowledge/reports/es-snapshot-verify/may11.har \
+  -q
+
+# === Terminal C (runner — uses the proxied config so the URL discovery matches) ===
+export NODE_OPTIONS=--max-old-space-size=8192
+time node scripts/functional_test_runner \
+  --bail \
+  --config x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/prebuilt_rules/common/configs/edge_cases/ess_air_gapped_with_bundled_large_package.proxied.config.ts
+
+# When the runner finishes (pass or timeout):
+#   1. Ctrl-C terminal A — mitmdump flushes the HAR on SIGINT.
+#   2. Scrub + zip:
+python3 .knowledge/reports/es-snapshot-verify/scrub_har.py \
+  .knowledge/reports/es-snapshot-verify/may11.har
+zip -j .knowledge/reports/es-snapshot-verify/may11.scrubbed.har.zip \
+       .knowledge/reports/es-snapshot-verify/may11.scrubbed.har
+rm .knowledge/reports/es-snapshot-verify/may11.har \
+   .knowledge/reports/es-snapshot-verify/may11.scrubbed.har
 ```

@@ -1,4 +1,4 @@
 # Raw and scrubbed HAR captures are large mitmproxy exports.
 # Only the matching *.har.zip artifacts (produced by ./scrub_har.py + zip)
 # should be committed; keep the .har files local.
-*.har
+har/
