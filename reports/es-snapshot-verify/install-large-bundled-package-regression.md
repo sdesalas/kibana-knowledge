@@ -2,7 +2,9 @@
 
 **Status:** Reproducible locally, root cause **not yet identified**. Suspected to be an Elasticsearch change that landed between the 11 May and 12 May 2026 daily ES snapshots.
 
-**First failing pipeline:** `kibana-elasticsearch-snapshot-verify`, starting **12 May 2026**.
+**First failing pipeline:** [`kibana-elasticsearch-snapshot-verify`](https://buildkite.com/elastic/kibana-elasticsearch-snapshot-verify/builds?branch=main), starting **12 May 2026**.
+
+**Tracking issue:** [`elastic/kibana#270748`](https://github.com/elastic/kibana/issues/270748).
 
 **Failing job / test:**
 
