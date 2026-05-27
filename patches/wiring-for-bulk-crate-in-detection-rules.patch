@@ -1,0 +1,1262 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts b/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
+index 1dd559c437e..697bd027353 100644
+--- a/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
++++ b/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
+@@ -22,6 +22,16 @@ export const allowedExperimentalValues = Object.freeze({
+    */
+   previewTelemetryUrlEnabled: false,
+ 
++  /**
++   * When enabled, prebuilt rule installation (POST .../prebuilt_rules/installation/_perform)
++   * and rule import (POST .../rules/_import) use the new alerting `rulesClient.bulkCreateRules`
++   * path, which handles both disabled and enabled rules (API key minting + task scheduling)
++   * in a single bulk call instead of the per-rule create loop.
++   *
++   * Release: TBD
++   */
++  bulkCreateRulesEnabled: false,
++
+   /**
+    * Enables extended rule execution logging to Event Log. When this setting is enabled:
+    * - Rules write their console error, info, debug, and trace messages to Event Log,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
+index 57218d0c3f2..3e803b3ec7d 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
+@@ -110,23 +110,33 @@ export const performRuleInstallationHandler = async (
+       ruleInstallQueue.push(...(await excludeLicenseRestrictedRules(allInstallableRules, mlAuthz)));
+     }
+ 
+-    const BATCH_SIZE = 100;
+-    while (ruleInstallQueue.length > 0) {
+-      const rulesToInstall = ruleInstallQueue.splice(0, BATCH_SIZE);
+-      const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
+-
+-      const { results, errors } = await createPrebuiltRules(
+-        detectionRulesClient,
+-        ruleAssets,
+-        logger
+-      );
+-
+-      const batchInstalledRules = results.map(({ result: rule }) =>
+-        pick(rule, ['id', 'rule_id', 'version'])
++    const { bulkCreateRulesEnabled } = ctx.securitySolution.getConfig().experimentalFeatures;
++    if (bulkCreateRulesEnabled) {
++      const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(ruleInstallQueue);
++      const { results, errors } = await detectionRulesClient.bulkCreatePrebuiltRules({
++        rules: ruleAssets,
++      });
++      installedRules.push(
++        ...results.map(({ result: rule }) => pick(rule, ['id', 'rule_id', 'version']))
+       );
+-
+-      installedRules.push(...batchInstalledRules);
+       ruleErrors.push(...errors);
++    } else {
++      const BATCH_SIZE = 100;
++      while (ruleInstallQueue.length > 0) {
++        const rulesToInstall = ruleInstallQueue.splice(0, BATCH_SIZE);
++        const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
++
++        const { results, errors } = await createPrebuiltRules(
++          detectionRulesClient,
++          ruleAssets,
++          logger
++        );
++
++        installedRules.push(
++          ...results.map(({ result: rule }) => pick(rule, ['id', 'rule_id', 'version']))
++        );
++        ruleErrors.push(...errors);
++      }
+     }
+ 
+     const { error: timelineInstallationError } = await performTimelinesInstallation(
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+index 648aba431cf..f6413ba3051 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+@@ -187,6 +187,7 @@ export const importRulesRoute = (
+                 ctx.securitySolution.getCheckOsqueryResponseActionAuthz(),
+             });
+ 
++          const experimentalFeatures = ctx.securitySolution.getConfig().experimentalFeatures;
+           const ruleChunks = chunk(CHUNK_PARSED_OBJECT_SIZE, validatedResponseActionsRules);
+ 
+           const importRuleResponse = await importRules({
+@@ -195,6 +196,7 @@ export const importRulesRoute = (
+             allowMissingConnectorSecrets: !!actionConnectors.length,
+             ruleSourceImporter,
+             detectionRulesClient,
++            experimentalFeatures,
+           });
+ 
+           const parseErrors = parsedRuleErrors.map((error) =>
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
+index bb6796e6073..8f9642f4f65 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
+@@ -13,6 +13,7 @@ const createDetectionRulesClientMock = () => {
+   const mocked: DetectionRulesClientMock = {
+     createCustomRule: jest.fn(),
+     createPrebuiltRule: jest.fn(),
++    bulkCreatePrebuiltRules: jest.fn().mockResolvedValue({ results: [], errors: [] }),
+     updateRule: jest.fn(),
+     patchRule: jest.fn(),
+     deleteRule: jest.fn(),
+@@ -21,6 +22,7 @@ const createDetectionRulesClientMock = () => {
+     revertPrebuiltRule: jest.fn(),
+     importRule: jest.fn(),
+     importRules: jest.fn(),
++    bulkImportRules: jest.fn().mockResolvedValue({ responses: [] }),
+     getRuleCustomizationStatus: jest.fn(),
+     getHistoryForRule: jest.fn(),
+   };
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_create_prebuilt_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_create_prebuilt_rules.test.ts
+new file mode 100644
+index 00000000000..e2e253a29d2
+--- /dev/null
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_create_prebuilt_rules.test.ts
+@@ -0,0 +1,137 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { rulesClientMock } from '@kbn/alerting-plugin/server/mocks';
++import type { ActionsClient } from '@kbn/actions-plugin/server';
++import { savedObjectsClientMock } from '@kbn/core/server/mocks';
++import { licenseMock } from '@kbn/licensing-plugin/common/licensing.mock';
++
++import { getCreateRulesSchemaMock } from '../../../../../../common/api/detection_engine/model/rule_schema/mocks';
++import { buildMlAuthz } from '../../../../machine_learning/authz';
++import { throwAuthzError } from '../../../../machine_learning/validation';
++import { createDetectionRulesClient } from './detection_rules_client';
++import type { IDetectionRulesClient } from './detection_rules_client_interface';
++import { createProductFeaturesServiceMock } from '../../../../product_features_service/mocks';
++import { getMockRulesAuthz } from '../../__mocks__/authz';
++
++jest.mock('../../../../machine_learning/authz');
++jest.mock('../../../../machine_learning/validation');
++
++describe('DetectionRulesClient.bulkCreatePrebuiltRules', () => {
++  let rulesClient: ReturnType<typeof rulesClientMock.create>;
++  let detectionRulesClient: IDetectionRulesClient;
++
++  const mlAuthz = (buildMlAuthz as jest.Mock)();
++  const rulesAuthz = getMockRulesAuthz();
++  const actionsClient: jest.Mocked<ActionsClient> = {
++    isSystemAction: jest.fn(),
++  } as unknown as jest.Mocked<ActionsClient>;
++
++  beforeEach(() => {
++    rulesClient = rulesClientMock.create();
++    (throwAuthzError as jest.Mock).mockReset();
++    detectionRulesClient = createDetectionRulesClient({
++      actionsClient,
++      rulesClient,
++      mlAuthz,
++      rulesAuthz,
++      savedObjectsClient: savedObjectsClientMock.create(),
++      license: licenseMock.createLicenseMock(),
++      productFeaturesService: createProductFeaturesServiceMock(),
++    });
++  });
++
++  it('issues a single bulkCreateRules call with disabled, immutable rules and emits { id, rule_id, version } pairs', async () => {
++    const asset1 = { ...getCreateRulesSchemaMock(), version: 1, rule_id: 'rule-1' };
++    const asset2 = { ...getCreateRulesSchemaMock(), version: 2, rule_id: 'rule-2' };
++
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
++      const ids = args.rules.map((r) => (r.options as { id: string }).id);
++      return { successfulIds: ids, errors: [], total: ids.length };
++    });
++
++    const { results, errors } = await detectionRulesClient.bulkCreatePrebuiltRules({
++      rules: [asset1, asset2],
++    });
++
++    expect(rulesClient.bulkCreateRules).toHaveBeenCalledTimes(1);
++    const callArgs = rulesClient.bulkCreateRules.mock.calls[0][0];
++    expect(callArgs.rules).toHaveLength(2);
++    expect(callArgs.rules.every((r) => r.data.enabled === false)).toBe(true);
++    expect(callArgs.rules.every((r) => r.data.params.immutable === true)).toBe(true);
++    expect(errors).toEqual([]);
++    expect(results).toHaveLength(2);
++    const callIds = callArgs.rules.map((r) => (r.options as { id: string }).id);
++    expect(results[0].result).toEqual({ id: callIds[0], rule_id: 'rule-1', version: 1 });
++    expect(results[1].result).toEqual({ id: callIds[1], rule_id: 'rule-2', version: 2 });
++  });
++
++  it('issues a single bulkCreateRules call regardless of input size (alerting batches internally)', async () => {
++    const assets = Array.from({ length: 250 }, (_, i) => ({
++      ...getCreateRulesSchemaMock(),
++      version: 1,
++      rule_id: `rule-${i}`,
++    }));
++
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
++      successfulIds: args.rules.map((r) => (r.options as { id: string }).id),
++      errors: [],
++      total: args.rules.length,
++    }));
++
++    const { results, errors } = await detectionRulesClient.bulkCreatePrebuiltRules({
++      rules: assets,
++    });
++
++    expect(rulesClient.bulkCreateRules).toHaveBeenCalledTimes(1);
++    expect(results).toHaveLength(250);
++    expect(errors).toEqual([]);
++  });
++
++  it('reports per-rule errors from the alerting layer', async () => {
++    const asset = { ...getCreateRulesSchemaMock(), version: 1, rule_id: 'rule-1' };
++
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
++      const id = (args.rules[0].options as { id: string }).id;
++      return {
++        successfulIds: [],
++        errors: [{ message: 'boom', status: 500, rule: { id, name: asset.name } }],
++        total: 1,
++      };
++    });
++
++    const { results, errors } = await detectionRulesClient.bulkCreatePrebuiltRules({
++      rules: [asset],
++    });
++
++    expect(results).toEqual([]);
++    expect(errors).toHaveLength(1);
++    expect(errors[0].item).toBe(asset);
++    expect(errors[0].error.message).toBe('boom');
++  });
++
++  it('returns ML-auth failures as per-rule errors without calling bulkCreateRules', async () => {
++    const asset = { ...getCreateRulesSchemaMock(), version: 1, rule_id: 'rule-1' };
++    (throwAuthzError as jest.Mock).mockImplementation(() => {
++      throw new Error('ML auth denied');
++    });
++
++    const { results, errors } = await detectionRulesClient.bulkCreatePrebuiltRules({
++      rules: [asset],
++    });
++
++    expect(rulesClient.bulkCreateRules).not.toHaveBeenCalled();
++    expect(results).toEqual([]);
++    expect(errors[0].error.message).toBe('ML auth denied');
++  });
++
++  it('returns empty result for empty input', async () => {
++    const result = await detectionRulesClient.bulkCreatePrebuiltRules({ rules: [] });
++    expect(result).toEqual({ results: [], errors: [] });
++    expect(rulesClient.bulkCreateRules).not.toHaveBeenCalled();
++  });
++});
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_import_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_import_rules.test.ts
+new file mode 100644
+index 00000000000..6bda08465bf
+--- /dev/null
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_import_rules.test.ts
+@@ -0,0 +1,240 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { rulesClientMock } from '@kbn/alerting-plugin/server/mocks';
++import { actionsClientMock } from '@kbn/actions-plugin/server/actions_client/actions_client.mock';
++import { savedObjectsClientMock } from '@kbn/core/server/mocks';
++import { licenseMock } from '@kbn/licensing-plugin/common/licensing.mock';
++
++import { buildMlAuthz } from '../../../../machine_learning/__mocks__/authz';
++import { getImportRulesSchemaMock } from '../../../../../../common/api/detection_engine/rule_management/mocks';
++import { getRulesSchemaMock } from '../../../../../../common/api/detection_engine/model/rule_schema/mocks';
++import { getRuleMock } from '../../../routes/__mocks__/request_responses';
++import { getQueryRuleParams } from '../../../rule_schema/mocks';
++import { ruleSourceImporterMock } from '../import/rule_source_importer/rule_source_importer.mock';
++import { createDetectionRulesClient } from './detection_rules_client';
++import { importRule } from './methods/import_rule';
++import { checkRuleExceptionReferences } from '../import/check_rule_exception_references';
++import { findRules } from '../search/find_rules';
++import { createProductFeaturesServiceMock } from '../../../../product_features_service/mocks';
++import { getMockRulesAuthz } from '../../__mocks__/authz';
++import { __testing_escapeKql } from './methods/bulk_import_rules';
++import { isRuleImportError } from '../import/errors';
++
++jest.mock('./methods/import_rule');
++jest.mock('../import/check_rule_exception_references');
++jest.mock('../search/find_rules');
++
++describe('detectionRulesClient.bulkImportRules', () => {
++  let rulesClient: ReturnType<typeof rulesClientMock.create>;
++  let subject: ReturnType<typeof createDetectionRulesClient>;
++  let mockRuleSourceImporter: ReturnType<typeof ruleSourceImporterMock.create>;
++  const rulesAuthz = getMockRulesAuthz();
++
++  beforeEach(() => {
++    (findRules as jest.Mock).mockReset();
++    (importRule as jest.Mock).mockReset();
++    rulesClient = rulesClientMock.create();
++    subject = createDetectionRulesClient({
++      actionsClient: actionsClientMock.create(),
++      rulesClient,
++      mlAuthz: buildMlAuthz(),
++      rulesAuthz,
++      savedObjectsClient: savedObjectsClientMock.create(),
++      license: licenseMock.createLicenseMock(),
++      productFeaturesService: createProductFeaturesServiceMock(),
++    });
++
++    (checkRuleExceptionReferences as jest.Mock).mockReturnValue([[], []]);
++    (findRules as jest.Mock).mockResolvedValue({ data: [] });
++    (importRule as jest.Mock).mockResolvedValue(getRulesSchemaMock());
++    rulesClient.bulkCreateRules.mockResolvedValue({
++      successfulIds: [],
++      errors: [],
++      total: 0,
++    });
++
++    mockRuleSourceImporter = ruleSourceImporterMock.create();
++    mockRuleSourceImporter.calculateRuleSource.mockReturnValue({
++      ruleSource: { type: 'internal' },
++      immutable: false,
++    });
++  });
++
++  it('all-new disabled rules: single bulkCreateRules call, no findRules conflicts', async () => {
++    const ruleToImport = { ...getImportRulesSchemaMock(), enabled: false };
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
++      successfulIds: args.rules.map((r) => (r.options as { id: string }).id),
++      errors: [],
++      total: args.rules.length,
++    }));
++
++    const { responses } = await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: false,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules: [ruleToImport],
++    });
++
++    expect(rulesClient.bulkCreateRules).toHaveBeenCalledTimes(1);
++    const args = rulesClient.bulkCreateRules.mock.calls[0][0];
++    expect(args.rules[0].data.enabled).toBe(false);
++    expect(importRule).not.toHaveBeenCalled();
++    expect(responses).toEqual([{ rule_id: ruleToImport.rule_id }]);
++  });
++
++  it('all-new enabled rules: preserves enabled flag in single bulk call', async () => {
++    const ruleToImport = { ...getImportRulesSchemaMock(), enabled: true };
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
++      successfulIds: args.rules.map((r) => (r.options as { id: string }).id),
++      errors: [],
++      total: args.rules.length,
++    }));
++
++    await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: false,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules: [ruleToImport],
++    });
++
++    const args = rulesClient.bulkCreateRules.mock.calls[0][0];
++    expect(args.rules[0].data.enabled).toBe(true);
++  });
++
++  it('issues a single bulkCreateRules call regardless of input size (alerting batches internally)', async () => {
++    const rules = Array.from({ length: 250 }, (_, i) => ({
++      ...getImportRulesSchemaMock(),
++      rule_id: `rule-${i}`,
++    }));
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
++      successfulIds: args.rules.map((r) => (r.options as { id: string }).id),
++      errors: [],
++      total: args.rules.length,
++    }));
++
++    const { responses } = await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: false,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules,
++    });
++
++    expect(rulesClient.bulkCreateRules).toHaveBeenCalledTimes(1);
++    expect(responses).toHaveLength(250);
++  });
++
++  it('mixed new+existing with overwriteRules:false reports conflict for existing', async () => {
++    const r1 = { ...getImportRulesSchemaMock(), rule_id: 'new-rule' };
++    const r2 = { ...getImportRulesSchemaMock(), rule_id: 'existing-rule' };
++
++    (findRules as jest.Mock).mockResolvedValueOnce({
++      data: [getRuleMock({ ...getQueryRuleParams(), ruleId: 'existing-rule' })],
++    });
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
++      successfulIds: args.rules.map((r) => (r.options as { id: string }).id),
++      errors: [],
++      total: args.rules.length,
++    }));
++
++    const { responses } = await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: false,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules: [r1, r2],
++    });
++
++    const conflicts = responses.filter((r) => isRuleImportError(r) && r.error.type === 'conflict');
++    expect(conflicts).toHaveLength(1);
++    expect(isRuleImportError(conflicts[0]) && conflicts[0].error.ruleId).toBe('existing-rule');
++    expect(rulesClient.bulkCreateRules.mock.calls[0][0].rules).toHaveLength(1);
++    expect(importRule).not.toHaveBeenCalled();
++  });
++
++  it('mixed new+existing with overwriteRules:true: existing fall through to per-rule importRule and surface as { rule_id }', async () => {
++    const r1 = { ...getImportRulesSchemaMock(), rule_id: 'new-rule' };
++    const r2 = { ...getImportRulesSchemaMock(), rule_id: 'existing-rule' };
++
++    (findRules as jest.Mock).mockResolvedValueOnce({
++      data: [getRuleMock({ ...getQueryRuleParams(), ruleId: 'existing-rule' })],
++    });
++    (importRule as jest.Mock).mockResolvedValueOnce({
++      ...getRulesSchemaMock(),
++      rule_id: 'existing-rule',
++    });
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
++      successfulIds: args.rules.map((r) => (r.options as { id: string }).id),
++      errors: [],
++      total: args.rules.length,
++    }));
++
++    const { responses } = await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: true,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules: [r1, r2],
++    });
++
++    expect(importRule).toHaveBeenCalledTimes(1);
++    expect((importRule as jest.Mock).mock.calls[0][0].importRulePayload.ruleToImport.rule_id).toBe(
++      'existing-rule'
++    );
++    expect(rulesClient.bulkCreateRules.mock.calls[0][0].rules).toHaveLength(1);
++    expect(responses).toEqual(
++      expect.arrayContaining([{ rule_id: 'existing-rule' }, { rule_id: 'new-rule' }])
++    );
++  });
++
++  it('per-row bulk error is re-paired to its source rule_id via uuid', async () => {
++    const ruleToImport = getImportRulesSchemaMock();
++    rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
++      const id = (args.rules[0].options as { id: string }).id;
++      return {
++        successfulIds: [],
++        errors: [{ message: 'boom', status: 500, rule: { id, name: ruleToImport.name } }],
++        total: 1,
++      };
++    });
++
++    const { responses } = await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: false,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules: [ruleToImport],
++    });
++
++    const errors = responses.filter(isRuleImportError);
++    expect(errors).toHaveLength(1);
++    expect(errors[0].error.ruleId).toBe(ruleToImport.rule_id);
++    expect(errors[0].error.message).toBe('boom');
++  });
++
++  it('returns empty result for empty input without calling alerting/findRules', async () => {
++    const result = await subject.bulkImportRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: false,
++      ruleSourceImporter: mockRuleSourceImporter,
++      rules: [],
++    });
++
++    expect(result.responses).toEqual([]);
++    expect(rulesClient.bulkCreateRules).not.toHaveBeenCalled();
++    expect(findRules).not.toHaveBeenCalled();
++  });
++});
++
++describe('bulk_import_rules KQL escape', () => {
++  it('escapes backslashes', () => {
++    expect(__testing_escapeKql('foo\\bar')).toBe('foo\\\\bar');
++  });
++  it('escapes double quotes', () => {
++    expect(__testing_escapeKql('a"b')).toBe('a\\"b');
++  });
++  it('escapes both', () => {
++    expect(__testing_escapeKql('a\\"b')).toBe('a\\\\\\"b');
++  });
++});
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+index a7d96ef5ade..aa02a8d7f4a 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+@@ -18,9 +18,12 @@ import type { MlAuthz } from '../../../../machine_learning/authz';
+ import type { ProductFeaturesService } from '../../../../product_features_service';
+ import { createPrebuiltRuleAssetsClient } from '../../../prebuilt_rules/logic/rule_assets/prebuilt_rule_assets_client';
+ import type { RuleImportErrorObject } from '../import/errors';
++import type { BulkImportRulesResult } from './methods/bulk_import_rules';
+ import type {
++  BulkCreatePrebuiltRulesArgs,
+   BulkDeleteRulesArgs,
+   BulkDeleteRulesReturn,
++  BulkImportRulesArgs,
+   CreateCustomRuleArgs,
+   CreatePrebuiltRuleArgs,
+   DeleteRuleArgs,
+@@ -34,7 +37,9 @@ import type {
+   UpgradePrebuiltRuleArgs,
+ } from './detection_rules_client_interface';
+ import { createRule } from './methods/create_rule';
++import { bulkCreatePrebuiltRules } from './methods/bulk_create_prebuilt_rules';
+ import { bulkDeleteRules } from './methods/bulk_delete_rules';
++import { bulkImportRules } from './methods/bulk_import_rules';
+ import { deleteRule } from './methods/delete_rule';
+ import { importRule } from './methods/import_rule';
+ import { importRules } from './methods/import_rules';
+@@ -117,6 +122,12 @@ export const createDetectionRulesClient = ({
+       });
+     },
+ 
++    async bulkCreatePrebuiltRules(args: BulkCreatePrebuiltRulesArgs) {
++      return withSecuritySpan('DetectionRulesClient.bulkCreatePrebuiltRules', async () => {
++        return bulkCreatePrebuiltRules({ actionsClient, rulesClient, mlAuthz, args });
++      });
++    },
++
+     async updateRule({ ruleUpdate }: UpdateRuleArgs): Promise<RuleResponse> {
+       return withSecuritySpan('DetectionRulesClient.updateRule', async () => {
+         return updateRule({
+@@ -205,6 +216,18 @@ export const createDetectionRulesClient = ({
+       });
+     },
+ 
++    async bulkImportRules(args: BulkImportRulesArgs): Promise<BulkImportRulesResult> {
++      return withSecuritySpan('DetectionRulesClient.bulkImportRules', async () => {
++        return bulkImportRules({
++          actionsClient,
++          rulesClient,
++          savedObjectsClient,
++          mlAuthz,
++          args,
++        });
++      });
++    },
++
+     async getHistoryForRule(args: GetHistoryForRuleArgs) {
+       return withSecuritySpan('DetectionRulesClient.getHistoryForRule', async () => {
+         return getHistoryForRule({ rulesClient, ...args });
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts
+index 067c5dbc258..4f33f53c6b4 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts
+@@ -21,11 +21,16 @@ import type { RuleImportErrorObject } from '../import/errors';
+ import type { PrebuiltRuleAsset } from '../../../prebuilt_rules';
+ import type { PrebuiltRulesCustomizationStatus } from '../../../../../../common/detection_engine/prebuilt_rules/prebuilt_rule_customization_status';
+ import type { RuleAlertType } from '../../../rule_schema';
++import type { BulkCreatePrebuiltRulesResult } from './methods/bulk_create_prebuilt_rules';
++import type { BulkImportRulesResult } from './methods/bulk_import_rules';
+ 
+ export interface IDetectionRulesClient {
+   getRuleCustomizationStatus: () => PrebuiltRulesCustomizationStatus;
+   createCustomRule: (args: CreateCustomRuleArgs) => Promise<RuleResponse>;
+   createPrebuiltRule: (args: CreatePrebuiltRuleArgs) => Promise<RuleResponse>;
++  bulkCreatePrebuiltRules: (
++    args: BulkCreatePrebuiltRulesArgs
++  ) => Promise<BulkCreatePrebuiltRulesResult>;
+   updateRule: (args: UpdateRuleArgs) => Promise<RuleResponse>;
+   patchRule: (args: PatchRuleArgs) => Promise<RuleResponse>;
+   deleteRule: (args: DeleteRuleArgs) => Promise<void>;
+@@ -34,6 +39,7 @@ export interface IDetectionRulesClient {
+   revertPrebuiltRule: (args: RevertPrebuiltRuleArgs) => Promise<RuleResponse>;
+   importRule: (args: ImportRuleArgs) => Promise<RuleResponse>;
+   importRules: (args: ImportRulesArgs) => Promise<Array<RuleResponse | RuleImportErrorObject>>;
++  bulkImportRules: (args: BulkImportRulesArgs) => Promise<BulkImportRulesResult>;
+   getHistoryForRule: (args: GetHistoryForRuleArgs) => Promise<RuleChangesHistoryResponse>;
+ }
+ 
+@@ -45,6 +51,10 @@ export interface CreatePrebuiltRuleArgs {
+   params: RuleCreateProps;
+ }
+ 
++export interface BulkCreatePrebuiltRulesArgs {
++  rules: PrebuiltRuleAsset[];
++}
++
+ export interface UpdateRuleArgs {
+   ruleUpdate: RuleUpdateProps;
+ }
+@@ -94,3 +104,5 @@ export interface GetHistoryForRuleArgs {
+   page?: number;
+   perPage?: number;
+ }
++
++export type BulkImportRulesArgs = ImportRulesArgs;
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_create_prebuilt_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_create_prebuilt_rules.ts
+new file mode 100644
+index 00000000000..86bbcf8e4d9
+--- /dev/null
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_create_prebuilt_rules.ts
+@@ -0,0 +1,122 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { v4 as uuidv4 } from 'uuid';
++import type { ActionsClient } from '@kbn/actions-plugin/server';
++import type { RulesClient } from '@kbn/alerting-plugin/server';
++import { ruleTypeMappings } from '@kbn/securitysolution-rules';
++import { SERVER_APP_ID } from '../../../../../../../common';
++import type { PrebuiltRuleAsset } from '../../../../prebuilt_rules';
++import type { MlAuthz } from '../../../../../machine_learning/authz';
++import type { RuleParams } from '../../../../rule_schema';
++import { convertRuleResponseToAlertingRule } from '../converters/convert_rule_response_to_alerting_rule';
++import { applyRuleDefaults } from '../mergers/apply_rule_defaults';
++import { validateMlAuth } from '../utils';
++
++export interface BulkCreatePrebuiltRulesArgs {
++  rules: PrebuiltRuleAsset[];
++}
++
++export interface BulkCreatePrebuiltRulesResultItem {
++  id: string;
++  rule_id: string;
++  version: number;
++}
++
++export interface BulkCreatePrebuiltRulesResult {
++  results: Array<{ result: BulkCreatePrebuiltRulesResultItem }>;
++  errors: Array<{ item: PrebuiltRuleAsset; error: Error }>;
++}
++
++interface BulkCreatePrebuiltRulesOptions {
++  actionsClient: ActionsClient;
++  rulesClient: RulesClient;
++  mlAuthz: MlAuthz;
++  args: BulkCreatePrebuiltRulesArgs;
++}
++
++// Bulk-installs prebuilt rules in a single `rulesClient.bulkCreateRules` call; alerting handles batching internally and only returns `successfulIds`, so we re-pair them with the input assets via a uuid map to derive `{ id, rule_id, version }`.
++export const bulkCreatePrebuiltRules = async ({
++  actionsClient,
++  rulesClient,
++  mlAuthz,
++  args,
++}: BulkCreatePrebuiltRulesOptions): Promise<BulkCreatePrebuiltRulesResult> => {
++  const { rules } = args;
++  const results: BulkCreatePrebuiltRulesResult['results'] = [];
++  const errors: BulkCreatePrebuiltRulesResult['errors'] = [];
++
++  if (rules.length === 0) return { results, errors };
++
++  // Per-type ML auth dedupe: each unique rule type is checked once.
++  const checkedTypes = new Set<string>();
++  const mlAuthErrorByType = new Map<string, Error>();
++  for (const rule of rules) {
++    if (!checkedTypes.has(rule.type)) {
++      checkedTypes.add(rule.type);
++      try {
++        await validateMlAuth(mlAuthz, rule.type);
++      } catch (e) {
++        mlAuthErrorByType.set(rule.type, e instanceof Error ? e : new Error(String(e)));
++      }
++    }
++  }
++
++  // Pre-assign uuids so per-rule successes/failures from the alerting bulk call
++  // can be re-paired with their input PrebuiltRuleAsset by id.
++  const itemById = new Map<string, PrebuiltRuleAsset>();
++  const bulkInputs: Array<{
++    data: ReturnType<typeof convertRuleResponseToAlertingRule> & {
++      alertTypeId: string;
++      consumer: string;
++      enabled: boolean;
++    };
++    options: { id: string };
++  }> = [];
++
++  for (const rule of rules) {
++    const mlError = mlAuthErrorByType.get(rule.type);
++    if (mlError) {
++      errors.push({ item: rule, error: mlError });
++    } else {
++      const id = uuidv4();
++      itemById.set(id, rule);
++      const ruleWithDefaults = applyRuleDefaults({ ...rule, immutable: true });
++      const data = {
++        ...convertRuleResponseToAlertingRule(ruleWithDefaults, actionsClient),
++        alertTypeId: ruleTypeMappings[rule.type],
++        consumer: SERVER_APP_ID,
++        enabled: false,
++      };
++      bulkInputs.push({ data, options: { id } });
++    }
++  }
++
++  if (bulkInputs.length === 0) return { results, errors };
++
++  const { successfulIds, errors: bulkErrors } = await rulesClient.bulkCreateRules<RuleParams>({
++    rules: bulkInputs,
++  });
++
++  for (const id of successfulIds) {
++    const asset = itemById.get(id);
++    if (asset) {
++      results.push({ result: { id, rule_id: asset.rule_id, version: asset.version } });
++    }
++  }
++
++  bulkErrors.forEach((err) => {
++    const item = itemById.get(err.rule.id);
++    if (!item) return;
++    errors.push({
++      item,
++      error: Object.assign(new Error(err.message), { statusCode: err.status }),
++    });
++  });
++
++  return { results, errors };
++};
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_import_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_import_rules.ts
+new file mode 100644
+index 00000000000..b6101433138
+--- /dev/null
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_import_rules.ts
+@@ -0,0 +1,340 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import pMap from 'p-map';
++import { i18n } from '@kbn/i18n';
++import { v4 as uuidv4 } from 'uuid';
++import type { ActionsClient } from '@kbn/actions-plugin/server';
++import type { RulesClient } from '@kbn/alerting-plugin/server';
++import type { SavedObjectsClientContract } from '@kbn/core/server';
++import { ruleTypeMappings } from '@kbn/securitysolution-rules';
++import { SERVER_APP_ID } from '../../../../../../../common';
++import type { RuleResponse, RuleToImport } from '../../../../../../../common/api/detection_engine';
++import { ruleToImportHasVersion } from '../../../../../../../common/api/detection_engine/rule_management';
++import type { MlAuthz } from '../../../../../machine_learning/authz';
++import type { RuleParams } from '../../../../rule_schema';
++import { findRules } from '../../search/find_rules';
++import { convertAlertingRuleToRuleResponse } from '../converters/convert_alerting_rule_to_rule_response';
++import { convertRuleResponseToAlertingRule } from '../converters/convert_rule_response_to_alerting_rule';
++import { applyRuleDefaults } from '../mergers/apply_rule_defaults';
++import { validateMlAuth } from '../utils';
++import {
++  type RuleImportErrorObject,
++  createRuleImportErrorObject,
++  isRuleImportError,
++} from '../../import/errors';
++import { checkRuleExceptionReferences } from '../../import/check_rule_exception_references';
++import { getReferencedExceptionLists } from '../../import/gather_referenced_exceptions';
++import type { IRuleSourceImporter } from '../../import/rule_source_importer';
++import { importRule as importRuleSingle } from './import_rule';
++import { createPrebuiltRuleAssetsClient } from '../../../../prebuilt_rules/logic/rule_assets/prebuilt_rule_assets_client';
++
++const OVERWRITE_FALLBACK_CONCURRENCY = 10;
++
++interface BulkImportRulesOptions {
++  actionsClient: ActionsClient;
++  rulesClient: RulesClient;
++  savedObjectsClient: SavedObjectsClientContract;
++  mlAuthz: MlAuthz;
++  args: {
++    rules: RuleToImport[];
++    overwriteRules: boolean;
++    ruleSourceImporter: IRuleSourceImporter;
++    allowMissingConnectorSecrets?: boolean;
++  };
++}
++
++export interface BulkImportRuleSuccess {
++  rule_id: string;
++}
++
++export interface BulkImportRulesResult {
++  responses: Array<BulkImportRuleSuccess | RuleImportErrorObject>;
++}
++
++// Per-rule pre-checks (in-process, isolated try/catch). Output: only rules
++// that pass all checks proceed to classification.
++interface PreparedImport {
++  rule: RuleToImport;
++  immutable: boolean;
++  ruleSource: ReturnType<IRuleSourceImporter['calculateRuleSource']>['ruleSource'];
++  exceptionsList: RuleToImport['exceptions_list'];
++}
++
++// rule_id is free-form; escape backslashes and quotes for safe KQL interpolation.
++const escapeKql = (id: string) => id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
++
++const emptyResult = (): BulkImportRulesResult => ({ responses: [] });
++
++interface PrepareRuleArgs {
++  rule: RuleToImport;
++  mlAuthz: MlAuthz;
++  ruleSourceImporter: IRuleSourceImporter;
++  existingLists: Awaited<ReturnType<typeof getReferencedExceptionLists>>;
++  checkedTypes: Set<string>;
++  mlAuthErrorByType: Map<string, Error>;
++}
++
++interface PrepareRuleResult {
++  prepared?: PreparedImport;
++  errors: RuleImportErrorObject[];
++}
++
++const missingVersionError = (ruleId: string): RuleImportErrorObject =>
++  createRuleImportErrorObject({
++    ruleId,
++    message: i18n.translate(
++      'xpack.securitySolution.detectionEngine.rules.cannotImportPrebuiltRuleWithoutVersion',
++      {
++        defaultMessage:
++          'Prebuilt rules must specify a "version" to be imported. [rule_id: {ruleId}]',
++        values: { ruleId },
++      }
++    ),
++  });
++
++const cacheMlAuthError = async ({
++  rule,
++  mlAuthz,
++  checkedTypes,
++  mlAuthErrorByType,
++}: Pick<PrepareRuleArgs, 'rule' | 'mlAuthz' | 'checkedTypes' | 'mlAuthErrorByType'>): Promise<
++  Error | undefined
++> => {
++  if (!checkedTypes.has(rule.type)) {
++    checkedTypes.add(rule.type);
++    try {
++      await validateMlAuth(mlAuthz, rule.type);
++    } catch (e) {
++      mlAuthErrorByType.set(rule.type, e instanceof Error ? e : new Error(String(e)));
++    }
++  }
++  return mlAuthErrorByType.get(rule.type);
++};
++
++const prepareRuleForImport = async ({
++  rule,
++  mlAuthz,
++  ruleSourceImporter,
++  existingLists,
++  checkedTypes,
++  mlAuthErrorByType,
++}: PrepareRuleArgs): Promise<PrepareRuleResult> => {
++  if (!ruleSourceImporter.isPrebuiltRule(rule)) {
++    rule.version = rule.version ?? 1;
++  }
++  if (!ruleToImportHasVersion(rule)) {
++    return { errors: [missingVersionError(rule.rule_id)] };
++  }
++
++  const mlError = await cacheMlAuthError({ rule, mlAuthz, checkedTypes, mlAuthErrorByType });
++  if (mlError) {
++    return {
++      errors: [createRuleImportErrorObject({ ruleId: rule.rule_id, message: mlError.message })],
++    };
++  }
++
++  const [exceptionErrors, exceptionsList] = checkRuleExceptionReferences({ rule, existingLists });
++  const errors: RuleImportErrorObject[] = [...exceptionErrors];
++
++  let ruleSourceResult;
++  try {
++    ruleSourceResult = ruleSourceImporter.calculateRuleSource(rule);
++  } catch (e) {
++    errors.push(
++      createRuleImportErrorObject({
++        ruleId: rule.rule_id,
++        message: e instanceof Error ? e.message : String(e),
++      })
++    );
++  }
++
++  if (!ruleSourceResult) {
++    return { errors };
++  }
++
++  return {
++    errors,
++    prepared: {
++      rule,
++      immutable: ruleSourceResult.immutable,
++      ruleSource: ruleSourceResult.ruleSource,
++      exceptionsList,
++    },
++  };
++};
++
++export const bulkImportRules = async ({
++  actionsClient,
++  rulesClient,
++  savedObjectsClient,
++  mlAuthz,
++  args,
++}: BulkImportRulesOptions): Promise<BulkImportRulesResult> => {
++  const { rules, overwriteRules, ruleSourceImporter, allowMissingConnectorSecrets } = args;
++  if (rules.length === 0) return emptyResult();
++
++  const responses: Array<BulkImportRuleSuccess | RuleImportErrorObject> = [];
++
++  const existingLists = await getReferencedExceptionLists({ rules, savedObjectsClient });
++  await ruleSourceImporter.setup(rules);
++
++  const prepared: PreparedImport[] = [];
++  const checkedTypes = new Set<string>();
++  const mlAuthErrorByType = new Map<string, Error>();
++
++  for (const rule of rules) {
++    const result = await prepareRuleForImport({
++      rule,
++      mlAuthz,
++      ruleSourceImporter,
++      existingLists,
++      checkedTypes,
++      mlAuthErrorByType,
++    });
++    responses.push(...result.errors);
++    if (result.prepared) {
++      prepared.push(result.prepared);
++    }
++  }
++
++  if (prepared.length === 0) {
++    return { responses };
++  }
++
++  // Bulk lookup for `rule_id` conflicts: single KQL parenthesized OR-list.
++  const ruleIds = prepared.map((p) => p.rule.rule_id);
++  const filter = `alert.attributes.params.ruleId: (${ruleIds
++    .map((id) => `"${escapeKql(id)}"`)
++    .join(' OR ')})`;
++  const found = await findRules({
++    rulesClient,
++    filter,
++    page: 1,
++    perPage: ruleIds.length,
++    fields: undefined,
++    sortField: undefined,
++    sortOrder: undefined,
++  });
++  const existingByRuleId = new Map<string, RuleResponse>();
++  for (const alertingRule of found.data) {
++    const ruleResponse = convertAlertingRuleToRuleResponse(alertingRule);
++    existingByRuleId.set(ruleResponse.rule_id, ruleResponse);
++  }
++
++  // Classify: conflict | overwrite-fallback | bulk-create.
++  const conflicts: PreparedImport[] = [];
++  const toOverwrite: PreparedImport[] = [];
++  const toBulkCreate: PreparedImport[] = [];
++  for (const p of prepared) {
++    if (existingByRuleId.has(p.rule.rule_id)) {
++      if (overwriteRules) toOverwrite.push(p);
++      else conflicts.push(p);
++    } else {
++      toBulkCreate.push(p);
++    }
++  }
++
++  conflicts.forEach((p) => {
++    responses.push(
++      createRuleImportErrorObject({
++        ruleId: p.rule.rule_id,
++        type: 'conflict',
++        message: 'Rule with this rule_id already exists',
++      })
++    );
++  });
++
++  // Overwrite branch: stays per-rule via existing single-rule importRule. The
++  // resulting full RuleResponse is collapsed to { rule_id } for a uniform
++  // success shape across the overwrite and bulk-create branches.
++  if (toOverwrite.length > 0) {
++    const prebuiltRuleAssetClient = createPrebuiltRuleAssetsClient(savedObjectsClient);
++    const overwriteResults = await pMap(
++      toOverwrite,
++      async (p): Promise<BulkImportRuleSuccess | RuleImportErrorObject> => {
++        try {
++          const updated = (await importRuleSingle({
++            actionsClient,
++            rulesClient,
++            mlAuthz,
++            prebuiltRuleAssetClient,
++            importRulePayload: {
++              ruleToImport: { ...p.rule, exceptions_list: [...(p.exceptionsList ?? [])] },
++              overrideFields: { rule_source: p.ruleSource, immutable: p.immutable },
++              overwriteRules: true,
++              allowMissingConnectorSecrets,
++            },
++          })) as RuleResponse | RuleImportErrorObject;
++          if (isRuleImportError(updated)) return updated;
++          return { rule_id: updated.rule_id };
++        } catch (err) {
++          if (isRuleImportError(err)) return err;
++          return createRuleImportErrorObject({
++            ruleId: p.rule.rule_id,
++            message: err?.message ?? 'unknown error',
++          });
++        }
++      },
++      { concurrency: OVERWRITE_FALLBACK_CONCURRENCY }
++    );
++    responses.push(...overwriteResults);
++  }
++
++  if (toBulkCreate.length === 0) {
++    return { responses };
++  }
++
++  // Bulk-create new rules in a single alerting call. Pre-assign uuids so we
++  // can re-pair successes/failures back to the source `rule_id`.
++  const inputById = new Map<string, PreparedImport>();
++  const bulkInputs = toBulkCreate.map((p) => {
++    const id = uuidv4();
++    inputById.set(id, p);
++    const ruleResponse = applyRuleDefaults({
++      ...p.rule,
++      exceptions_list: [...(p.exceptionsList ?? [])],
++      immutable: p.immutable,
++      rule_source: p.ruleSource,
++    });
++    const data = {
++      ...convertRuleResponseToAlertingRule(ruleResponse, actionsClient),
++      alertTypeId: ruleTypeMappings[p.rule.type],
++      consumer: SERVER_APP_ID,
++      // Preserve the user-requested enabled flag — alerting handles enabled
++      // rules natively (API key + task scheduling) in this single call.
++      enabled: p.rule.enabled ?? false,
++    };
++    return { data, options: { id }, allowMissingConnectorSecrets };
++  });
++
++  const { successfulIds, errors: bulkErrors } = await rulesClient.bulkCreateRules<RuleParams>({
++    rules: bulkInputs,
++  });
++
++  for (const id of successfulIds) {
++    const source = inputById.get(id);
++    if (source) {
++      responses.push({ rule_id: source.rule.rule_id });
++    }
++  }
++
++  bulkErrors.forEach((err) => {
++    const source = inputById.get(err.rule.id);
++    if (!source) return;
++    responses.push(
++      createRuleImportErrorObject({
++        ruleId: source.rule.rule_id,
++        message: err.message,
++      })
++    );
++  });
++
++  return { responses };
++};
++
++export { escapeKql as __testing_escapeKql };
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts
+index a6e4e8bad29..d9fdc06df71 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.test.ts
+@@ -215,4 +215,64 @@ describe('importRules', () => {
+       { rule_id: successfulRuleId, status_code: 200 },
+     ]);
+   });
++
++  describe('bulk path (bulkCreateRulesEnabled)', () => {
++    const experimentalFeatures = { bulkCreateRulesEnabled: true } as never;
++
++    it('flattens all chunks into a single bulkImportRules call (no skipTaskEnabling, no bulkEnableTasks follow-up)', async () => {
++      const r1 = { ...ruleToImport, rule_id: 'r1' };
++      const r2 = { ...ruleToImport, rule_id: 'r2' };
++      const r3 = { ...ruleToImport, rule_id: 'r3' };
++
++      detectionRulesClient.bulkImportRules.mockResolvedValueOnce({
++        responses: [{ rule_id: 'r1' }, { rule_id: 'r2' }, { rule_id: 'r3' }],
++      });
++
++      const result = await importRules({
++        ruleChunks: [[r1, r2], [r3]],
++        overwriteRules: false,
++        detectionRulesClient,
++        ruleSourceImporter: mockRuleSourceImporter,
++        experimentalFeatures,
++      });
++
++      expect(detectionRulesClient.bulkImportRules).toHaveBeenCalledTimes(1);
++      const args = detectionRulesClient.bulkImportRules.mock.calls[0][0];
++      expect(args).not.toHaveProperty('skipTaskEnabling');
++      expect(args.rules.map((r) => r.rule_id)).toEqual(['r1', 'r2', 'r3']);
++      expect(result).toEqual([
++        { rule_id: 'r1', status_code: 200 },
++        { rule_id: 'r2', status_code: 200 },
++        { rule_id: 'r3', status_code: 200 },
++      ]);
++    });
++
++    it('maps per-rule errors from bulkImportRules to 4xx import responses', async () => {
++      detectionRulesClient.bulkImportRules.mockResolvedValueOnce({
++        responses: [
++          createRuleImportErrorObject({ ruleId: 'rule-a', message: 'boom' }),
++          { rule_id: 'rule-b' },
++          createRuleImportErrorObject({
++            ruleId: 'rule-c',
++            message: 'conflict',
++            type: 'conflict',
++          }),
++        ],
++      });
++
++      const result = await importRules({
++        ruleChunks: [[ruleToImport]],
++        overwriteRules: false,
++        detectionRulesClient,
++        ruleSourceImporter: mockRuleSourceImporter,
++        experimentalFeatures,
++      });
++
++      expect(result).toEqual([
++        { error: { message: 'boom', status_code: 400 }, rule_id: 'rule-a' },
++        { rule_id: 'rule-b', status_code: 200 },
++        { error: { message: 'conflict', status_code: 409 }, rule_id: 'rule-c' },
++      ]);
++    });
++  });
+ });
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts
+index 012c64c0ad8..4b76642d663 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts
+@@ -5,11 +5,13 @@
+  * 2.0.
+  */
+ 
++import type { ExperimentalFeatures } from '../../../../../../common';
+ import type { RuleToImport } from '../../../../../../common/api/detection_engine';
+ import { type ImportRuleResponse, createBulkErrorObject } from '../../../routes/utils';
++import type { BulkImportRuleSuccess } from '../detection_rules_client/methods/bulk_import_rules';
+ import type { IRuleSourceImporter } from './rule_source_importer';
+ import type { IDetectionRulesClient } from '../detection_rules_client/detection_rules_client_interface';
+-import { isRuleConflictError, isRuleImportError } from './errors';
++import { isRuleConflictError, isRuleImportError, type RuleImportErrorObject } from './errors';
+ 
+ /**
+  * Takes a stream of rules to be imported and either creates or updates rules
+@@ -18,6 +20,7 @@ import { isRuleConflictError, isRuleImportError } from './errors';
+  * @param overwriteRules {boolean} - whether to overwrite existing rules
+  * with imported rules if their rule_id matches
+  * @param detectionRulesClient {object}
++ * @param experimentalFeatures - feature flags; in particular `bulkCreateRulesEnabled`
+  * @returns {Promise} an array of error and success messages from import
+  */
+ export const importRules = async ({
+@@ -26,12 +29,14 @@ export const importRules = async ({
+   detectionRulesClient,
+   ruleSourceImporter,
+   allowMissingConnectorSecrets,
++  experimentalFeatures,
+ }: {
+   ruleChunks: RuleToImport[][];
+   overwriteRules: boolean;
+   detectionRulesClient: IDetectionRulesClient;
+   ruleSourceImporter: IRuleSourceImporter;
+   allowMissingConnectorSecrets?: boolean;
++  experimentalFeatures?: ExperimentalFeatures;
+ }): Promise<ImportRuleResponse[]> => {
+   const response: ImportRuleResponse[] = [];
+ 
+@@ -39,31 +44,45 @@ export const importRules = async ({
+     return response;
+   }
+ 
+-  for (const rules of ruleChunks) {
+-    const importedRulesResponse = await detectionRulesClient.importRules({
+-      allowMissingConnectorSecrets,
+-      overwriteRules,
+-      ruleSourceImporter,
+-      rules,
+-    });
+-
+-    const importResponses = importedRulesResponse.map((rule) => {
+-      if (isRuleImportError(rule)) {
+-        return createBulkErrorObject({
+-          message: rule.error.message,
+-          statusCode: isRuleConflictError(rule) ? 409 : 400,
+-          ruleId: rule.error.ruleId,
+-        });
+-      }
++  const useBulk = experimentalFeatures?.bulkCreateRulesEnabled ?? false;
+ 
+-      return {
+-        rule_id: rule.rule_id,
+-        status_code: 200,
+-      };
+-    });
+-
+-    response.push(...importResponses);
++  if (!useBulk) {
++    for (const rules of ruleChunks) {
++      const importedRulesResponse = await detectionRulesClient.importRules({
++        allowMissingConnectorSecrets,
++        overwriteRules,
++        ruleSourceImporter,
++        rules,
++      });
++      response.push(...importedRulesResponse.map(toImportRuleResponse));
++    }
++    return response;
+   }
+ 
++  const allRules = ruleChunks.flat();
++  const { responses } = await detectionRulesClient.bulkImportRules({
++    allowMissingConnectorSecrets,
++    overwriteRules,
++    ruleSourceImporter,
++    rules: allRules,
++  });
++  response.push(...responses.map(toImportRuleResponse));
++
+   return response;
+ };
++
++const toImportRuleResponse = (
++  rule: BulkImportRuleSuccess | RuleImportErrorObject
++): ImportRuleResponse => {
++  if (isRuleImportError(rule)) {
++    return createBulkErrorObject({
++      message: rule.error.message,
++      statusCode: isRuleConflictError(rule) ? 409 : 400,
++      ruleId: rule.error.ruleId,
++    });
++  }
++  return {
++    rule_id: rule.rule_id,
++    status_code: 200,
++  };
++};
