@@ -1,36 +1,36 @@
 ---
 name: bulk-create-rules-preflight
-overview: Refactor bulkCreateRules to do a lean call-wide pre-flight pass (in-memory checks + deduped authz + deduped schedule-limit) before any per-batch ES writes. Memory footprint stays bounded (IDs + errors only; no transformed payloads carried across batches). Pre-flight failures (including authz) are always reported per-rule - today's contract preserved verbatim. exitEarlyOnError is the operational circuit-breaker: when set, the existing A->B boundary short-circuit triggers when any preflight errors exist (zero ES writes), AND any inter-batch SO failure breaks the outer loop (today's behavior). Phase A never throws mid-step. TM's bulkSchedule jitter (PR #269991) replaces any alerting-side runAt staggering.
+overview: Refactor bulkCreateRules into a clean two-phase shape. Phase A is in-memory-only fail-fast validation (schema, registry, params, interval, then deduped authz) over a Map<id, RuleEntry> that accumulates each rule's verdict in place — no parallel arrays, no transforms held across batches. Schedule-limit stays in Phase B per-batch (it's an ES read, and per-batch placement reflects intra-call growth and minimises demoted rules). Pre-flight errors are reported per-rule (current contract preserved). exitEarlyOnError is the caller's halt policy; preflightChecks itself doesn't see the flag. TM's bulkSchedule jitter (PR #269991) replaces any alerting-side runAt staggering.
 todos:
   - id: types
-    content: Add PreflightValidationOutcome type and refactor PrepareRuleArgs to a per-batch ES-only shape
+    content: "Add to types.ts — PreflightOutcome (discriminated { ok: true, consumerKey, enabled, interval } | { ok: false, error }); RuleEntry<Params> { id, rule, outcome }; RuleEntryMap<Params>. Keep BulkCreateDisabledReason. Update PrepareRuleArgs to per-batch ES-only shape (no authzCache; optional preFetchedActions: PreFetchedActionsMap)."
     status: pending
   - id: utils-split
-    content: Split into preflightChecks (in-memory only - schema, registry, params, interval - returns { ok, error?, consumerKey?, enabled?, interval? }; NO transforms) and prepareRule (per-batch ES phase - validateActions/system-actions/extractReferences using preFetchedActions, API key minting, transformRuleDomainToRuleAttributes)
-    status: pending
-  - id: dedup-helpers
-    content: "Add prefetchActions helper in utils.ts - one actionsClient.getBulk per batch over the union of action+systemAction IDs. NO fallback - on throw, mark every rule in the batch as errored with the prefetch error and skip Phase B for that batch. Add Phase A2 per-pair authz: per-pair context.authorization.ensureAuthorized (deduped via Map<alertTypeId::consumer, ...>) - on failure, ALWAYS emit per-rule audit (with savedObject) + per-rule error (matches today's bulkCreate contract exactly). Phase A never throws mid-step; the exitEarlyOnError short-circuit at the A->B boundary handles the 'don't dig further' decision. Add one validateScheduleLimit call for surviving enabled intervals."
+    content: "In utils.ts — add validateRule (per-rule in-memory only: addGeneratedActionValues, schema, registry, params, interval; returns PreflightOutcome; NO transforms persisted). Add runPerPairAuthorization that operates on RuleEntryMap (mutates entry.outcome from ok=true to ok=false on rejection; emits per-rule CREATE audit with savedObject). Split prepareRule into Phase B per-batch shape that accepts preFetchedActions: PreFetchedActionsMap. Add prefetchActions helper (batch-wide getBulk, no fallback — throw is batch-wide error). Add sliceActionsById Map→Array bridge. Add getBulkCreateAsDisabledMessage export used by short-circuit branch."
     status: pending
   - id: shared-lib-changes
-    content: "Thread optional preFetchedActions through shared helpers (additive, backward-compatible): validateActions, validateAndAuthorizeSystemActions, extractReferences, denormalizeActions. Each falls back to actionsClient.getBulk when preFetchedActions is absent (parity with today for single-rule paths)"
+    content: "Thread optional preFetchedActions through shared helpers (additive, backward-compatible): validateActions, validateAndAuthorizeSystemActions, extractReferences, denormalizeActions. Each falls back to actionsClient.getBulk when preFetchedActions is absent (parity with today for single-rule paths)."
     status: pending
   - id: build-task-instance
-    content: In buildTaskInstance, delete runAt and scheduledAt fields (TM PR #269991 fills them via addJitter); remove commented BULK_TM_SCHEDULE_DELAY import in utils.ts AND the BULK_TM_SCHEDULE_DELAY constant export in rules_client/common/constants.ts
+    content: In buildTaskInstance, delete runAt and scheduledAt fields (TM PR #269991 fills them via addJitter); remove BULK_TM_SCHEDULE_DELAY constant and commented import.
+    status: pending
+  - id: preflight-orchestrator
+    content: "In bulk_create_rules.ts — add private preflightChecks orchestrator that builds and returns RuleEntryMap<Params>. A1 sequential loop calls validateRule and stores entries. After A1, halt if zero ok=true entries (skip ES reads entirely). A2 calls runPerPairAuthorization on the map. preflightChecks does NOT take exitEarlyOnError — caller owns halt policy. Returns map only; caller derives preflightErrors / survivingInputs in one for-of pass."
     status: pending
   - id: bulk-create-rewire
-    content: "Rewire bulkCreateRules: Phase A (call-wide preflight - in-memory loop, then per-pair authz [always per-rule on rejection] + deduped schedule-limit) producing only validIds + preflightErrors; Phase B (per-batch ES writes - prefetch actions [batch-aborts on throw], validate/extractReferences in-memory using map, mint API keys per-rule via pMap concurrency=API_KEY_GENERATE_CONCURRENCY soft-failing to disabled, schedule tasks, write SOs, best-effort cleanup); exitEarlyOnError short-circuits at the A->B boundary when any preflight errors exist AND breaks the outer batch loop on inter-batch SO failure (today's behavior preserved)"
+    content: "Rewire bulkCreateRules. Build inputsWithIds (id assignment up front). Call preflightChecks → get RuleEntryMap. Derive in one for-of pass: preflightErrors, survivingInputs, byId for lookups. Short-circuit at A→B boundary if no survivors OR (exitEarlyOnError && hasPreflightHalt). Phase B unchanged in shape: batch loop, runBatch per batch. Schedule-limit moves into runBatch as B0.5 (between prefetch and prepareRule): validateScheduleLimit over (this batch's enabled rules + already-written enabled rules from prior batches in this call); on overflow demote this batch's enabled subset via demotePreparedRules. exitEarlyOnError governs SO/prefetch failures only — schedule-limit demotion never halts the loop."
     status: pending
   - id: tests
-    content: "Update tests: schema-invalid rule reported per-rule with valid rules still created; exitEarlyOnError=true + any preflight error returns with zero ES calls (assert via apiKey.create, bulkSchedule, bulkCreate spies); partial-authz user (any exitEarlyOnError) reports per-rule audit (with savedObject) + per-rule error for unauthorized rules and creates the authorized subset (matches today's bulkCreate contract); partial-authz user + exitEarlyOnError=true short-circuits at A->B boundary with zero ES writes; assert no runAt/scheduledAt on task instances sent to bulkSchedule; assert exactly one actionsClient.getBulk call per batch when rules have actions; prefetch throw => every rule in the batch is errored with prefetch error message AND no API keys minted AND no bulkSchedule AND no bulkCreate for that batch; subsequent batches continue (unless exitEarlyOnError); existing batching/cap tests pass unchanged"
+    content: "Update tests. Phase A: schema-invalid rule reported per-rule with valid rules still created; all rules fail preflight → zero ES writes regardless of flag; exitEarlyOnError=true + one preflight error → returns immediately, zero ES writes; partial-authz user default flag → authorized subset created with per-rule audit for unauthorized; partial-authz + exitEarlyOnError=true → per-rule audit, per-rule errors, zero ES writes, returns normally; multiple rejected pairs → both rules in errors. Phase B prefetch: happy path one getBulk per batch; batch with zero actions → no getBulk; prefetch throw → batch-wide error; prefetch throw + exitEarlyOnError → outer loop breaks. Phase B schedule-limit (NEW per-batch behavior): batch 1 overflow demotes its enabled subset, batch 2 sees the updated baseline; batch N overflow does NOT halt subsequent batches even with exitEarlyOnError=true (schedule-limit is a demotion, not an error). Task instances: no runAt/scheduledAt."
     status: pending
   - id: verify
-    content: node scripts/type_check --project for alerting plugin; node scripts/jest on bulk_create_rules.test.ts; node scripts/eslint --fix on changed files
+    content: node scripts/type_check --project for alerting plugin; node scripts/jest on bulk_create_rules.test.ts; node scripts/eslint --fix on changed files.
     status: pending
 isProject: false
 ---
 
 
-# bulk_create_rules: lean call-wide pre-flight refactor
+# bulk_create_rules: two-phase refactor with RuleEntry map
 
 ## Motivation
 
@@ -40,25 +40,47 @@ Framework custodian feedback (verbatim):
 - "Keeping track of the results is a memory footgun. keep the minimum info in memory."
 - Q&A: "Before doing any API calls to ES (like API generation, rule creation, etc), let's do first the operations that can fail fast like schema validation. Then, when all checks have passed, we can go and start doing the ES calls. This will help us with doing as few reverts as possible."
 
-Today, [bulk_create_rules.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts) calls `prepareRule` **per batch**, and `prepareRule` interleaves validation with API-key minting. So a schema-invalid rule in batch 5 of 10 happens *after* batches 1–4 already wrote SOs, scheduled tasks, and minted keys — the exact case the feedback wants to prevent.
+Today, [bulk_create_rules.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts) calls `prepareRule` **per batch**, and `prepareRule` interleaves validation with API-key minting. So a schema-invalid rule in batch 5 of 10 happens *after* batches 1–4 already wrote SOs, scheduled tasks, and minted keys — the exact case the Q&A asks us to prevent.
 
-A previous design carried transformed `PreflightValidatedRule` payloads (references, params, actionsWithRefs, artifactsWithRefs, ruleType) across batches. At the 10k hard cap that's hundreds of MB held in memory — the "memory footgun" the custodians explicitly warned about. This plan stores **only `{ id, error? }`** call-wide and rebuilds transforms per-batch.
+A previous design carried transformed `PreflightValidatedRule` payloads (references, params, actionsWithRefs, artifactsWithRefs, ruleType) across batches. At the 10k hard cap that's hundreds of MB held in memory — the "memory footgun" the custodians explicitly warned about. This plan stores **only a `Map<id, RuleEntry>`** call-wide (one entry per rule with its outcome + optional demotion record) and rebuilds transforms per-batch.
 
-A previous iteration also (a) auto-aborted on any preflight error and (b) auto-threw on authz failure regardless of `exitEarlyOnError`. (a) was rejected as a silent breaking change to the per-rule isolation contract; (b) was considered as an opt-in under `exitEarlyOnError=true` but ultimately rejected as well because:
+### Lessons from a previous attempt (relevant context)
 
-1. It bundles two distinct concepts (operational halt vs. failure-shape change) onto a single flag whose original purpose was "stop digging once we know we're in trouble" — not "rewrite the audit/return contract."
-2. It produces an asymmetric audit shape across modes for the same call-site (per-rule with `savedObject` under default, one call-wide with no `savedObject` under `exitEarlyOnError=true`), which is harder to consume downstream.
-3. The custodian-blessed precedent (`checkAuthorizationAndGetTotal`) exists for methods that don't batch and have no `exitEarlyOnError` flag; `bulkCreate` already has a better-suited primitive (the A→B boundary short-circuit) that satisfies "as few reverts as possible" without inventing a parallel throw path.
+A prior implementation pass on this plan was reverted before merge. Two design corrections fell out of that work and are baked into this revised plan:
 
-**Resolution: authz failures are always per-rule, in both modes.** The existing `exitEarlyOnError` flag is extended only to use its established "operational halt" meaning at the Phase A→B boundary — when set, any preflight error (including authz) triggers an early return with zero ES writes. Phase A never throws mid-step. This preserves today's `bulkCreate` contract verbatim under the default flag value, and gives strict-mode callers a clean "stop digging" signal without changing return/audit shape.
+1. **`validateScheduleLimit` stays in Phase B per-batch, not Phase A.** The previous plan moved it into Phase A under the "centralise validation up front" reading of the custodian feedback. The Q&A interprets more strictly: *in-memory* fail-fast checks come first, *then* ES calls. `validateScheduleLimit` is an ES read; it does not belong in the in-memory phase. Keeping it per-batch also (a) reflects intra-call growth correctly — batch N's check sees batches 1..N-1 in its baseline, (b) demotes the minimum number of rules necessary instead of the entire enabled set up front, and (c) keeps the established `demotePreparedRules` authoring path as the single place demotion errors are emitted.
+2. **Phase A's central data structure is a `Map<id, RuleEntry>`, not parallel arrays.** The previous pass used a parallel `outcomes: PreflightOutcome[]` array alongside `inputsWithIds`, then built a `byId` map after Phase A2 to support downstream lookups. Routine O(n²) shapes (`.find(...)` + `.some(...)`) snuck back in. The corrected design has one map from the start: each rule's verdict is mutated in place on the entry, helpers (`runPerPairAuthorization`) operate on the map directly, and the caller's "derive errors / survivors" pass is a single `for-of` over `map.values()`.
+
+### Three rules the design enforces
+
+These come out of the constraints above and the custodian review. The whole structure exists to honour them.
+
+- **C5 strict — in-memory first, ES later.** Phase A1 (per-rule in-memory checks) runs over every input. If zero rules survive A1, Phase A2 (the only ES read in Phase A, authz) is skipped entirely. We never make ES calls if every input is going to fail fast.
+- **C4 — minimum information in memory.** Call-wide we hold one `RuleEntry` per input ≈ a few hundred bytes/rule (id, original rule reference, small outcome record, optional demotion record). No transformed `rawRule`/`references`/`actionsWithRefs` cross batch boundaries.
+- **One demotion error per rule, one author.** Every `disabledReason` (`api_key_creation_failed`, `schedule_limit_exceeded`, `task_schedule_failed`, `task_validation_failed`) is authored in exactly one place: `demotePreparedRules` inside `runBatch`. Demotion is a Phase B concept against `PreparedRule`s — there is no Phase A demotion path, and the A→B short-circuit branch never has to reconstruct demotion errors. No fan-out, no parallel arrays of "demotion errors" alongside "preflight errors."
 
 ## Design
 
-### Phase A — lean call-wide pre-flight (no ES action lookups)
+### Phase A — in-memory fail-fast over a `RuleEntry` map
 
-A single new function `preflightChecks` runs **before any batching**.
+A private `preflightChecks` orchestrator inside `bulk_create_rules.ts` builds a `Map<id, RuleEntry<Params>>` and returns it. Each entry is mutated in place by A1/A2; the map *is* Phase A's output. The caller derives `preflightErrors` and `survivingInputs` from the map in a single pass.
 
-Step 1: sequential `for` loop over **all inputs**. Each iteration is wrapped in its own `try/catch` so a synchronous throw from any check (e.g. `createRuleDataSchema.validate`, `ruleTypeRegistry.get`, `validateRuleTypeParams`, the minimum-interval guard, or `addGeneratedActionValues` if it ever throws on `kql → dsl`) is captured as that rule's error and the loop continues. **One bad rule produces one error entry; other rules are not affected.**
+`RuleEntry` shape (lives in `types.ts`):
+
+```ts
+interface RuleEntry<Params> {
+  id: string;
+  rule: BulkCreateRulesItem<Params>;
+  outcome: PreflightOutcome;
+}
+type RuleEntryMap<Params> = Map<string, RuleEntry<Params>>;
+```
+
+`PreflightOutcome` is the discriminated `{ ok: true, consumerKey, enabled, interval } | { ok: false, error }`. There is no `demoted?` field — demotion happens against `PreparedRule`s in Phase B only.
+
+#### A1 — per-rule in-memory checks (`validateRule` in `utils.ts`)
+
+Sequential `for` loop over **all inputs**. Each iteration is wrapped in its own `try/catch` so a synchronous throw from any check is captured as that rule's `ok: false` outcome and the loop continues. **One bad rule produces one entry with `outcome.ok: false`; other rules are not affected.**
 
 Per rule, in order (cheapest first):
 
@@ -69,80 +91,75 @@ Per rule, in order (cheapest first):
 5. `validateRuleTypeParams(data.params, ruleType.validate.params)` — params shape; caught per-rule.
 6. `parseDuration(schedule.interval)` + minimum-interval check (when `enforce=true`) — caught per-rule.
 
-State held: `Map<index, { id: string; ok: boolean; error?: BulkCreateOperationError; consumerKey?: string; enabled?: boolean; interval?: string }>`. **No generated arrays are stored** — the locally-built `data` is discarded at end of iteration.
+`validateRule` returns a `PreflightOutcome`; `preflightChecks` stores it on the new `RuleEntry`. **No generated arrays are stored on the entry** — the locally-built `data` is discarded at end of iteration. The entry holds the original `rule` reference (already retained via `inputsWithIds`).
 
-> **Note on `addGeneratedActionValues` running in both phases.** The function also runs in Phase B step 1 (inside `prepareRule`). This means `v4()` is called twice per auto-generated action UUID and `buildEsQuery` runs twice per `alertsFilter`. This is intentional: Phase A's generated UUIDs are never exposed (Phase A's outcome state stores only `id` / `error` / consumer key / enabled / interval — no action UUIDs ever reach error messages, audit logs, or return values), so the Phase-A UUIDs are throwaway. The SO that lands carries Phase B's UUIDs, consistent within a single rule's lifecycle. Worst-case waste at the 10k hard cap is ~250 ms total CPU — negligible compared to the alternatives (storing generated arrays across batches violates C4 memory; threading a UUID-override map adds helper surface). Document in code comment.
+> **Note on `addGeneratedActionValues` running in both phases.** It also runs in Phase B step 1 (inside `prepareRule`). Phase A's generated UUIDs are throwaway (the entry's `outcome` records only `id` / `error` / `consumerKey` / `enabled` / `interval` — no UUIDs leak). Phase B's UUIDs are what land in the SO. Worst-case duplicate CPU at the 10k hard cap is ~250 ms — accepted to keep memory lean (C4) and helper signatures unchanged.
 
-Step 2: per-pair authorization (the only ES read in Phase A) — **always per-rule on rejection; never throws**.
+#### A1 short-circuit — skip A2 if zero survivors
 
-Today's `bulkCreate` contract is per-rule authz isolation: a user with partial permissions creates the subset they're authorized for and gets per-rule errors for the rest. The sibling-bulk methods (`bulkDelete`/`bulkEnable`/etc.) instead emit one call-wide audit and re-throw — that precedent intentionally **does not apply here**, because (a) those methods don't batch and have no `exitEarlyOnError` flag, (b) `bulkCreate` already has a better-suited primitive (the A→B boundary short-circuit) for the "stop digging" use case, and (c) the security-solution callers ([bulk_import_rules.ts](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_import_rules.ts), [bulk_create_prebuilt_rules.ts](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_create_prebuilt_rules.ts)) depend on the per-rule contract.
+After A1, scan `entries.values()` for at least one `outcome.ok === true`. If there are none, return the map immediately and let the caller handle the "no survivors" branch. **This is the C5 strict check**: we never make an ES read (authz) if every input failed fast.
 
-Implementation (matches today's per-pair dedup, lifted out of `prepareRule`):
+#### A2 — deduped per-pair authorization (`runPerPairAuthorization` in `utils.ts`)
 
-- Build `pairsToCheck: Map<authzKey, { alertTypeId, consumer, ruleIndices: number[] }>` where `authzKey = \`${alertTypeId}::${consumer}\`` and `ruleIndices` are the Phase A1 input indices that share the pair.
-- For each unique pair, call `context.authorization.ensureAuthorized({ ruleTypeId, consumer, operation: WriteOperations.Create, entity: AlertingAuthorizationEntity.Rule })`. Run as a deduped sequential `for` loop (typical bulk has 1-10 unique pairs; latency is negligible and the resulting code is simpler than `pMap` here). Wrap each call in its own `try/catch` so one pair's rejection does not affect others.
-- **On a pair-level rejection** (same behavior regardless of `exitEarlyOnError`):
-  - For every `ruleIndex` in the rejected pair: emit a per-rule `RuleAuditAction.CREATE` failure audit event with `savedObject: { type: RULE_SAVED_OBJECT_TYPE, id, name }` (matches today's `prepareRule` audit shape verbatim).
-  - Mark each of those rules as errored in the preflight outcome map (`{ ok: false, error: { message: authzError.message, status: authzError.output?.statusCode, rule: { id, name } } }`).
-  - Other pairs continue to be checked.
-- Per-`ruleTypeId` registry checks already happen in Phase A step 1.4 (per rule). No need to repeat here.
-- The `exitEarlyOnError` short-circuit at the A→B boundary (see below) is the single mechanism that turns "any preflight error" into "zero ES writes". Step 2 never participates in that decision directly — it just records errors.
+The only ES read in Phase A, and only reached if at least one A1 survivor exists.
 
-> **Note**: today's per-pair dedup in `utils.ts` L119-130 is preserved verbatim; only the failure-handling moves out of `prepareRule` (so it no longer interleaves with API-key minting). The audit-event shape is unchanged — single source of truth for "bulkCreate authz failed for this rule".
+Operates on `RuleEntryMap` directly (no parallel arrays). Builds `Map<\`${alertTypeId}::${consumer}\`, { alertTypeId, consumer, ids: string[] }>` from `entries.values()` where `outcome.ok === true`. For each unique pair, calls `context.authorization.ensureAuthorized({ ruleTypeId, consumer, operation: Create, entity: Rule })` inside its own `try/catch` (deduped sequential loop; typical bulk has 1–10 unique pairs). On pair rejection:
 
-Step 3: deduped schedule-limit:
+- For each id in the rejected pair, emit a `RuleAuditAction.CREATE` failure audit **with** `savedObject` populated (`{ type: RULE_SAVED_OBJECT_TYPE, id, name }`).
+- Overwrite `entry.outcome` from `{ ok: true, ... }` to `{ ok: false, id, error: { message, status, rule: { id, name } } }`. **In-place mutation on the map value** — no parallel array to keep in sync.
+- Continue checking other pairs.
 
-- Collect intervals for surviving **enabled** rules.
-- One `validateScheduleLimit` call across all of them.
-- On overflow: mark the enabled subset as demoted (`disabledReason: 'schedule_limit_exceeded'`). Demoted rules **still proceed to ES write** as disabled, mirroring today's `demotePreparedRules` semantics.
+**Audit shape and return-vs-throw semantics are mode-invariant** — neither `exitEarlyOnError` value changes them. This deliberately diverges from the sibling-bulk-method pattern (`checkAuthorizationAndGetTotal` re-throws); see the custodian-review report for the four-point rationale.
 
-> **Note**: action/connector validation does **not** happen in Phase A. It moves into Phase B step 0 as a per-batch pre-fetch (see below), following the pattern established in [commit d0483a2 "Add performance improvements"](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f). That keeps Phase A's ES touches limited to authz only, and bounds the connector-map memory to one batch at a time.
+#### What Phase A does NOT do
 
-### Post-Phase A decision
+- **No `validateScheduleLimit`.** It's an ES read; C5 strict says ES reads come *after* every cheap in-memory check has had a chance to fail-fast. Schedule-limit moves to Phase B per-batch (see below) — the previous "Phase A3 single-call" placement is dropped.
+- **No connector/action validation.** That moves into Phase B step 0 as a per-batch prefetch, following [commit d0483a2 "Add performance improvements"](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f). Bounds connector-map memory to one batch at a time.
 
-After Phase A completes (it never throws):
+### A→B boundary — caller derives state in one pass
 
-- `validIds: string[]` (rules that will proceed to ES, possibly with demoted enabled→disabled flags from schedule-limit overflow)
-- `preflightErrors: BulkCreateOperationError[]` (per-rule, full granularity preserved at API level — schema/registry/params/interval/`addGeneratedActionValues`/per-rule authz/schedule-limit demotion failures each report against their own rule index)
+`preflightChecks` returns the map. `bulkCreateRules` walks `map.values()` once and accumulates:
 
-Behaviour:
+- `preflightErrors: BulkCreateOperationError[]` — every entry where `outcome.ok === false` (schema/registry/params/interval/`addGeneratedActionValues`/authz failures).
+- `survivingInputs: Array<{ id, rule }>` — every entry where `outcome.ok === true`.
 
-- **`exitEarlyOnError === true` AND `preflightErrors.length > 0`** → return `{ successfulIds: [], errors: preflightErrors, total }`. **Zero ES writes.** This is the "stop digging" branch; it covers preflight authz failures, schema failures, registry failures, and schedule-limit demotions equally — strict-mode callers don't need to discriminate by error type.
-- **`validIds.length === 0`** (no survivors, regardless of flag) → return `{ successfulIds: [], errors: preflightErrors, total }`. **Zero ES writes.** No point entering Phase B with an empty input.
-- Else → continue to Phase B with `validIds`. Per-rule errors are aggregated into the final response.
+Halt policy (the caller's job; `preflightChecks` doesn't see `exitEarlyOnError`):
 
-**The current `bulkCreate` per-rule-isolation contract is preserved verbatim.** No caller (today's default-flag callers OR future `exitEarlyOnError=true` callers) sees a change in error shape, audit shape, or return-vs-throw semantics for authz failures. The only difference under `exitEarlyOnError=true` is that Phase B is skipped when any preflight error is present — the same "operational halt" semantics the flag already provides between batches in Phase B.
+- **`survivingInputs.length === 0`** → return `{ successfulIds: [], errors: preflightErrors, total }`. **Zero ES writes.** No point entering Phase B with an empty input.
+- **`exitEarlyOnError === true && preflightErrors.length > 0`** → same return shape. **Zero ES writes.**
+- Else → continue to Phase B with `survivingInputs`. Per-rule errors are aggregated into the final response. **The current per-rule-isolation contract is preserved.**
 
-### Phase B — per-batch ES writes only
+### Phase B — per-batch ES writes
 
-Slice `validIds` into batches of `batchSize` (clamped to `MAX_BULK_CREATE_BATCH_SIZE`). For each batch:
+Slice `survivingInputs` into batches of `batchSize` (clamped to `MAX_BULK_CREATE_BATCH_SIZE`). For each batch (`runBatch`):
 
-0. **Pre-fetch actions** via new `prefetchActions(...)` helper (pattern from [commit d0483a2](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f)):
-   - Skip entirely when the batch has no actions or systemActions across any rule (avoid an empty `getBulk` call).
+0. **Prefetch actions** via `prefetchActions(actionsClient, batch)`:
+   - Skip entirely if the batch has no actions across any rule (avoid an empty `getBulk` call).
    - Otherwise, union every action ID + systemAction ID across this batch's rules.
    - One `actionsClient.getBulk({ ids: [...union], throwIfSystemAction: false })` call.
-   - Returns `Map<id, ActionResult | InMemoryConnector>` — pass through to step 1.
-   - **On throw (batch-wide error, no fallback):** `actionsClient.getBulk` throws synchronously on the first missing connector ID. Catch the throw and treat it as a **batch-wide error**: for every rule in the batch push `{ message: prefetchError.message, status: prefetchError.output?.statusCode, rule: { id, name } }` into `errors[]`, set `batchPrefetchFailed = true`, and **skip steps 1–6 for this batch**. No API keys are minted, no `bulkSchedule`, no `bulkCreate`. Continue to the next batch unless `exitEarlyOnError` (see step 7). This deliberately avoids any per-rule `getBulk` fallback that would mean ES reads sit between failed prefetch and writes — see C5 rationale in §"Risks / open items".
-1. **`prepareRule`** (per rule, in-memory now that actions are pre-fetched):
-   - `addGeneratedActionValues(rule.data.actions, rule.data.systemActions, context)` — returns new arrays with UUIDs (does NOT mutate input). Use the returned `data = { ...rule.data, actions, systemActions }` for all downstream steps. **Re-runs Phase A's call** — Phase A's UUIDs are discarded; Phase B's land in the SO. See §"Risks / open items" for the trade-off rationale.
-   - `validateActions(context, ruleType, data, allowMissingConnectorSecrets, preFetchedActions)` — uses the map; no ES call.
-   - `validateAndAuthorizeSystemActions({ ..., preFetchedActions })` — uses the map; no ES call.
-   - `extractReferences(context, ruleType, allActions, validatedRuleTypeParams, artifacts, preFetchedActions)` — uses the map.
-   - `transformRuleDomainToRuleAttributes(...)` to build `rawRule`.
-   - All payloads released at end of batch.
-2. **Mint API keys** for the enabled subset:
-   - Per-rule via `createNewAPIKeySet(context, ...)`, run through `pMap` at concurrency `API_KEY_GENERATE_CONCURRENCY` (= 50, defined in [constants.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/common/constants.ts)). This matches today's behavior and is preserved verbatim from the existing `prepareRule`.
-   - **Soft-fail per rule:** on `createNewAPIKeySet` throw, flip that rule's `effectiveEnabled` to `false`, set `apiKeyProps` to a null key, and push a `BulkCreateOperationError` with `disabledReason: 'api_key_creation_failed'`. The rule still proceeds to the SO write as disabled. This is N concurrent ES writes per batch (capped at 50), all of which complete before step 3. **No bulk API-key mint endpoint exists today** — pMap concurrency is the established pattern across the alerting plugin (`prepareRule`, `bulk_enable_rules`, `bulk_edit_rules_occ`).
-   - Note: although step 2 is N writes, **no validation happens between any of them and step 3** — all validation already completed in step 1.
-3. `context.taskManager.bulkSchedule(tasks)` with `enabled: true` and **no `runAt` / `scheduledAt`** on the task instances. TM ([PR #269991](https://github.com/elastic/kibana/pull/269991)) applies `addJitter` server-side: first task runs immediately, the rest are spread up to `min(interval, 5m)`.
+   - Returns `PreFetchedActionsMap = Map<id, ActionResult | InMemoryConnector>` on success.
+   - **On throw (batch-wide error, no fallback):** push a per-rule error for every rule in the batch with the prefetch error message, set `batchPrefetchFailed = true`, and skip steps 0.5–6 for this batch. No API keys minted, no `bulkSchedule`, no `bulkCreate`. The next batch proceeds with its own independent prefetch (unless `exitEarlyOnError` is set, in which case the outer loop breaks). **No per-rule `getBulk` fallback** — that would re-introduce validation between ES calls (C5 violation).
+0.5. **Per-batch schedule-limit check** — between prefetch (a read) and any write:
+   - Collect intervals for this batch's enabled subset (rules where `data.enabled === true`).
+   - Skip entirely if the enabled subset is empty.
+   - Call `validateScheduleLimit({ context, updatedInterval })` once. On overflow, call `demotePreparedRules(...)` to flip those rules to disabled with `disabledReason: 'schedule_limit_exceeded'`. The error message is authored here via `getBulkCreateAsDisabledMessage` and pushed onto the batch's `errors[]` by `demotePreparedRules` itself — same path used by `api_key_creation_failed` / `task_schedule_failed` / `task_validation_failed`. One error per demoted rule, authored in one place.
+   - Schedule-limit demotion is **not** halt-worthy. The batch continues to step 1+ (writes the demoted rules as disabled). `exitEarlyOnError` does **not** halt the outer loop on schedule-limit demotion.
+1. **`prepareRule`** (per rule, all in-memory once step 0 succeeds):
+   - `addGeneratedActionValues(rule.data.actions, rule.data.systemActions, context)` — rerun (Phase A's UUIDs are discarded). Use the returned `data` for all downstream steps.
+   - `validateActions(..., sliceActionsById(preFetchedActions, data.actions ++ data.systemActions))` — uses the slice; no ES call.
+   - `validateAndAuthorizeSystemActions({ ..., preFetchedActions: slice })` — same.
+   - `extractReferences(..., slice)` — same; threads through to `denormalizeActions`.
+   - `transformRuleDomainToRuleAttributes(...)` builds `rawRule`. Discard after the batch.
+2. **Mint API keys for the enabled subset** — per-rule via `createNewAPIKeySet`, run through `pMap` at concurrency `API_KEY_GENERATE_CONCURRENCY` (= 50). Soft-fail per rule (flip `effectiveEnabled` to `false`, push `disabledReason: 'api_key_creation_failed'` to `errors[]`).
+3. `taskManager.bulkSchedule(tasks)` — `enabled: true`, **no `runAt` / `scheduledAt`** (deleted from `buildTaskInstance`). TM's [PR #269991](https://github.com/elastic/kibana/pull/269991) `addJitter` handles activation spread.
 4. `bulkCreateRulesSo(...)` — writes SOs with each rule's effective `enabled` flag.
 5. Per-row outcomes from `bulkResponse.saved_objects`:
    - Success → push to `successfulIds`; emit `ENABLE` audit if enabled.
    - Error → push to `errors`, queue task ID for cleanup, queue API key for invalidation.
-6. **Best-effort cleanup** (custodian-approved): `taskManager.bulkRemove(failedTaskIds)` and `bulkMarkApiKeysForInvalidation(...)`. Swallow errors with `logger.error`.
-7. If `exitEarlyOnError && (batchPrefetchFailed || perRowFailureOccurred)` → break the outer loop. Return what we have.
+6. **Best-effort cleanup**: `taskManager.bulkRemove(failedTaskIds)` and `bulkMarkApiKeysForInvalidation(...)`. Swallow errors with `logger.error`.
+7. If `exitEarlyOnError && (batchPrefetchFailed || soFailureOccurred)` → break the outer loop. Schedule-limit demotion never triggers this.
 
-Order of ES touches per batch is therefore: **prefetch actions (read) → API key mint (N writes, soft-fail per rule) → bulkSchedule (write) → bulkCreate SOs (write)**. All validation lives in step 1, which is pure CPU once step 0 finishes. **No validation between any ES calls** — step 0's read is followed by pure-CPU validation in step 1, then four consecutive write steps with no validation interleaved.
+ES touches per batch: **prefetchActions (read) → validateScheduleLimit (read, conditional) → API key mint (N writes, soft-fail per rule) → bulkSchedule (write) → bulkCreate SOs (write).** All per-rule validation lives in step 1, which is pure CPU once step 0 finishes. The two reads (0, 0.5) cluster at the start of the batch with no writes between them; from step 2 onward it's writes only. **No validation between ES writes.**
 
 ## Control flow
 
@@ -150,120 +167,119 @@ Order of ES touches per batch is therefore: **prefetch actions (read) → API ke
 flowchart TD
     Start[bulkCreateRules called] --> CapCheck[Reject if total > MAX_RULES_NUMBER_FOR_BULK_OPERATION]
     CapCheck --> Clamp[Clamp batchSize to MAX_BULK_CREATE_BATCH_SIZE]
-    Clamp --> PhaseA[Phase A: lean call-wide pre-flight - never throws]
-    PhaseA --> A1["A1: in-memory checks per rule (sequential loop) - per-rule errors accumulated"]
-    A1 --> A2["A2: per-pair authz - deduped ensureAuthorized; on rejection emit per-rule audit (with savedObject) + per-rule error for every rule in rejected pair; continue checking other pairs"]
-    A2 --> A3["A3: deduped schedule-limit - one call over surviving enabled intervals; demote enabled subset to disabled on overflow"]
-    A3 --> Decide{exitEarlyOnError AND any preflight error? OR validIds empty?}
-    Decide -->|yes| AbortNoES["Return early - zero ES writes - successfulIds=[], errors=preflightErrors"]
-    Decide -->|no| Loop[Slice validIds into batches]
-    Loop --> PhaseB[Phase B: per-batch ES writes only]
-    PhaseB --> B0{"B0: prefetchActions - one actionsClient.getBulk over union of connector IDs"}
-    B0 -->|throw| BatchAbort["Push per-rule prefetch error for every rule in batch - skip steps 1-6 for this batch"]
-    B0 -->|ok or batch has no actions| B1["B1: prepareRule per rule - validate actions/system-actions + extractReferences using preFetchedActions map (pure CPU)"]
-    B1 --> B2["B2: pMap API key mint, concurrency=50, soft-fail to disabled"]
+    Clamp --> Ids[Assign ids up front - SavedObjectsUtils.generateId per rule]
+    Ids --> PhaseA[preflightChecks builds RuleEntryMap]
+    PhaseA --> A1["A1: per-rule validateRule - in-memory only; entry.outcome set"]
+    A1 --> A1Halt{Any ok=true entry?}
+    A1Halt -->|no| Derive
+    A1Halt -->|yes| A2["A2: runPerPairAuthorization on the map - ES read; mutates entry.outcome on rejection"]
+    A2 --> Derive[Caller: one for-of over map.values to build preflightErrors + survivingInputs]
+    Derive --> Halt{No survivors OR exitEarlyOnError AND any preflight error?}
+    Halt -->|yes| AbortNoES["Return early - zero ES writes"]
+    Halt -->|no| Loop[Slice survivingInputs into batches]
+    Loop --> PhaseB[runBatch - per-batch ES writes]
+    PhaseB --> B0{"B0: prefetchActions - one getBulk over union of connector IDs"}
+    B0 -->|throw| BatchAbort["Per-rule prefetch error for every rule in batch; batchPrefetchFailed=true; skip B0.5-B6"]
+    B0 -->|ok or no actions| B05["B0.5: validateScheduleLimit over batch enabled subset; on overflow demotePreparedRules with disabledReason=schedule_limit_exceeded"]
+    B05 --> B1["B1: prepareRule per rule - validateActions/system-actions/extractReferences using sliced preFetchedActions (pure CPU)"]
+    B1 --> B2["B2: pMap API key mint at concurrency=50 - soft-fail to disabled"]
     B2 --> B3[B3: bulkSchedule with enabled=true, no runAt - TM applies jitter via PR 269991]
-    B3 --> B4[B4: bulkCreateRulesSo]
-    B4 --> B5[B5: best-effort cleanup of failed tasks + queue API keys for invalidation]
-    B5 --> ExitDecide{exitEarlyOnError AND batchPrefetchFailed OR SO failure?}
-    BatchAbort --> ExitDecide
-    ExitDecide -->|yes| Done
-    ExitDecide -->|no| More{More batches?}
-    More -->|yes| PhaseB
-    More -->|no| Done[Return successfulIds, errors, total]
+    B3 --> B4[B4: bulkCreate SOs]
+    B4 --> CleanupNode[Cleanup: bulkRemove failed tasks, invalidate failed keys]
+    BatchAbort --> Next
+    CleanupNode --> Next{exitEarlyOnError AND batchPrefetchFailed OR SO failure?}
+    Next -->|yes| Done
+    Next -->|no| MoreBatches{More batches?}
+    MoreBatches -->|yes| PhaseB
+    MoreBatches -->|no| Done[Return successfulIds, errors, total]
 ```
+
+Note: schedule-limit demotion at B0.5 does **not** trigger the outer-loop halt — only `batchPrefetchFailed` and SO-write failures do. Schedule-limit overflow demotes the affected rules to disabled and the batch continues writing them; the next batch sees the updated baseline (rules from batches 1..N-1 that were *successfully written enabled* now count in its schedule-frequency lookup).
 
 ## Memory characteristics
 
 | Phase | State held | Approx size at 10k hard cap |
 |---|---|---|
-| A — per-rule outcome map | `Map<idx, { id, ok, error?, consumerKey?, enabled?, interval? }>` | ~150 bytes/rule = ~1.5 MB |
-| A — error array | `BulkCreateOperationError[]` for invalid rules | bounded by failure rate |
-| A — authz pair map | `Map<authzKey, { alertTypeId, consumer, ruleIndices: number[] }>` | bounded by unique pairs (typically 1-10) |
+| A — `RuleEntryMap` | `Map<id, { id, rule, outcome }>`; `rule` is a reference (not a copy), `outcome` is a small discriminated record | ~250 bytes/entry × 10k = ~2.5 MB. `rule` references are shared with `inputsWithIds`, not duplicated. |
+| A — error array | derived once at the A→B boundary | bounded by failure rate |
 | B — current batch only | `Map<id, PreparedRule>` with rawRule, references, schedule, etc. | bounded by `batchSize` (max 500 → ~50 MB worst case at full ruleAttributes) |
-| B — prefetched actions (current batch) | `Map<connectorId, ActionResult | InMemoryConnector>` | bounded by `batchSize × max-actions-per-rule` (~2500 entries at 500 × 5) |
 | Cross-call accumulators | `successfulIds: string[]`, `errors: BulkCreateOperationError[]` | strings + small objects, linear in successes |
 
-No call-wide accumulation of transformed payloads. Phase A's generated action arrays from `addGeneratedActionValues` are **not** retained (rerun in Phase B by design — see §"Risks / open items"). **C4 (memory footgun) satisfied.**
+No call-wide accumulation of transformed payloads. **C4 (memory footgun) satisfied.**
+
+## Code style: minimise comments
+
+When implementing this refactor, **keep comments to a minimum, preferably one line each**.
+
+- Do not narrate what the code does. Names (`validateRule`, `runPerPairAuthorization`, `prefetchActions`, `sliceActionsById`, `RuleEntry`, `PreflightOutcome`, `survivingInputs`) carry the meaning.
+- Reserve comments for non-obvious *intent* or *constraint* the code itself cannot convey — e.g. a one-line note at the Phase A2 audit site that the shape is mode-invariant and must not be collapsed (see custodian review §9.8), or a one-line note that `addGeneratedActionValues` is intentionally rerun in Phase B.
+- Do NOT echo the plan text into code comments. Cross-reference the report file for any longer rationale instead of pasting paragraphs.
+- No `// Phase A1: do thing` / `// Step 0.5: do other thing` chapter-marker comments. The function structure does the marking.
+
+If a piece of logic genuinely needs a paragraph of explanation, that's a smell — either the structure is wrong, or the explanation belongs in the report, not the source file.
 
 ## Files to change
 
-- [bulk_create_rules.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts) — add `preflightChecks` (Phase A) before the batch loop; the new Phase A2 lives here too (or in a small private helper inside `utils.ts`); rewrite `runBatch` to consume `validIds[]`, call `prefetchActions` once per batch, then `prepareRule` per rule with the resulting map; remove per-batch `authzCache` (authz moved to Phase A2).
-- [utils.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts) — split today's `prepareRule` into:
-  - `preflightChecks` — in-memory only, returns `{ ok: true; consumerKey; enabled; interval } | { ok: false; error }`. **No transforms, no action lookups.**
-  - `prepareRule` — runs in Phase B per batch. Accepts `preFetchedActions?: Map<id, ActionResult | InMemoryConnector>` (Map shape — per-batch caller's view). Does `validateActions` / `validateAndAuthorizeSystemActions` / `extractReferences` (all pure CPU when the map is present), API key minting (per-rule via `pMap` concurrency=`API_KEY_GENERATE_CONCURRENCY`, soft-fail), and `transformRuleDomainToRuleAttributes`. Output shape matches today's `PreparedRule`.
-  - Add `prefetchActions(actionsClient, batch, logger)` helper: unions connector IDs, calls `actionsClient.getBulk({ ids, throwIfSystemAction: false })`, returns `Map<id, ActionResult | InMemoryConnector>` on success. **On throw, re-throws to the caller (no fallback)** — caller (`runBatch`) catches and marks the entire batch as errored. Returns an empty map (or short-circuits in the caller) when the batch has zero connector IDs.
-  - Add `sliceActionsById(map, actions)` helper: returns ordered `Array<ActionResult | InMemoryConnector>` subset of pre-fetched actions for a given rule's `data.actions` / `data.systemActions`. **This is the Map → Array conversion bridge: per-batch caller holds a `Map`; downstream shared helpers consume an `Array`.** (See [commit d0483a2](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f) for the canonical shape.)
-  - Add Phase A2 authz helper (`runPerPairAuthorization` or inline in `bulk_create_rules.ts`): builds `Map<authzKey, { alertTypeId, consumer, ruleIndices }>`, runs deduped `ensureAuthorized` per pair, and on rejection emits per-rule audit + per-rule error for every rule in the rejected pair. **Never throws** — failures are recorded in the preflight outcome and the `exitEarlyOnError` boundary check decides whether to short-circuit.
-  - In `buildTaskInstance`: **delete** `runAt: new Date()` and `scheduledAt: new Date()`. Delete the commented `// import { BULK_TM_SCHEDULE_DELAY ...` line at the top of the file.
-- **Shared `rules_client/lib` helpers** — additive, backward-compatible (mirrors [commit d0483a2](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f)). **Each helper accepts an `Array<ActionResult | InMemoryConnector>`**, not a Map — `sliceActionsById` does the conversion at the call site. Layering: `runBatch` holds `Map<id, ...>`; for each rule, `sliceActionsById(map, rule.data.actions ++ rule.data.systemActions)` produces the `Array` passed into shared helpers.
+- [bulk_create_rules.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts):
+  - Add a private `preflightChecks` orchestrator that builds and returns `RuleEntryMap<Params>`. A1 calls `validateRule` per rule (sequential). After A1, scan for at least one `ok=true` entry; if none, return early without calling A2. A2 calls `runPerPairAuthorization({ context, entries })` which mutates entries in place.
+  - **`preflightChecks` does NOT take `exitEarlyOnError`** — caller owns halt policy. Function is a pure "report what I found."
+  - In `bulkCreateRules`: assign ids up front (`SavedObjectsUtils.generateId()` when no caller-supplied id), call `preflightChecks`, derive `preflightErrors` / `survivingInputs` in a single `for-of` over the map, apply halt policy (`!survivors || (exitEarlyOnError && hasHalt)`). Short-circuit branch returns `{ successfulIds: [], errors: preflightErrors, total }` — no demotion-error reconstruction needed (schedule-limit lives in Phase B now).
+  - Rewrite `runBatch` to consume one batch from `survivingInputs`. Call `prefetchActions` once at the start. **Add per-batch `validateScheduleLimit` step (B0.5)** between prefetch and `prepareRule`. Call `prepareRule` per rule with the resulting prefetched map. Remove per-batch `authzCache` (authz centralised in Phase A2).
+- [utils.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts):
+  - Add `validateRule` — per-rule in-memory checks (schema, registry, params, interval, `addGeneratedActionValues`). Returns `PreflightOutcome`. No transforms, no action lookups.
+  - Add `runPerPairAuthorization({ context, entries: RuleEntryMap<Params> })` — operates on the map directly. On rejection: emits per-rule `RuleAuditAction.CREATE` audit (with `savedObject`) and mutates `entry.outcome` from `{ ok: true, ... }` to `{ ok: false, error }`. Never throws.
+  - Add `prefetchActions(actionsClient, batch)` helper: unions connector IDs across the batch (skipping when zero), calls `actionsClient.getBulk({ ids, throwIfSystemAction: false })`, returns `PreFetchedActionsMap` on success. **Re-throws on failure** — caller (`runBatch`) treats the throw as a batch-wide error. No per-rule fallback.
+  - Add `sliceActionsById(map, actions)` helper: returns ordered `Array<ActionResult | InMemoryConnector>` subset for a given rule's `data.actions` / `data.systemActions`. **Map → Array bridge** — `runBatch` holds a `Map`, shared helpers consume an `Array`.
+  - Keep `prepareRule` (now Phase B only): accepts `preFetchedActions?: PreFetchedActionsMap`. Does `validateActions` / `validateAndAuthorizeSystemActions` / `extractReferences` (pure CPU when the map is present) + API key minting via `pMap` (concurrency `API_KEY_GENERATE_CONCURRENCY`, soft-fail per rule) + `transformRuleDomainToRuleAttributes`.
+  - Keep `demotePreparedRules` as the single demotion-error authoring path — called by `runBatch` from B0.5 (schedule-limit overflow), B3 (`task_schedule_failed` / `task_validation_failed`), and from the `pMap` inside `prepareRule` step 2 (`api_key_creation_failed`, which already uses it today). The A→B short-circuit branch does NOT need it (no Phase A demotions exist).
+  - `getBulkCreateAsDisabledMessage` stays where it is (already exported). No new export needed.
+  - In `buildTaskInstance`: **delete** `runAt: new Date()` and `scheduledAt: new Date()`. Delete the commented `// import { BULK_TM_SCHEDULE_DELAY ...` line.
+- **Shared `rules_client/lib` helpers** — additive, backward-compatible (mirrors [commit d0483a2](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f)):
   - [validate_actions.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/lib/validate_actions.ts) — add optional `preFetchedActions?: Array<ActionResult | InMemoryConnector>`. If present, use it instead of `actionsClient.getBulk`.
   - [validate_authorize_system_actions.ts](x-pack/platform/plugins/shared/alerting/server/lib/validate_authorize_system_actions.ts) — same.
   - [extract_references.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/lib/extract_references.ts) — same; threads through to `denormalizeActions`.
   - [denormalize_actions.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/lib/denormalize_actions.ts) — same.
-  - Single-rule callers (`createRule`, `updateRule`, etc.) keep working unchanged because the new parameter is optional and the helpers fall back to `actionsClient.getBulk` when it's absent.
-- [types.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/types.ts) — add `PreflightOutcome` union type (`{ ok: true; id; consumerKey; enabled; interval } | { ok: false; id; error }`). Update `PrepareRuleArgs` to the per-batch ES-only shape (no `authzCache`, with optional `preFetchedActions: Map<id, ActionResult | InMemoryConnector>`).
-- [constants.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/common/constants.ts) — **delete** the `BULK_TM_SCHEDULE_DELAY = 30_000` export at L30. TM's [PR #269991](https://github.com/elastic/kibana/pull/269991) `addJitter` makes it unnecessary, and leaving it in place is misleading. Grep the alerting plugin for any other importer before removal — there should be none after the commented-out import in `utils.ts` is also removed.
+  - Single-rule callers (`createRule`, `updateRule`, etc.) keep working unchanged because the new parameter is optional.
+- [types.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/types.ts):
+  - Add `PreflightOutcome` (discriminated union: `{ ok: true; id; consumerKey; enabled; interval } | { ok: false; id; error: BulkCreateOperationError }`).
+  - Add `RuleEntry<Params>` (`{ id; rule; outcome }`) and `RuleEntryMap<Params>`.
+  - Update `PrepareRuleArgs` to per-batch ES-only shape: remove `authzCache`, add optional `preFetchedActions: PreFetchedActionsMap`.
+- [constants.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/common/constants.ts) — remove `BULK_TM_SCHEDULE_DELAY` (TM PR #269991 makes it unnecessary).
 - [bulk_create_rules.test.ts](x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.test.ts) — test updates listed below.
 
 ## Test changes
 
-### Phase A — preflight
+**Phase A — `validateRule` failures (per-rule isolation, default flag):**
+- Schema-invalid rule among valid rules: invalid reported per-rule, valid rules still created. `bulkCreate` called with only the valid subset.
+- All rules fail preflight: zero ES writes regardless of `exitEarlyOnError`. No `taskManager.bulkSchedule`, no `bulkCreate`, no `createAPIKey`. Importantly: **also no `validateScheduleLimit` and no authz call** (zero A1 survivors → A2 skipped).
+- `exitEarlyOnError=true` + one preflight error → returns immediately, zero ES writes.
 
-- **Schema-invalid rule among valid rules (`exitEarlyOnError=false`, default)**: 1 invalid + N valid → invalid reported in `errors`, all N valid land in `successfulIds`. `bulkCreate` called with only the valid subset.
-- **All rules fail schema validation**: `validIds.length === 0` → `{ successfulIds: [], errors: <all>, total }`. Assert **no** `taskManager.bulkSchedule`, **no** `bulkCreate`, **no** API keys minted. Regardless of `exitEarlyOnError`.
-- **`exitEarlyOnError=true` + one schema-invalid rule** → `{ successfulIds: [], errors: [<that one>], total }`. Assert `taskManager.bulkSchedule` and `unsecuredSavedObjectsClient.bulkCreate` are **never called**, no API keys minted.
-- **Schedule-limit overflow**: demoted rules still reach `bulkCreate` as disabled; appropriate `disabledReason` recorded in `errors`.
+**Phase A — per-pair authz:**
+- Partial-authz user, default flag → authorized subset created; per-rule `RuleAuditAction.CREATE` audit (with `savedObject`) emitted for unauthorized; both audits and `errors[]` shape are mode-invariant.
+- Partial-authz user + `exitEarlyOnError=true` → per-rule audit emitted, per-rule errors recorded, **zero ES writes for the authorized subset too**, call returns normally (no throw).
+- All pairs authorized → no Phase-A audit events emitted.
+- Multiple rejected pairs → both pairs are checked; both rules in `errors[]`.
 
-### Phase A — per-pair authz behavior (consistent across modes)
+**Phase B — prefetch (no fallback):**
+- Happy path: exactly one `actionsClient.getBulk` per batch with union of connector ids.
+- Batch with zero actions: `actionsClient.getBulk` not called.
+- Prefetch throw → batch-wide error; no API keys, no `bulkSchedule`, no `bulkCreate` for that batch.
+- Prefetch throw + `exitEarlyOnError=true` → outer loop breaks.
+- Prefetch throw, default flag → subsequent batches proceed independently.
 
-- **Partial-authz user + `exitEarlyOnError=false` (default)**: pair `(siem.signals, siem)` authorized; pair `(logs.alert.foo, logs)` rejected. Assert:
-  - Authorized rules land in `successfulIds`.
-  - Unauthorized rules: each emits one per-rule `RuleAuditAction.CREATE` audit event **with** `savedObject: { type, id, name }`; each appears in `errors[]` with the authz error message.
-  - `ensureAuthorized` called **once per unique pair**, not once per rule.
-  - `bulkCreate` / `bulkSchedule` / `apiKey.create` are called only for the authorized subset.
-  - **Preserves today's bulkCreate contract exactly.**
-- **Partial-authz user + `exitEarlyOnError=true`**: same input. Assert:
-  - Per-rule audit events emitted with `savedObject` for unauthorized rules (same as default — audit shape is mode-invariant).
-  - `errors[]` contains per-rule entries for every unauthorized rule.
-  - **Zero ES writes**: `apiKey.create`, `taskManager.bulkSchedule`, `unsecuredSavedObjectsClient.bulkCreate` are **never called**, including for the authorized subset (A→B boundary short-circuits).
-  - The call **returns normally** (does NOT throw); caller inspects `errors[]` and `successfulIds`.
-- **All pairs authorized**: no audit events emitted in Phase A2; behavior is identical to today.
-- **Multiple rejected pairs**: assert that the second pair is **also** checked and its rules also recorded — Phase A2 does not short-circuit on first rejection.
+**Phase B — per-batch schedule-limit (new placement at B0.5):**
+- Single batch overflow: enabled subset is demoted to disabled with `disabledReason: 'schedule_limit_exceeded'`; the demoted rules **still reach `bulkCreate` as disabled**; `errors[]` contains one entry per demoted rule.
+- Batch 1 overflow + batch 2 fits: assert that batch 2's `validateScheduleLimit` is called with the right intervals and **does** proceed without demotion (per-batch baseline grows as prior batches' enabled writes complete).
+- Schedule-limit demotion does **NOT** halt the outer loop, even with `exitEarlyOnError=true`. (Demotion is *not* an error — the SO is still written.)
+- Mixed batch where only some rules are enabled: only enabled intervals are passed to `validateScheduleLimit`; disabled rules are unaffected.
 
-### Phase B — prefetch (no fallback)
-
-- **Action prefetch — happy path**: a batch with N rules referencing M unique connectors → exactly **one** `actionsClient.getBulk` call (with `ids = M unique`), and `validateActions`/`validateAndAuthorizeSystemActions`/`extractReferences` are called per rule **without** triggering further `getBulk` calls (assert via mock call counts).
-- **Action prefetch — batch with zero actions**: a batch where every rule has empty `actions` and `systemActions` → `actionsClient.getBulk` is **not called** at all for this batch.
-- **Action prefetch — throw (batch-wide error, no fallback)**: `actionsClient.getBulk` throws on the first missing connector ID. Assert:
-  - Every rule in the batch appears in `errors[]` with the prefetch error message.
-  - **Zero** `apiKey.create` calls for this batch.
-  - **Zero** `taskManager.bulkSchedule` calls for this batch.
-  - **Zero** `unsecuredSavedObjectsClient.bulkCreate` calls for this batch.
-  - Subsequent batches proceed normally (call counts on `getBulk` show one call per subsequent batch).
-- **Action prefetch — throw + `exitEarlyOnError=true`**: same setup, but the outer loop breaks; remaining batches are not invoked.
-- **Mixed-batch actions**: a batch where some rules have actions and others don't → `actionsClient.getBulk` is called once with the union of connector IDs from the actioned rules only; the no-actions rules' `validateActions` makes no `getBulk` call.
-
-### Phase B — task instances + API key mint
-
-- **`bulkSchedule` task instances** have `enabled: true` and **do not** include `runAt` or `scheduledAt` (TM-side jitter is asserted in TM's own tests; we assert delegation).
-- **Per-rule API key mint soft-fail**: one rule's `createNewAPIKeySet` throws → that rule is created disabled with `disabledReason: 'api_key_creation_failed'` in `errors[]`; others succeed. Assert `pMap` concurrency is bounded at `API_KEY_GENERATE_CONCURRENCY`.
-
-### Existing tests to keep
-
-- **Hard-cap clamping** (`MAX_RULES_NUMBER_FOR_BULK_OPERATION`).
-- **`batchSize` clamping** to `MAX_BULK_CREATE_BATCH_SIZE` with warn log.
-- **`exitEarlyOnError=true` on SO per-row failure**: pre-flight passed, SO step had failures → remaining batches not invoked.
-
-### `utils.test.ts` additions
-
-- Cover `preflightChecks` and `prepareRule` separately.
-- Assert `prepareRule` with `preFetchedActions` Map provided makes **no** `actionsClient.getBulk` calls.
-- Assert `sliceActionsById` returns the correct ordered subset for a rule.
-
-### Shared `rules_client/lib` helper tests
-
-- `validate_actions.ts`, `validate_authorize_system_actions.ts`, `extract_references.ts`, `denormalize_actions.ts`: each gains a "with `preFetchedActions` array" case asserting **no** internal `actionsClient.getBulk` call, and an existing "without `preFetchedActions`" case continues to work unchanged (single-rule fallback).
+**Phase B — existing tests preserved:**
+- Per-rule `createNewAPIKeySet` throw → rule becomes disabled with `disabledReason: 'api_key_creation_failed'`.
+- `bulkSchedule` per-task silent drop → demoted with `disabledReason: 'task_validation_failed'`, SO still written.
+- `bulkCreate` per-row error → `errors[]` push, task cleanup queued.
+- `exitEarlyOnError=true` on SO per-row failure → remaining batches not invoked.
+- `bulkSchedule` task instances: `enabled: true`, **no** `runAt` / `scheduledAt`.
+- Hard-cap clamping (`MAX_RULES_NUMBER_FOR_BULK_OPERATION`).
 
 ## Non-changes
 
@@ -273,16 +289,9 @@ No call-wide accumulation of transformed payloads. Phase A's generated action ar
 
 ## Risks / open items
 
-- **`addGeneratedActionValues` runs in both phases (by design).** Pure ([add_generated_action_values.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/lib/add_generated_action_values.ts)): `.map` + spread, no input mutation; `async` only wraps a cached UI-settings read. Phase A's generated UUIDs/dsl are discarded; Phase B's are what land in the SO. Phase A UUIDs never leak (outcome state doesn't include action UUIDs). Worst-case duplicate CPU at 10k cap is ~250 ms — accepted to keep memory lean (the alternative — carrying the generated arrays call-wide — adds ~1.8 MB at the cap which is still lean, but the simpler "rerun and discard" design wins on code clarity and parity with single-rule path semantics).
-- **No prefetch fallback (C5 strict alignment).** `actionsClient.getBulk` throws synchronously on the first missing connector ID. Earlier iterations of this plan included a "fall back to per-rule `getBulk` inside `validateActions`" path; that has been **removed** because per-rule `getBulk` would sit between the failed prefetch and the first ES write (API key mint), which is exactly the "validation between ES calls" pattern C5 prohibits. The current design treats a prefetch throw as a **batch-wide error**: every rule in the batch is marked errored, no writes happen for that batch, and (unless `exitEarlyOnError` is set) the next batch proceeds with its own independent prefetch. The user-visible cost is that a single missing connector in one rule fails its entire batch, but C5 is honored without exception.
+- **`addGeneratedActionValues` runs in both phases.** Pure ([add_generated_action_values.ts](x-pack/platform/plugins/shared/alerting/server/rules_client/lib/add_generated_action_values.ts)): `.map` + spread, no input mutation; `async` only wraps a cached UI-settings read. Phase A's generated UUIDs/dsl are discarded; Phase B's are what land in the SO. Phase A UUIDs never leak (entry's `outcome` doesn't include action UUIDs). Worst-case duplicate CPU at 10k cap is ~250 ms — accepted to preserve lean memory (C4) and keep helper signatures unchanged.
+- **`actionsClient.getBulk` throw semantics**: today it throws synchronously on the first missing connector ID. The plan deliberately does **no** per-rule fallback (an earlier iteration had one and was removed because it would re-introduce validation between ES calls, violating C5). One missing connector ID in one rule of the batch causes the whole batch to error.
 - **Connector cardinality**: prefetch is per-batch, so the connector map is bounded by `batchSize × max-actions-per-rule`. At 500 rules × ~5 actions, the map holds ~2500 entries — comfortably small.
-- **Authz contract preserved verbatim (deliberate divergence from sibling-bulk methods).** Today's `bulkCreate` contract is per-rule authz isolation (a user authorized for some rule types but not others gets a 200 with per-rule errors for the unauthorized ones). Sibling-bulk methods (`bulkDelete`/`bulkEnable`/`bulkDisable`/`bulkEdit`/`bulkEditParams`/`bulkGet`) throw 403 with one call-wide audit event on authz failure. **We keep today's `bulkCreate` contract in both modes.** Justification:
-  - Those sibling methods don't batch and don't have `exitEarlyOnError`; their throw-pattern is the only "circuit breaker" they have. `bulkCreate` already has the A→B boundary short-circuit, which gives strict-mode callers the same "zero ES writes" guarantee without changing the return/audit shape.
-  - Bundling "throw on authz" onto `exitEarlyOnError` would conflate two distinct concepts (operational halt vs. failure-shape change) on a single flag whose documented purpose is the former.
-  - Audit shape is mode-invariant — downstream audit consumers don't have to special-case two shapes for the same call-site.
-  - Security-solution callers ([bulk_import_rules.ts](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_import_rules.ts), [bulk_create_prebuilt_rules.ts](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_create_prebuilt_rules.ts)) keep working unchanged.
-  - PR description should explicitly note the divergence from sibling-bulk precedent and the rationale.
-- **Demotion semantics in Phase A** (schedule-limit overflow): we still demote in-memory and let the rule write as disabled. This matches today's behaviour but happens earlier in the call. Call-wide check (vs today's per-batch) means a 10-batch call that breaches the limit demotes the whole enabled subset upfront, rather than batches 1-N succeeding and batch N+1 demoting. Stricter and more predictable; PR description should make this explicit.
-- **API-key mint is N concurrent ES writes per batch.** `pMap` at concurrency `API_KEY_GENERATE_CONCURRENCY` (=50). No bulk-mint endpoint exists. The N writes are all bracketed inside Phase B step 2 with no validation between them and step 3 (`bulkSchedule`) — so C5 is preserved. Per-rule failures soft-fail the affected rule to disabled (`disabledReason: 'api_key_creation_failed'`); other rules in the batch continue.
-- **Return-shape contract on `exitEarlyOnError`-with-preflight-errors**: callers see `total > 0` but `successfulIds.length === 0` and a populated `errors[]`. Security-solution callers iterate the result without throwing, so this is fine — confirm in review.
-- **`BULK_TM_SCHEDULE_DELAY` constant removal**: `rules_client/common/constants.ts` L30 exports `BULK_TM_SCHEDULE_DELAY = 30_000` which is only referenced from a commented-out import in `utils.ts` L34. Remove both. TM's [PR #269991](https://github.com/elastic/kibana/pull/269991) `addJitter` makes any alerting-side stagger constant unnecessary.
+- **Authz handling diverges from sibling-bulk methods deliberately.** Authz failures are always per-rule (with `savedObject` populated), in both `exitEarlyOnError` modes. The call never throws on authz failure; the route layer returns 200 with `errors[]` populated. This intentionally **does not** adopt the [`checkAuthorizationAndGetTotal`](x-pack/platform/plugins/shared/alerting/server/rules_client/lib/check_authorization_and_get_total.ts) audit-and-throw pattern. See the custodian-review report for the four-point rationale.
+- **Per-batch schedule-limit placement shifts earlier in `runBatch`.** Today, `validateScheduleLimit` already runs per-batch inside `runBatch`, but **after `prepareRule` has finished** — which means every batch mints API keys for its enabled subset *before* learning whether the schedule-limit will demote them. The refactor moves the call to B0.5 (between prefetch and `prepareRule`), so demoted rules never get an enabled-rule API key minted. Same batching cadence as today; cleaner ordering, fewer wasted ES writes. PR description should call this out.
+- **Return-shape contract on `exitEarlyOnError`-with-preflight-errors**: callers see `total > 0` but `successfulIds.length === 0` and a populated `errors[]`. Security-solution callers ([bulk_import_rules.ts](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_import_rules.ts)) iterate the result without throwing, so this is fine — confirm in review.
