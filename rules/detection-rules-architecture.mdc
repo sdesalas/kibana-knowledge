@@ -1,0 +1,701 @@
+---
+description: Detection rules architecture for Kibana Security Solution backend development
+alwaysApply: false
+---
+# Detection Rules Architecture in Kibana
+
+## Overview
+
+Detection Rules in Kibana are security-focused rules that detect threats and suspicious activities in your data. They are built on top of the Alerting Framework, which provides the infrastructure for rule execution, scheduling, and alert management. The Detection Rules Client provides a high-level abstraction layer for managing detection rules, while the Alerting Framework handles the low-level rule execution and persistence.
+
+For visual architecture diagrams, and links to relevant files see: [detection-rules-architecture-diagrams.md](./detection-rules-architecture-diagrams.md)
+
+## Architecture Components
+
+### 1. Detection Rules
+
+Detection Rules are security-specific rule configurations that define:
+- **Rule Types**: Query, EQL, ESQL, ML (Machine Learning), Threshold, Indicator Match, New Terms, Saved Query
+- **Rule Parameters**: Query language (KQL/EQL/ESQL), index patterns, data views, time windows, thresholds, ML jobs, etc.
+- **Rule Metadata**: Name, description, severity, risk score, tags, MITRE ATT&CK mappings
+- **Rule Actions**: Notifications and integrations when alerts are triggered
+- **Rule State**: Execution state, gap detection, alert suppression settings
+
+**Key Characteristics:**
+- Detection rules are stored as Saved Objects of type `alert` in Kibana
+- Each detection rule maps to a specific Alerting Framework rule type (e.g., `siem.queryRule`, `siem.eqlRule`)
+- Rules can be **custom** (user-created) or **prebuilt** (immutable, managed by Elastic)
+- Rules execute on a schedule (e.g., every 5 minutes, hourly) to search for matching events
+
+**Rule Type IDs:**
+```typescript
+// From src/platform/packages/shared/kbn-securitysolution-rules/src/rule_type_constants.ts
+const RULE_TYPE_PREFIX = 'siem';
+export const EQL_RULE_TYPE_ID = 'siem.eqlRule';
+export const ESQL_RULE_TYPE_ID = 'siem.esqlRule';
+export const INDICATOR_RULE_TYPE_ID = 'siem.indicatorRule';
+export const ML_RULE_TYPE_ID = 'siem.mlRule';
+export const QUERY_RULE_TYPE_ID = 'siem.queryRule';
+export const SAVED_QUERY_RULE_TYPE_ID = 'siem.savedQueryRule';
+export const THRESHOLD_RULE_TYPE_ID = 'siem.thresholdRule';
+export const NEW_TERMS_RULE_TYPE_ID = 'siem.newTermsRule';
+```
+
+**Rule Type Mappings (legacy type → rule type ID):**
+```typescript
+// From src/platform/packages/shared/kbn-securitysolution-rules/src/rule_type_mappings.ts
+export const ruleTypeMappings = {
+  eql: 'siem.eqlRule',
+  esql: 'siem.esqlRule',
+  machine_learning: 'siem.mlRule',
+  query: 'siem.queryRule',
+  saved_query: 'siem.savedQueryRule',
+  threat_match: 'siem.indicatorRule',
+  threshold: 'siem.thresholdRule',
+  new_terms: 'siem.newTermsRule',
+};
+```
+
+**Location:**
+- Rule definitions: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_types/`
+- Rule schemas: `x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/`
+- Rule type constants: `src/platform/packages/shared/kbn-securitysolution-rules/src/`
+
+### 2. Detection Rules Client
+
+The Detection Rules Client (`IDetectionRulesClient`) is a service layer that provides a domain-specific API for managing detection rules. It abstracts away the complexity of the Alerting Framework and provides security-specific operations.
+
+**Key Responsibilities:**
+- CRUD operations for detection rules (create, update, patch, delete)
+- Rule import/export functionality
+- Prebuilt rule management (upgrade, revert, customization)
+- Rule validation and transformation
+- Conversion between detection rule format and alerting rule format
+
+**Interface Methods:**
+```typescript
+interface IDetectionRulesClient {
+  getRuleCustomizationStatus(): PrebuiltRulesCustomizationStatus;
+  createCustomRule(args: CreateCustomRuleArgs): Promise<RuleResponse>;
+  createPrebuiltRule(args: CreatePrebuiltRuleArgs): Promise<RuleResponse>;
+  updateRule(args: UpdateRuleArgs): Promise<RuleResponse>;
+  patchRule(args: PatchRuleArgs): Promise<RuleResponse>;
+  deleteRule(args: DeleteRuleArgs): Promise<void>;
+  upgradePrebuiltRule(args: UpgradePrebuiltRuleArgs): Promise<RuleResponse>;
+  revertPrebuiltRule(args: RevertPrebuiltRuleArgs): Promise<RuleResponse>;
+  importRule(args: ImportRuleArgs): Promise<RuleResponse>;
+  importRules(args: ImportRulesArgs): Promise<Array<RuleResponse | RuleImportErrorObject>>;
+}
+```
+
+**Dependencies:**
+- `RulesClient` (from Alerting Framework) - for rule persistence and management
+- `ActionsClient` (from Actions Framework) - for managing rule actions/connectors
+- `SavedObjectsClient` - for accessing prebuilt rule assets
+- `MlAuthz` - for machine learning authorization
+- `ProductFeaturesService` - for feature flag checks
+- `ILicense` - for license level verification (e.g., prebuilt rule customization)
+
+**Note on Read Operations:**
+- The interface currently focuses on write operations (create, update, delete, import)
+- Read operations are handled through the deprecated `readRules()` function
+- Internal helper methods exist (`getRuleById`, `getRuleByRuleId`) in the `methods/` folder but are not part of the public interface
+- Future versions may add a `getRule()` method to the interface
+
+**Location:**
+- Client interface: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts`
+- Client implementation: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts`
+- Methods: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/`
+- Converters: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/converters/`
+
+### 3. Alerting Framework
+
+The Alerting Framework (`@kbn/alerting-plugin`) is Kibana's core infrastructure for rule-based alerting. It provides:
+
+**Core Components:**
+
+1. **RuleTypeRegistry**: Manages registration of rule types
+   - Each rule type defines an executor function that runs on a schedule
+   - Rule types are registered during plugin setup
+   - Location: `x-pack/platform/plugins/shared/alerting/server/rule_type_registry.ts`
+
+2. **RulesClient**: Provides CRUD operations for rules
+   - Rules are stored as Saved Objects of type `alert`
+   - Handles rule scheduling via Task Manager
+   - Manages rule state, API keys, and execution lifecycle
+   - Location: `x-pack/platform/plugins/shared/alerting/server/rules_client/rules_client.ts`
+
+3. **Task Runner**: Executes rules on schedule
+   - Runs rule type executors
+   - Manages alert lifecycle (create, update, recover)
+   - Handles timeouts and error recovery
+   - Location: `x-pack/platform/plugins/shared/alerting/server/task_runner/`
+
+4. **Alerts Service**: Manages alerts as data
+   - Writes alerts to Elasticsearch indices
+   - Handles alert indexing, mapping, and data streams
+   - Location: `x-pack/platform/plugins/shared/alerting/server/alerts_service/`
+
+**Key Concepts:**
+- **Rule Type**: A function that takes parameters and executes actions on alerts
+- **Rule**: A configuration that defines a schedule, rule type with parameters, state, and actions
+- **Alert**: The alert(s) created from a rule execution
+- **Action**: A notification or integration triggered when an alert fires
+
+**Location:**
+- `x-pack/platform/plugins/shared/alerting/`
+
+## Security Solution Plugin Lifecycle
+
+### Constructor
+
+The plugin constructor (`Plugin` class in `plugin.ts`) initializes:
+- Configuration parsing via `createConfig(context)`
+- Core services: `AppClientFactory`, `ProductFeaturesService`, `SiemMigrationsService`
+- Telemetry services: `TelemetryEventsSender`, `AsyncTelemetryEventsSender`, `TelemetryReceiver`
+- Endpoint context and services: `EndpointAppContextService`, `CompleteExternalResponseActionsTask`
+- Rule monitoring service via `createRuleMonitoringService()`
+- Health diagnostic and trial companion services
+
+### Setup Phase (`setup()`)
+
+Key operations during setup:
+
+1. **Saved Objects & UI Settings**: Initialize saved objects and UI settings via `initSavedObjects()` and `initUiSettings()`
+2. **Product Features**: Setup product features service
+3. **Event Types Registration**: Register analytics event types for telemetry
+4. **Rule Monitoring**: Setup rule monitoring service via `ruleMonitoringService.setup()`
+5. **Task Registration**: Register scheduled tasks:
+   - Risk scoring task
+   - Entity analytics migration
+   - Entity store tasks (field retention, data view refresh, snapshot, health)
+   - Privilege monitoring task
+6. **Request Context**: Create request context factory for API routes
+7. **Rule Data Service**: Initialize rule data client for alerts-as-data via `ruleDataService.initializeIndex()`
+8. **Detection Rule Types Registration**: Register all security rule types wrapped with `createSecurityRuleTypeWrapper`
+9. **Routes**: Initialize all API routes via `initRoutes()` and endpoint-specific route registrations
+10. **Telemetry**: Setup telemetry sender and receiver
+11. **Agent Builder**: Register tools, attachments, and agents for AI capabilities
+
+**Detection Rule Types Registered:**
+```typescript
+// From plugin.ts setup()
+plugins.alerting.registerType(securityRuleTypeWrapper(createEqlAlertType()));
+if (!experimentalFeatures.esqlRulesDisabled) {
+  plugins.alerting.registerType(securityRuleTypeWrapper(createEsqlAlertType()));
+}
+plugins.alerting.registerType(securityRuleTypeWrapper(
+  createQueryAlertType({ id: SAVED_QUERY_RULE_TYPE_ID, name: 'Saved Query Rule' })
+));
+plugins.alerting.registerType(securityRuleTypeWrapper(createIndicatorMatchAlertType()));
+plugins.alerting.registerType(securityRuleTypeWrapper(createMlAlertType(plugins.ml)));
+plugins.alerting.registerType(securityRuleTypeWrapper(
+  createQueryAlertType({ id: QUERY_RULE_TYPE_ID, name: 'Custom Query Rule' })
+));
+plugins.alerting.registerType(securityRuleTypeWrapper(createThresholdAlertType()));
+plugins.alerting.registerType(securityRuleTypeWrapper(createNewTermsAlertType()));
+```
+
+**Setup Dependencies:**
+```typescript
+interface SecuritySolutionPluginSetupDependencies {
+  alerting: AlertingServerSetup;
+  actions: ActionsPluginSetup;
+  cases: CasesServerSetup;
+  cloud: CloudSetup;
+  data: DataPluginSetup;
+  encryptedSavedObjects?: EncryptedSavedObjectsPluginSetup;
+  eventLog: IEventLogService;
+  features: FeaturesPluginSetup;
+  lists?: ListPluginSetup;
+  ml?: MlPluginSetup;
+  ruleRegistry: RuleRegistryPluginSetup;
+  security?: SecurityPluginSetup;
+  spaces?: SpacesPluginSetup;
+  taskManager?: TaskManagerPluginSetup;
+  telemetry?: TelemetryPluginSetup;
+  usageCollection?: UsageCollectionPluginSetup;
+  licensing: LicensingPluginSetup;
+  osquery: OsqueryPluginSetup;
+  kql: KqlServerPluginSetup;
+  share?: SharePluginSetup;
+  agentBuilder?: AgentBuilderPluginSetup;
+}
+```
+
+**Setup Return Value:**
+```typescript
+interface SecuritySolutionPluginSetup {
+  setProductFeaturesConfigurator: ProductFeaturesService['setProductFeaturesConfigurator'];
+  experimentalFeatures: ExperimentalFeatures;
+}
+```
+
+### Start Phase (`start()`)
+
+Key operations during start:
+
+1. **Rule Monitoring**: Start rule monitoring service via `ruleMonitoringService.start()`
+2. **Exception Lists**: Initialize exception list client from lists plugin
+3. **License Service**: Start license service with `licensing$` observable
+4. **Manifest Manager**: Initialize endpoint artifact manifest manager
+5. **Endpoint Services**: Start endpoint app context services via `endpointAppContextService.start()`
+6. **Fleet Integration**: After fleet setup completes:
+   - Start manifest task
+   - Turn off unsupported policy protections
+   - Turn off unsupported agent policy features
+   - Ensure indices exist for policies
+   - Migrate endpoint data to support spaces
+7. **Policy Watcher**: Start policy and telemetry config watchers
+8. **Response Actions Task**: Start external response actions task
+9. **Telemetry**: Start telemetry receiver, artifact service, and event senders
+10. **Assistant Tools**: Register AI assistant tools and features
+11. **Health Diagnostics**: Start health diagnostic and trial companion tasks
+
+**Start Dependencies:**
+```typescript
+interface SecuritySolutionPluginStartDependencies {
+  alerting: AlertingServerStart;
+  cases?: CasesServerStart;
+  cloud: CloudSetup;
+  data: DataPluginStart;
+  dataViews: DataViewsPluginStart;
+  encryptedSavedObjects?: EncryptedSavedObjectsPluginStart;
+  elasticAssistant: ElasticAssistantPluginStart;
+  eventLog: IEventLogClientService;
+  fleet?: FleetPluginStart;
+  licensing: LicensingPluginStart;
+  ruleRegistry: RuleRegistryPluginStart;
+  security: SecurityPluginStart;
+  spaces?: SpacesPluginStart;
+  taskManager?: TaskManagerPluginStart;
+  telemetry: TelemetryPluginStart;
+  share: SharePluginStart;
+  actions: ActionsPluginStartContract;
+  inference: InferenceServerStart;
+  llmTasks?: LlmTasksPluginStart;
+}
+```
+
+### Stop Phase (`stop()`)
+
+Cleanup operations:
+- Stop async telemetry events sender
+- Stop telemetry events sender
+- Stop endpoint app context service
+- Stop policy watcher
+- Stop telemetry watcher
+- Stop complete external response actions task
+- Stop SIEM migrations service
+- Stop security workflow insights service
+- Stop license service
+
+**Location:**
+- Plugin implementation: `x-pack/solutions/security/plugins/security_solution/server/plugin.ts`
+- Plugin contract types: `x-pack/solutions/security/plugins/security_solution/server/plugin_contract.ts`
+
+## Relationship Between Components
+
+### Detection Rules → Alerting Framework
+
+1. **Rule Type Registration**:
+   - Detection rule types (query, eql, esql, ml, etc.) are registered with the Alerting Framework during Security Solution plugin setup
+   - Each detection rule type is wrapped with `createSecurityRuleTypeWrapper` which adds:
+     - Security-specific field mappings
+     - Exception list handling
+     - Alert suppression logic
+     - Gap detection
+     - Rule execution logging
+     - Data view support (for non-ML, non-ESQL rules)
+     - Timestamp field validation and runtime mappings
+     - Privilege checking
+     - Frozen indices detection (non-serverless only)
+     - APM instrumentation
+     - Telemetry events (gap detection, alert suppression)
+   - Registration happens in: `x-pack/solutions/security/plugins/security_solution/server/plugin.ts`
+   - Note: The wrapper first applies `createPersistenceRuleTypeWrapper` (from rule-registry) for alerts-as-data persistence, then adds security-specific logic
+
+2. **Rule Creation Flow**:
+   ```
+   User/API → Detection Rules Client → Rules Client (Alerting) → Saved Objects → Task Manager
+   ```
+   - Detection Rules Client converts detection rule format to alerting rule format using `convertRuleResponseToAlertingRule`
+   - Rules Client creates the rule as a Saved Object
+   - Task Manager schedules the rule for execution
+
+3. **Rule Execution Flow**:
+   ```
+   Task Manager → Task Runner → Persistence Rule Type Wrapper → Security Rule Type Wrapper → Detection Rule Executor
+   ```
+   - Task Manager triggers rule execution based on schedule
+   - Task Runner invokes the rule type executor
+   - Persistence Rule Type Wrapper handles alerts-as-data persistence infrastructure
+   - Security Rule Type Wrapper adds security-specific logic (exceptions, gap detection, validation, etc.)
+   - Detection Rule Executor performs the actual query/search
+   - Alerts are created and persisted via Alerts Service
+
+### Detection Rules Client → Rules Client
+
+The Detection Rules Client acts as an adapter layer:
+
+1. **Format Conversion**:
+   - Converts `RuleCreateProps` (detection rule format) to alerting rule format via `convertRuleResponseToAlertingRule`
+   - Converts alerting rule format back to `RuleResponse` via `convertAlertingRuleToRuleResponse`
+   - Maps detection rule types to alerting rule type IDs using `ruleTypeMappings`
+   - Handles action/connector references
+
+2. **Abstraction**:
+   - Provides security-specific operations (e.g., prebuilt rule management)
+   - Handles detection rule validation and defaults
+   - Manages rule import/export with security-specific logic
+
+3. **Dependency Injection**:
+   - Detection Rules Client receives `RulesClient` as a dependency
+   - All rule persistence operations delegate to `RulesClient`
+
+## Rule Type Registration
+
+Detection rule types are registered during Security Solution plugin setup:
+
+```typescript
+// In security_solution/server/plugin.ts
+const securityRuleTypeOptions = {
+  lists: plugins.lists,
+  docLinks: core.docLinks,
+  actions: plugins.actions,
+  logger: this.logger,
+  config: this.config,
+  publicBaseUrl: core.http.basePath.publicBaseUrl,
+  ruleDataClient,
+  ruleExecutionLoggerFactory: this.ruleMonitoringService.createRuleExecutionLogClientForExecutors,
+  version: pluginContext.env.packageInfo.version,
+  experimentalFeatures: config.experimentalFeatures,
+  alerting: plugins.alerting,
+  analytics: core.analytics,
+  isServerless: this.isServerless,
+  eventsTelemetry: this.telemetryEventsSender,
+  licensing: plugins.licensing,
+  scheduleNotificationResponseActionsService: getScheduleNotificationResponseActionsService({...}),
+};
+
+const securityRuleTypeWrapper = createSecurityRuleTypeWrapper(securityRuleTypeOptions);
+
+// Register each detection rule type
+plugins.alerting.registerType(securityRuleTypeWrapper(createEqlAlertType()));
+plugins.alerting.registerType(securityRuleTypeWrapper(createEsqlAlertType()));
+plugins.alerting.registerType(securityRuleTypeWrapper(createQueryAlertType()));
+plugins.alerting.registerType(securityRuleTypeWrapper(createMlAlertType()));
+// ... other rule types
+```
+
+Each rule type:
+- Has a unique ID (e.g., `siem.queryRule`, `siem.eqlRule`)
+- Defines an executor function that performs the detection logic
+- Specifies alert mappings and field maps for alerts-as-data
+- Uses the security rule type wrapper for common security functionality
+
+**Note on Terminology:**
+- The codebase uses both "alert type" and "rule type" terminology interchangeably
+- Functions are named `create*AlertType()` but they return `SecurityAlertType`
+- "Rule type" is the preferred term in documentation and refers to the registered rule type ID
+
+## Rule Execution Lifecycle
+
+1. **Scheduling**: Task Manager schedules rule execution based on rule's `schedule.interval`
+
+2. **Pre-Execution Validation**:
+   - Data view resolution (if configured) or index pattern validation
+   - Privilege checks for index access via `checkPrivilegesFromEsClient`
+   - Timestamp field validation (primary and secondary) via `hasTimestampFields`
+   - Frozen indices detection (non-serverless only) via `checkForFrozenIndices`
+   - Runtime field generation for timestamp overrides
+
+3. **Gap Detection and Tuple Generation**:
+   - Calculate time range tuples based on schedule interval and previous execution via `getRuleRangeTuples`
+   - Detect execution gaps (time periods not queried)
+   - Generate warning/error messages for gaps
+   - Store gap information in Event Log (if `storeGapsInEventLogEnabled` is enabled)
+   - Send gap detection telemetry event via `sendGapDetectedTelemetryEvent`
+
+4. **Exception List Processing**:
+   - Load exception lists from saved objects via `getExceptions`
+   - Build exception filters for query exclusion via `buildExceptionFilter`
+   - Handle unprocessed exceptions (if any)
+
+5. **Detection (per tuple)**:
+   - For each time range tuple:
+     - Rule executor runs query/search (KQL/EQL/ESQL) or ML job
+     - Results are processed and converted to alerts
+     - Alert suppression is applied if configured
+     - Alerts are created via `alertsClient.report()`
+
+6. **Alert Creation and Persistence**:
+   - Alerts are persisted to Elasticsearch via Alerts Service
+   - Alerts are written to `.alerts-security.alerts-<namespace>` indices
+   - Secondary alias `.siem-signals-<namespace>` is updated (for backwards compatibility)
+
+7. **Post-Execution**:
+   - Telemetry events are sent (gap detection, alert suppression) via `sendAlertSuppressionTelemetryEvent`
+   - Rule execution status is logged via `ruleExecutionLogger.logStatusChange`
+   - Warnings and errors are aggregated and reported
+   - Rule state is persisted for next execution
+
+8. **Action Execution**:
+   - Actions (notifications, integrations) are scheduled for execution
+   - Actions use templating to include alert context and state
+
+9. **State Management**:
+   - Rule state is persisted for next execution
+   - Alert states are managed (active, recovered, suppressed)
+
+## Experimental Features and Feature Flags
+
+Detection rules use experimental feature flags to enable/disable functionality that is not yet ready for general release. Feature flags are configured via `xpack.securitySolution.enableExperimental` in `kibana.yml`.
+
+> **⚠️ Important Scope Limitation**: These `enableExperimental` feature flags are **Security Solution plugin-specific** and are **only available within the Security Solution plugin** (`x-pack/solutions/security/plugins/security_solution/`). They are **NOT accessible from the Alerting Framework plugin** (`x-pack/platform/plugins/shared/alerting/`) or any other Kibana plugin. The Alerting Framework has its own separate configuration and does not have visibility into Security Solution's experimental features. This means feature flag checks must happen in Security Solution code (e.g., during rule type registration in `plugin.ts` or in the security rule type wrapper) before delegating to the Alerting Framework.
+
+### Configuration
+
+Feature flags are defined in `allowedExperimentalValues` with default values (true/false):
+
+```typescript
+// x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
+export const allowedExperimentalValues = Object.freeze({
+  extendedRuleExecutionLoggingEnabled: false,
+  esqlRulesDisabled: false,
+  storeGapsInEventLogEnabled: true,
+  bulkFillRuleGapsEnabled: true,
+  endpointExceptionsMovedUnderManagement: false,
+  siemMigrationsDisabled: false,
+  entityStoreDisabled: false,
+  // ... other features
+});
+```
+
+### How Feature Flags Work
+
+1. **Configuration Parsing**:
+   - Feature flags are parsed during plugin initialization in `createConfig()`
+   - Values from `kibana.yml` override defaults
+   - Invalid values are logged as warnings but don't break startup
+   - Use `disable:featureName` prefix to explicitly disable a feature that defaults to true
+
+2. **Access Pattern**:
+   - **Server-side**: Access via `config.experimentalFeatures.featureName`
+   - **Client-side**: Use `useIsExperimentalFeatureEnabled('featureName')` hook or `ExperimentalFeaturesService.get()`
+
+3. **Usage Examples**:
+   ```typescript
+   // Server-side: Check feature flag before registering rule type
+   if (!experimentalFeatures.esqlRulesDisabled) {
+     plugins.alerting.registerType(securityRuleTypeWrapper(createEsqlAlertType()));
+   }
+
+   // Server-side: Conditional behavior in rule execution
+   gapRange: experimentalFeatures.storeGapsInEventLogEnabled ? gap : undefined,
+
+   // Client-side: Conditional UI rendering
+   const isEnabled = useIsExperimentalFeatureEnabled('extendedRuleExecutionLoggingEnabled');
+   ```
+
+### Key Feature Flags for Detection Rules
+
+- **`extendedRuleExecutionLoggingEnabled`**: Enables detailed rule execution logging to Event Log
+  - When enabled, rules write console messages (debug, info, error, etc.) to `.kibana-event-log-*` indices
+  - Adds Kibana Advanced Settings for controlling log level
+  - Shows execution logs table on Rule Details page
+  - Location: `server/lib/detection_engine/rule_monitoring/logic/rule_execution_log/`
+
+- **`esqlRulesDisabled`**: Controls ES|QL rule type registration
+  - When `true`, ES|QL rules are not registered and cannot be created
+  - Default: `false` (ES|QL rules are enabled)
+
+- **`storeGapsInEventLogEnabled`**: Controls gap range storage in Event Log
+  - When enabled, execution gaps are stored in Event Log for analysis
+  - Used in rule execution monitoring and gap detection
+  - Default: `true`
+
+- **`bulkFillRuleGapsEnabled`**: Enables scheduling gap fills for rules
+  - When enabled, allows bulk operations to fill execution gaps in rule history
+  - Used for gap remediation and rule execution recovery
+  - Default: `true`
+
+- **`endpointExceptionsMovedUnderManagement`**: Controls exception list location
+  - When enabled, Endpoint exceptions are shown in Management/Assets instead of Rules/Alerts pages
+  - Default: `false`
+
+- **`siemMigrationsDisabled`**: Controls SIEM migrations feature
+  - When `true`, SIEM migrations feature is disabled
+  - Default: `false`
+
+- **`entityStoreDisabled`**: Controls Entity Store engine routes
+  - When `true`, Entity Store routes are disabled
+  - Default: `false`
+
+### Best Practices for Feature Flags
+
+1. **Always check feature flags before enabling functionality**: Don't assume a feature is enabled
+2. **Use feature flags for gradual rollouts**: Enable features for testing before general release
+3. **Document feature flags**: Add clear descriptions in `allowedExperimentalValues`
+4. **Handle both enabled and disabled states**: Ensure code works correctly in both cases
+5. **Remove deprecated flags**: Clean up unused feature flags after features are released
+
+### Configuration Example
+
+```yaml
+# kibana.yml
+xpack.securitySolution.enableExperimental:
+  - extendedRuleExecutionLoggingEnabled
+  - storeGapsInEventLogEnabled
+  - disable:esqlRulesDisabled  # Explicitly enable ES|QL rules (disable the disabling)
+```
+
+**Location:**
+- Feature flag definitions: `x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts`
+- Config parsing: `x-pack/solutions/security/plugins/security_solution/server/config.ts`
+- Client-side service: `x-pack/solutions/security/plugins/security_solution/public/common/experimental_features_service.ts`
+- Client-side hook: `x-pack/solutions/security/plugins/security_solution/public/common/hooks/use_experimental_features.ts`
+
+## Alerts as Data
+
+Detection rules use the "alerts as data" pattern:
+
+- **Index Pattern**: `.alerts-security.alerts-<namespace>` (e.g., `.alerts-security.alerts-default`)
+- **Context**: `security` (shared across all detection rule types)
+- **Field Maps**:
+  - `alertsFieldMap` - common alert fields (versioned in `common/field_maps/9.3.0/`)
+  - `rulesFieldMap` - rule metadata fields (security-specific, in `common/field_maps/8.0.0/rules.ts`)
+  - `technicalRuleFieldMap` - framework fields (from `@kbn/rule-registry-plugin`)
+  - `aliasesFieldMap` - field aliases for backwards compatibility (from `signal_aad_mapping.json`)
+  - Custom security fields (MITRE ATT&CK, threat intelligence, etc.)
+
+- **Mappings**: Defined in `securityRuleTypeFieldMap` which merges all field maps:
+  ```typescript
+  // From create_security_rule_type_wrapper.ts
+  export const securityRuleTypeFieldMap = {
+    ...technicalRuleFieldMap,
+    ...alertsFieldMap,
+    ...rulesFieldMap,
+    ...aliasesFieldMap,
+  };
+  ```
+  Registered via rule type's `alerts` configuration
+
+- **Secondary Alias**: `.siem-signals-<namespace>` (for backwards compatibility)
+  - Configured via `config.signalsIndex` (default: `.siem-signals`)
+  - Not set for preview rules (secondary alias is `undefined` for preview)
+  - Allows queries to use legacy index pattern while maintaining new index structure
+
+**Configuration:**
+```typescript
+// From config.ts
+export const SIGNALS_INDEX_KEY = 'signalsIndex';
+export const DEFAULT_SIGNALS_INDEX = '.siem-signals';
+// In config schema:
+[SIGNALS_INDEX_KEY]: schema.string({ defaultValue: DEFAULT_SIGNALS_INDEX }),
+```
+
+## Key Files and Locations
+
+### Security Solution Codebase
+- Plugin structure: `x-pack/solutions/security/plugins/security_solution/`
+- Plugin implementation: `x-pack/solutions/security/plugins/security_solution/server/plugin.ts`
+- Plugin contract: `x-pack/solutions/security/plugins/security_solution/server/plugin_contract.ts`
+- Shared packages: `x-pack/solutions/security/packages/`
+
+### Detection Rules
+- Rule types: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_types/`
+- Rule management: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/`
+- Rule schemas: `x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/`
+
+### Detection Rules Client
+- Client interface: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts`
+- Client implementation: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts`
+- Methods: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/`
+- Converters: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/converters/`
+
+### Rule Type Constants
+- Rule type IDs: `src/platform/packages/shared/kbn-securitysolution-rules/src/rule_type_constants.ts`
+- Rule type mappings: `src/platform/packages/shared/kbn-securitysolution-rules/src/rule_type_mappings.ts`
+
+### Alerting Framework
+- Plugin: `x-pack/platform/plugins/shared/alerting/server/plugin.ts`
+- Rules Client: `x-pack/platform/plugins/shared/alerting/server/rules_client/rules_client.ts`
+- Rule Type Registry: `x-pack/platform/plugins/shared/alerting/server/rule_type_registry.ts`
+- Task Runner: `x-pack/platform/plugins/shared/alerting/server/task_runner/`
+- README: `x-pack/platform/plugins/shared/alerting/README.md`
+
+### Rule Registry (Persistence)
+- Persistence wrapper: `x-pack/platform/plugins/shared/rule_registry/server/utils/create_persistence_rule_type_wrapper.ts`
+
+### Security Rule Type Wrapper
+- Wrapper: `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_types/create_security_rule_type_wrapper.ts`
+
+### Field Maps
+- Alerts field map: `x-pack/solutions/security/plugins/security_solution/common/field_maps/9.3.0/`
+- Rules field map: `x-pack/solutions/security/plugins/security_solution/common/field_maps/8.0.0/rules.ts`
+- Field maps index: `x-pack/solutions/security/plugins/security_solution/common/field_maps/index.ts`
+
+### Configuration
+- Server config: `x-pack/solutions/security/plugins/security_solution/server/config.ts`
+- Constants: `x-pack/solutions/security/plugins/security_solution/common/constants.ts`
+- Experimental features: `x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts`
+
+## Best Practices
+
+1. **Use Detection Rules Client**: Always use `IDetectionRulesClient` for rule operations, not `RulesClient` directly
+   - The Detection Rules Client provides security-specific validation and transformation
+   - Direct use of `RulesClient` bypasses important security checks
+
+2. **Rule Type Registration**: Register detection rule types during plugin setup, wrapped with `createSecurityRuleTypeWrapper`
+   - The wrapper adds essential security functionality (exceptions, gaps, validation)
+   - Never register rule types without the security wrapper
+
+3. **Format Conversion**: Use converters (`convertRuleResponseToAlertingRule`, `convertAlertingRuleToRuleResponse`) when interfacing with Alerting Framework
+   - These converters handle the mapping between detection rule format and alerting rule format
+   - Direct format manipulation can lead to data inconsistencies
+
+4. **Exception Lists**: Always apply exception lists in rule executors via the security rule type wrapper
+   - The wrapper automatically loads and applies exception lists
+   - Exception filters are built and passed to rule executors
+
+5. **Gap Detection**: The security rule type wrapper handles gap detection automatically
+   - Gaps are detected and logged automatically
+   - Consider rule scheduling intervals to minimize gaps
+   - Use `bulkFillRuleGapsEnabled` feature flag for gap remediation
+
+6. **Alert Suppression**: Configure alert suppression at the rule level for grouping similar alerts
+   - Suppression reduces alert noise by grouping similar alerts
+   - Configure suppression fields based on your use case
+
+7. **Rule Scheduling**:
+   - Balance execution frequency with system load
+   - Consider data volume and query complexity when setting intervals
+   - Monitor gap detection warnings to optimize scheduling
+
+8. **Error Handling**:
+   - Rule execution errors are automatically logged and tracked
+   - Check rule execution status and logs for troubleshooting
+   - Handle data view deletion gracefully (rules exit early if data view is missing)
+
+9. **Feature Flags**:
+   - Always check feature flags before enabling experimental functionality
+   - Use `experimentalFeatures` from config on server-side
+   - Use `useIsExperimentalFeatureEnabled` hook on client-side
+
+## Summary
+
+Detection Rules in Kibana are built on the Alerting Framework, providing security-specific functionality through:
+- **Detection Rules Client**: High-level API for rule management with format conversion
+- **Security Rule Type Wrapper**: Common security functionality (exceptions, gaps, suppression, validation)
+- **Persistence Rule Type Wrapper**: Alerts-as-data infrastructure from rule-registry
+- **Alerting Framework**: Core infrastructure (scheduling, execution, persistence)
+- **Alerts as Data**: Structured alert storage in Elasticsearch indices
+
+The architecture separates concerns: Detection Rules Client handles security domain logic, while Alerting Framework provides the execution infrastructure. This design allows for reuse of the Alerting Framework across different Kibana solutions while maintaining security-specific features.
+
+The plugin lifecycle follows Kibana's standard pattern:
+- **Constructor**: Initialize services and configuration
+- **Setup**: Register rule types, routes, tasks, and setup dependencies
+- **Start**: Start services, watchers, and background tasks
+- **Stop**: Clean up resources and stop services

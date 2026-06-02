@@ -1,0 +1,11 @@
+---
+alwaysApply: true
+---
+## Code style: minimise comments
+
+Keep code comments to a minimum (preferably one line each, only where they earn it):
+
+- Do not narrate what the code does. Variable names carry the meaning.
+- Reserve comments for non-obvious **intent or constraint** the code itself cannot convey.
+
+If a piece of logic needs a paragraph of explanation, it's a smell — either the structure is wrong, or the explanation belongs in the PR description, not the source file.
