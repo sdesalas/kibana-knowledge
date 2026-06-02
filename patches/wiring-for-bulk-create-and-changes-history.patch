@@ -1,25 +1,25 @@
 diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
-index bf312a4a702..02e06356d63 100644
+index d9f8b4221b2..8e38d96ada7 100644
 --- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
 +++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
-@@ -418,7 +418,6 @@ async function runBatch<Params extends RuleParams>({
+@@ -436,7 +436,6 @@ async function runBatch<Params extends RuleParams>({
      })
    );
  
 -  const createTime = Date.now();
    let bulkResponse;
    try {
-     bulkResponse = await withSpan(
-@@ -456,6 +455,7 @@ async function runBatch<Params extends RuleParams>({
+     bulkResponse = await withSpan({ name: 'runBatch.bulkCreateRulesSo', type: 'rules' }, () =>
+@@ -472,6 +471,7 @@ async function runBatch<Params extends RuleParams>({
    // Phase B4 per-row outcomes.
    const batchSuccessfulIds: string[] = [];
    const taskIdsToCleanUp: string[] = [];
 +  const createTime = Date.now();
    const successfulSavedObjects: Array<SavedObject<RawRule>> = [];
-   let perRowFailureOccurred = false;
  
+   for (const so of bulkResponse.saved_objects) {
 diff --git a/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts b/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
-index c16ee3c9834..36a19112477 100644
+index 39be3805239..1187427f381 100644
 --- a/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
 +++ b/x-pack/solutions/security/plugins/security_solution/common/experimental_features.ts
 @@ -22,6 +22,16 @@ export const allowedExperimentalValues = Object.freeze({
@@ -40,24 +40,24 @@ index c16ee3c9834..36a19112477 100644
     * Enables extended rule execution logging to Event Log. When this setting is enabled:
     * - Rules write their console error, info, debug, and trace messages to Event Log,
 diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
-index 36ece0b2f84..281d0518e67 100644
+index 93eb35784e0..85550449a6e 100644
 --- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
 +++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
-@@ -109,31 +109,40 @@ export const performRuleInstallationHandler = async (
-       );
-       ruleInstallQueue.push(...(await excludeLicenseRestrictedRules(allInstallableRules, mlAuthz)));
-     }
--
-     const changeTracking = {
-       metadata: {
-         bulkCount: ruleInstallQueue.length,
+@@ -20,7 +20,6 @@ import { buildSiemResponse } from '../../../routes/utils';
+ import { aggregatePrebuiltRuleErrors } from '../../logic/aggregate_prebuilt_rule_errors';
+ import { ensureLatestRulesPackageInstalled } from '../../logic/integrations/ensure_latest_rules_package_installed';
+ import { createPrebuiltRuleAssetsClient } from '../../logic/rule_assets/prebuilt_rule_assets_client';
+-import { PREBUILT_RULE_BATCH_SIZE } from '../../constants';
+ import { createPrebuiltRules } from '../../logic/rule_objects/create_prebuilt_rules';
+ import { createPrebuiltRuleObjectsClient } from '../../logic/rule_objects/prebuilt_rule_objects_client';
+ import { performTimelinesInstallation } from '../../logic/perform_timelines_installation';
+@@ -117,23 +116,34 @@ export const performRuleInstallationHandler = async (
        },
      };
  
--    const BATCH_SIZE = 100;
 -    while (ruleInstallQueue.length > 0) {
--      const rulesToInstall = ruleInstallQueue.splice(0, BATCH_SIZE);
--      const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
+-      const rulesToInstall = ruleInstallQueue.splice(0, PREBUILT_RULE_BATCH_SIZE);
+-      const { assets: ruleAssets } = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
 -
 -      const { results, errors } = await createPrebuiltRules(
 -        detectionRulesClient,
@@ -72,7 +72,7 @@ index 36ece0b2f84..281d0518e67 100644
 +    if (bulkCreateRulesEnabled) {
 +      const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(ruleInstallQueue);
 +      const { results, errors } = await detectionRulesClient.bulkCreatePrebuiltRules({
-+        rules: ruleAssets,
++        rules: ruleAssets.assets,
 +      });
 +      installedRules.push(
 +        ...results.map(({ result: rule }) => pick(rule, ['id', 'rule_id', 'version']))
