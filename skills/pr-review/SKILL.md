@@ -32,9 +32,11 @@ gh pr diff <number>
 
 If `gh` is not installed or not authenticated, fall back to `web_fetch` on the PR URL for the description and the `.diff` URL (e.g. `https://github.com/org/repo/pull/123.diff`) for the diff. If both fail, tell the user and ask them to paste the description and/or diff.
 
-When the PR description references a linked issue (e.g. "Fixes #789"), also fetch that issue with `gh issue view 789` — it often contains the problem statement that explains *why* the change is being made.
+## Fetching linked issues
 
-In the Summary section of the output, briefly reconcile the description's stated intent with what the diff actually does. If they diverge (common for PRs that grew beyond their original scope), flag that explicitly.
+When the PR description references a linked issue (e.g. "Fixes #789"), also fetch that issue with `gh issue view 789` — it often contains the problem statement that explains *why* the change is being made. Sometimes the linked issue may not contain a sufficient description, so you may have to go one step further and reference the epic linked to that issue (also using `gh issue view <epic_no>`).
+
+In the Summary section of the output, briefly reconcile the stated intent (in the PR description, or the linked issues) with what the diff actually does. If they diverge (common for PRs that grew beyond their original scope), flag that explicitly.
 
 ## Team-aware review (optional)
 
@@ -125,17 +127,17 @@ A short summary (3–6 bullets) of what this PR reveals about how the codebase w
 
 ## Output file
 
-After completing the analysis, write the full review to a Markdown file:
+After completing the analysis, write the full review to a Markdown file in the current project:
 
 ```
-.claude/reports/pr-review-<number>.md
+/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/pr-review-<number>.md
 ```
 
 Where `<number>` is the PR number (e.g. `pr-review-1234.md`). If the PR has no number (e.g. a pasted diff or local branch), use a short slug derived from the title or branch name (e.g. `pr-review-add-rate-limiting.md`).
 
-- Create `.claude/reports/` if it doesn't exist.
+- Create folder if it doesn't exist.
 - The file content should be identical to the analysis you produce in chat — same headers, same structure, no extra framing.
-- After writing the file, tell the user: *"Review saved to `.claude/reports/pr-review-<number>.md`."*
+- After writing the file, tell the user: *"Review saved to `kibana-knowledge/reports/pr-review-<number>.md`."*
 
 ## Anti-patterns
 
