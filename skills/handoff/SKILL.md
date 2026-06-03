@@ -42,8 +42,11 @@ Write the document in this order:
 ### Context
 1–3 sentences on what this session was about. Who the user is, what repo/project, what problem was being solved.
 
-### What happened
-Bulleted list of the key decisions, findings, and actions taken this session — ordered chronologically. Focus on conclusions, not process. Skip dead ends unless they ruled out an important path.
+### Original dialog
+Include original dialog focusing on questions posed and prompts entered by the user, add key insights and short reflections where it makes sense.
+
+### Conclusions
+Add bulleted list of the key decisions, findings, and actions taken this session — ordered chronologically. Focus on conclusions, not process. Skip dead ends unless they ruled out an important path.
 
 ### Current state
 Where things stand right now. What's done, what's in progress, what's blocked. If there are open files, branches, or uncommitted changes relevant to continuing — name them.
