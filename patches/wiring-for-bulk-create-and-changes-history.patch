@@ -20,18 +20,10 @@ index 39be3805239..1187427f381 100644
     * Enables extended rule execution logging to Event Log. When this setting is enabled:
     * - Rules write their console error, info, debug, and trace messages to Event Log,
 diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
-index 93eb35784e0..85550449a6e 100644
+index 93eb35784e0..fed2c3cd48d 100644
 --- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
 +++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/prebuilt_rules/api/perform_rule_installation/perform_rule_installation_handler.ts
-@@ -20,7 +20,6 @@ import { buildSiemResponse } from '../../../routes/utils';
- import { aggregatePrebuiltRuleErrors } from '../../logic/aggregate_prebuilt_rule_errors';
- import { ensureLatestRulesPackageInstalled } from '../../logic/integrations/ensure_latest_rules_package_installed';
- import { createPrebuiltRuleAssetsClient } from '../../logic/rule_assets/prebuilt_rule_assets_client';
--import { PREBUILT_RULE_BATCH_SIZE } from '../../constants';
- import { createPrebuiltRules } from '../../logic/rule_objects/create_prebuilt_rules';
- import { createPrebuiltRuleObjectsClient } from '../../logic/rule_objects/prebuilt_rule_objects_client';
- import { performTimelinesInstallation } from '../../logic/perform_timelines_installation';
-@@ -117,23 +116,34 @@ export const performRuleInstallationHandler = async (
+@@ -117,23 +117,35 @@ export const performRuleInstallationHandler = async (
        },
      };
  
@@ -61,10 +53,9 @@ index 93eb35784e0..85550449a6e 100644
 -      installedRules.push(...batchInstalledRules);
        ruleErrors.push(...errors);
 +    } else {
-+      const BATCH_SIZE = 100;
 +      while (ruleInstallQueue.length > 0) {
-+        const rulesToInstall = ruleInstallQueue.splice(0, BATCH_SIZE);
-+        const ruleAssets = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
++        const rulesToInstall = ruleInstallQueue.splice(0, PREBUILT_RULE_BATCH_SIZE);
++        const { assets: ruleAssets } = await ruleAssetsClient.fetchAssetsByVersion(rulesToInstall);
 +
 +        const { results, errors } = await createPrebuiltRules(
 +          detectionRulesClient,
@@ -73,9 +64,11 @@ index 93eb35784e0..85550449a6e 100644
 +          logger
 +        );
 +
-+        installedRules.push(
-+          ...results.map(({ result: rule }) => pick(rule, ['id', 'rule_id', 'version']))
++        const batchInstalledRules = results.map(({ result: rule }) =>
++          pick(rule, ['id', 'rule_id', 'version'])
 +        );
++
++        installedRules.push(...batchInstalledRules);
 +        ruleErrors.push(...errors);
 +      }
      }
