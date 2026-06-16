@@ -8,8 +8,6 @@ Keep code comments to a minimum (preferably one line each, only where they earn 
 - Do not narrate what the code does. Variable names carry the meaning.
 - Reserve comments for non-obvious **intent or constraint** the code itself cannot convey.
 
-If a piece of logic needs a paragraph of explanation, it's a smell — either the structure is wrong, or the explanation belongs in the PR description, not the source file.
+Before writing any comment longer than one line, stop and ask: does this explain non-obvious intent the code can't convey? If not, delete it.
 
-## Responses
 
-Keep responses short and concise where possible. Long rambling does not aid understanding, it hinders it.
