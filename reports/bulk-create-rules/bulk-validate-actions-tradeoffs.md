@@ -8,7 +8,7 @@ calling `validateActions` per-rule via `pMap` with concurrency 50.
 
 **Question:** how do we eliminate the N×`listTypes()` + N×`getBulk()` overhead during bulk rule operations?
 
-**Prior art:** commit `d0483a2` ("Add performance improvements") implemented a prefetch + optional `preFetchedActions` pass-through across four files. It worked but introduced an optional-parameter pattern that didn't extend to `listTypes` and added two code paths to every validator. Captured below as **Option D**.
+**Prior art:** commit [`d0483a2`](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f) ("Add performance improvements") implemented a prefetch + optional `preFetchedActions` pass-through across four files. It worked but introduced an optional-parameter pattern that didn't extend to `listTypes` and added two code paths to every validator. Captured below as **Option D**.
 
 ## What `validateActions` actually does
 
