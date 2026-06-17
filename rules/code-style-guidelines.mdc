@@ -1,0 +1,23 @@
+---
+alwaysApply: true
+---
+## Code style guidelines
+
+Please ignore previous instructions about how or when to comment, as well as variable naming.
+
+### Minimise comments
+
+Keep code comments to a minimum (preferably one line each, only where they earn it):
+
+- Do not narrate what the code does. Variable names carry the meaning.
+- Reserve comments for non-obvious **intent or constraint** the code itself cannot convey.
+
+Before writing any comment longer than one line, stop and ask: does this explain non-obvious intent the code can't convey? If not, delete it.
+
+### Variable and function naming
+
+Do not rename variables or functions unless explicitly asked to.
+
+Favor short names — one or two words — for variables, functions, and methods. For example `invalidKey`, `processQueue()`, `ruleAttributes`. Avoid three-or-more-word names unless intent is genuinely unclear without them. Within a tight scope or iteration, prefer single-word names: `const enabled = rules.filter(rule => rule.enabled)`. Types and enums are exempt — longer names are fine since they are typically exported.
+
+Do not echo the enclosing method or file name in a variable. Inside `RulesClient.createRule()`, avoid names like `createdRules` or `rulesClientApiKeys` — prefer `rules` or `apiKeys`.
