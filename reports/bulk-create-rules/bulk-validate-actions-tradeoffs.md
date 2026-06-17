@@ -91,7 +91,35 @@ For 1000 rules: ~5000 `actionsClient` calls when one shared `getBulk` (union of 
 
 The fix has to land in two methods, not one: `bulkCreateRules` and `bulkEditRules`. And the same family of fix wants to apply to both `validateActions` and `validateAndAuthorizeSystemActions`. Whichever option we pick should be evaluated against that — a clean shape for `bulkCreate` only that doesn't extend to `bulkEdit` or to system actions is a half-fix.
 
-## Option A — new `bulkValidateActions` function (issue's proposal)
+## Original proposal (from the issue)
+
+> Introduce a dedicated `bulkValidateActions` function (not a patch on the existing `validateActions`) designed for bulk operations:
+>
+> 1. Accepts all rules' action data at once.
+> 2. Collects all unique connector IDs across all rules, performs a single `getBulk()`.
+> 3. Calls `listTypes()` once.
+> 4. Runs per-rule validation logic in-memory against the pre-fetched data.
+> 5. Returns a per-rule result (pass/error) that the caller can use to include or exclude individual rules.
+>
+> This keeps `validateActions` untouched for single-rule paths (create, update, clone) while giving bulk paths a purpose-built alternative with the same validation semantics but fewer round-trips.
+>
+> **Where it fits in `bulkCreateRules`**
+>
+> Currently `prepareRule` calls `validateActions` as one of several per-rule steps. With `bulkValidateActions`, the bulk path would:
+>
+> 1. Run `bulkValidateActions` once for the whole batch **before** entering `pMap`.
+> 2. Exclude failed rules from the prepare step (or pass pre-validated connector context to `prepareRule`).
+> 3. `prepareRule` would skip the per-rule `validateActions` call since it's already been handled.
+>
+> **Expected impact**
+>
+> - Eliminates ~999 redundant `listTypes()` calls per batch of 1000 rules.
+> - Reduces `getBulk()` calls from N (one per rule) to 1 (one for all unique connector IDs).
+> - Reduces Phase B1 latency, especially in deployments where SO reads have higher latency.
+
+The discovery in [Where the same problem shows up across the rules client](#where-the-same-problem-shows-up-across-the-rules-client) widened the scope after this proposal was written: the same shape of redundancy also exists in `validateAndAuthorizeSystemActions` and `denormalizeActions`, and in `bulkEditRules`. That doesn't invalidate the proposal — a new bulk function is still one of the four credible designs — but it does mean the "Acceptance criteria" need to acknowledge whether system actions, `denormalizeActions`, and `bulkEditRules` get coordinated treatment or are deferred.
+
+## Option A — new `bulkValidateActions` function (the original proposal)
 
 Purpose-built bulk function. Accepts all rules' action data, deduplicates connector IDs across the whole batch, runs one `getBulk`, one `listTypes`, then loops the per-rule in-memory checks. Returns a per-rule `{ id, error? }` map.
 
@@ -174,9 +202,9 @@ A thin wrapper class or factory in `bulk_create/utils.ts` or a new `bulk_create/
 
 ## Option D — prior art: prefetch + optional `preFetchedActions` pass-through
 
-This was the approach tried in commit `d0483a2` and then dropped. Worth reading carefully because it's the only one of the four that has actually been built and the ticket dismisses it briefly ("messier architecture") — I want to be precise about *why* it didn't land.
+This was the approach tried in commit [`d0483a2`](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f) and then dropped. Worth reading carefully because it's the only one of the four that has actually been built and the ticket dismisses it briefly ("messier architecture").
 
-**Shape of the change in `d0483a2`**
+**Shape of the change in [`d0483a2`](https://github.com/elastic/kibana/commit/d0483a20df2fa7e96cb7ecff036656185b69147f)**
 
 - A new `prefetchActions` helper in `bulk_create/utils.ts` runs once at the start of `bulkCreateRules`. It collects the union of every action and system-action ID across all input rules, does one `actionsClient.getBulk`, and returns a `Map<id, ActionResult | InMemoryConnector>`. Soft-fail: on error it logs and returns `undefined`, falling through to per-rule fetches.
 - An optional `preFetchedActions?` parameter was added to three functions:
