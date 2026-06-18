@@ -118,6 +118,9 @@ Things you are uncertain about after reading the diff *and* the surrounding code
 ### Notes for your codebase map
 A short summary (3–6 bullets) of what this PR reveals about how the codebase works — architectural patterns, conventions, quirks, or the role of specific components. Written so the user can paste it into their running notes doc. Focus on what's *newly learned*, not a recap of the PR.
 
+### Review activities
+Leave this section **empty** in the initial output. It is a running log populated during the review session — not written upfront.
+
 ## Tone and calibration
 
 - **Be direct about uncertainty.** If you read the code and still don't understand why something is done a certain way, say so — don't paper over it. "I couldn't tell from the surrounding code whether X is always true" is useful; a confident wrong guess is not.
@@ -138,6 +141,14 @@ Where `<number>` is the PR number (e.g. `pr-review-1234.md`). If the PR has no n
 - Create folder if it doesn't exist.
 - The file content should be identical to the analysis you produce in chat — same headers, same structure, no extra framing.
 - After writing the file, tell the user: *"Review saved to `kibana-knowledge/reports/pr-review-<number>.md`."*
+
+## Follow-up investigations
+
+When the user asks you to dig further into something related to a review already saved to file — checking a code path, verifying an assumption, confirming a local test result, exploring a risk — append a new numbered entry to the **Review activities** section of that review file.
+
+Each entry should be one tight paragraph: what was investigated and what was found (or confirmed). Do not rewrite or reorganise existing entries.
+
+This keeps a faithful log of what was actually explored during the session, so the review file reflects not just the initial analysis but the full conversation.
 
 ## Anti-patterns
 
