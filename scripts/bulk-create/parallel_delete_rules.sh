@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Hits POST /internal/detection_engine/prebuilt_rules/installation/_perform
-# on N Kibana instances in parallel with mode=ALL_RULES.
+# Deletes all custom rules on N Kibana instances in parallel.
 #
 # Targets are loaded from scripts/parallel.env.sh, which must define a TARGETS
 # bash array. Each entry is "AUTH|URL" (auth is "user:password").
@@ -9,7 +8,7 @@
 # Override the env file with PARALLEL_ENV_FILE=/path/to/file.
 #
 # Usage:
-#   ./scripts/parallel_install_prebuilt_rules.sh
+#   ./scripts/bulk-create/parallel_delete_rules.sh
 #
 set -u
 
@@ -33,23 +32,16 @@ if [[ "${#TARGETS[@]}" -eq 0 ]]; then
   exit 2
 fi
 
-INSTALL_PATH="/internal/detection_engine/prebuilt_rules/installation/_perform"
-INSTALL_BODY='{"mode":"ALL_RULES"}'
-INSTALL_API_VERSION='1'
-INSTALL_BUILD_NUMBER='102936'
-
 DELETE_PATH="/api/detection_engine/rules/_bulk_action?dry_run=false"
 DELETE_BODY='{"action":"delete","query":""}'
 DELETE_API_VERSION='2023-10-31'
 DELETE_BUILD_NUMBER='102774'
 
 KBN_VERSION='9.5.0-SNAPSHOT'
-POST_DELETE_WAIT_SECS=10
 
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
 
 gen_hex() {
-  # Generates `n` random hex chars; falls back if /dev/urandom isn't available.
   local n="$1"
   if [[ -r /dev/urandom ]]; then
     LC_ALL=C tr -dc '0-9a-f' </dev/urandom | head -c "$n"
@@ -62,15 +54,11 @@ gen_traceparent() {
   printf '00-%s-%s-01' "$(gen_hex 32)" "$(gen_hex 16)"
 }
 
-hit() {
+hit_delete() {
   local label="$1"
   local url="$2"
   local auth="$3"
-  local path_suffix="$4"
-  local body="$5"
-  local api_version="$6"
-  local build_number="$7"
-  local summary_file="$8"
+  local summary_file="$4"
 
   if [[ -z "$url" || "$url" == ".." ]]; then
     echo "[$label] SKIPPED (URL not configured)"
@@ -78,13 +66,13 @@ hit() {
     return 0
   fi
 
-  echo "[$label] -> POST ${url}${path_suffix}"
+  echo "[$label] -> POST ${url}${DELETE_PATH}"
 
   local tmp_body
   tmp_body="$(mktemp -t kbn_${label}_XXXX)"
 
   local origin="${url%/}"
-  local referer="${origin}/app/security/rules/add_rules"
+  local referer="${origin}/app/security/rules/management"
   local traceparent
   traceparent="$(gen_traceparent)"
 
@@ -97,8 +85,8 @@ hit() {
     -H 'accept: */*' \
     -H 'accept-language: en-US,en;q=0.9,es;q=0.8' \
     -H 'content-type: application/json' \
-    -H "elastic-api-version: ${api_version}" \
-    -H "kbn-build-number: ${build_number}" \
+    -H "elastic-api-version: ${DELETE_API_VERSION}" \
+    -H "kbn-build-number: ${DELETE_BUILD_NUMBER}" \
     -H "kbn-version: ${KBN_VERSION}" \
     -H "origin: ${origin}" \
     -H 'priority: u=1, i' \
@@ -113,8 +101,8 @@ hit() {
     -H 'tracestate: es=s:1' \
     -H "user-agent: ${USER_AGENT}" \
     -H 'x-elastic-internal-origin: Kibana' \
-    --data "$body" \
-    "${url}${path_suffix}")" \
+    --data "$DELETE_BODY" \
+    "${url}${DELETE_PATH}")" \
     || {
       echo "[$label] curl failed"
       printf '%s\tERROR\t-\n' "$label" >>"$summary_file"
@@ -134,14 +122,8 @@ hit() {
   printf '%s\t%s\t%ss\n' "$label" "$http_code" "$time_total" >>"$summary_file"
 }
 
-run_in_parallel() {
-  local phase="$1"
-  local path_suffix="$2"
-  local body="$3"
-  local api_version="$4"
-  local build_number="$5"
-
-  echo "=== Phase: ${phase} ==="
+run_delete_in_parallel() {
+  echo "=== Phase: delete ==="
 
   local pids=()
   local summary_files=()
@@ -153,14 +135,13 @@ run_in_parallel() {
     target_name="${url#*://}"
     target_name="${target_name:0:28}"
     target_name="${target_name//[^a-zA-Z0-9_-]/_}"
-    local label="${target_name}-${phase}"
+    local label="${target_name}-delete"
 
     local sf
-    sf="$(mktemp -t kbn_summary_${phase}_XXXX)"
+    sf="$(mktemp -t kbn_summary_delete_XXXX)"
     summary_files+=("$sf")
 
-    hit "$label" "$url" "$auth" "$path_suffix" "$body" \
-      "$api_version" "$build_number" "$sf" &
+    hit_delete "$label" "$url" "$auth" "$sf" &
     pids+=($!)
   done
 
@@ -169,7 +150,7 @@ run_in_parallel() {
     wait "$pid" || rc=1
   done
 
-  echo "--- ${phase} timings ---"
+  echo "--- delete timings ---"
   printf 'target\thttp\ttime\n'
   for sf in "${summary_files[@]}"; do
     cat "$sf"
@@ -180,16 +161,5 @@ run_in_parallel() {
   return "$rc"
 }
 
-EXIT=0
-run_in_parallel "delete" \
-  "$DELETE_PATH" "$DELETE_BODY" \
-  "$DELETE_API_VERSION" "$DELETE_BUILD_NUMBER" || EXIT=1
-
-echo "Waiting ${POST_DELETE_WAIT_SECS}s before bulk install..."
-sleep "$POST_DELETE_WAIT_SECS"
-
-run_in_parallel "install" \
-  "$INSTALL_PATH" "$INSTALL_BODY" \
-  "$INSTALL_API_VERSION" "$INSTALL_BUILD_NUMBER" || EXIT=1
-
-exit "$EXIT"
+run_delete_in_parallel
+exit $?

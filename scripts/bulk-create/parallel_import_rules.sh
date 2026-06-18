@@ -133,7 +133,7 @@ hit_json() {
   time_total="${stats##* }"
 
   local preview
-  preview="$(head -c 50 "$tmp_body" | tr '\n' ' ')"
+  preview="$(head -c 80 "$tmp_body" | tr '\n' ' ')"
   echo "[$label] <- HTTP ${http_code} in ${time_total}s | ${preview}"
   rm -f "$tmp_body"
 
@@ -201,7 +201,7 @@ hit_import() {
   time_total="${stats##* }"
 
   local preview
-  preview="$(head -c 50 "$tmp_body" | tr '\n' ' ')"
+  preview="$(head -c 80 "$tmp_body" | tr '\n' ' ')"
   echo "[$label] <- HTTP ${http_code} in ${time_total}s | ${preview}"
   rm -f "$tmp_body"
 
