@@ -90,6 +90,39 @@ State which level you're applying at the top of the output so the user knows wha
 
 For substantive PRs, produce output in this exact structure. Use markdown headers so the user can skim.
 
+The document should open with a header block before any sections:
+
+```
+# PR Review: #<number> — <title>
+
+**PR:** [org/repo#<number>](<github url>)
+```
+
+Other relevant links (Slack threads, GitHub issues, related commits, design docs) should be included as well but they belong inline within the section where they are referenced.
+
+---
+
+### Context / Motivation *(optional)*
+Include this section when the PR is motivated by a specific reported concern, blocker, or discussion — e.g. a GitHub issue, a Slack thread, a team review comment. Omit it for straightforward feature work where the PR description alone is self-explanatory.
+
+Summarise the external context in plain language, then quote the key statements verbatim (using blockquotes). Cover:
+- Who raised the concern and where — hyperlink directly to the source (Slack thread, GitHub issue, PR comment) using any URLs the user provided or that appear in the PR description. Do not guess or construct URLs.
+- What the original design decision was and why it was made
+- What the objection or blocker was
+- How the author resolved the tension (and what was explicitly deferred)
+
+The goal is that a reader with no access to Slack or the linked issue can understand the *why* behind every non-obvious choice in the diff.
+
+### Validating the issue — does this PR address it? *(optional)*
+Include this section when **Context / Motivation** is present and the concern is technical enough to warrant independent verification. Omit it when the concern is organisational, stylistic, or already self-evident from the diff.
+
+Open with a one-line verdict: **"The concern is technically valid. The PR addresses it correctly."** (or the appropriate variant). Then structure the body as:
+
+- **Where the problem manifests** — locate the exact mechanism in the code that makes the concern real, not just restate the claim.
+- **Why the old approach was a problem** — concrete failure mode, ideally with a real or plausible example.
+- **How the PR fixes it** — trace the specific change that closes the gap, referencing file/function. A before/after table is useful when the change is a structural shift rather than a line edit.
+- **Residual caveat** *(if any)* — one thing the fix doesn't fully cover, and why that's an acceptable trade-off.
+
 ### Summary
 2–4 sentences in plain language: what behavior changes, what is added, what is removed. Not a file-by-file recap — the *intent* of the change. Draw on the PR description and linked issue for stated intent, but verify it against the diff. If they diverge, note it here.
 
@@ -168,6 +201,10 @@ For a small PR that adds rate-limiting middleware to an API endpoint:
 > **Scale:** Small PR.
 >
 > **Ownership (team: `@elastic/security-detection-rule-management`):** Both files owned by target team — squarely in scope.
+>
+> **Context / Motivation:** Security flagged ([issue #4821](https://github.com/org/repo/issues/4821)) that `POST /api/v1/webhooks` was being abused in a credential-stuffing incident. The original endpoint had no rate limiting because webhook throughput was assumed to be low-volume internal traffic. That assumption no longer holds after the endpoint was made public in v2.3.
+>
+> **Validating the issue — does this PR address it?** The concern is valid. The endpoint accepts unauthenticated POST requests with no throttle — confirmed in `api/webhooks.py` (no middleware in the handler chain). The PR wires in the existing `RateLimiter` at 100 req/min per IP, which matches the limit already applied to the login endpoint. Residual caveat: limits by client IP from `X-Forwarded-For`, so attackers behind a proxy pool can still distribute load across IPs.
 >
 > **Summary:** Adds a per-IP rate limiter (100 req/min) to `POST /api/v1/webhooks`. Uses the existing Redis-backed `RateLimiter` class rather than introducing a new dependency.
 >
