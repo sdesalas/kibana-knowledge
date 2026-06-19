@@ -1,0 +1,55 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_history_timeline/change_history_timeline.tsx b/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_history_timeline/change_history_timeline.tsx
+index 5ea6de2cc438..8a144280bb43 100644
+--- a/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_history_timeline/change_history_timeline.tsx
++++ b/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_history_timeline/change_history_timeline.tsx
+@@ -5,7 +5,7 @@
+  * 2.0.
+  */
+ 
+-import React, { useEffect, useMemo, useRef } from 'react';
++import React, { useCallback, useMemo, useRef } from 'react';
+ import {
+   EuiEmptyPrompt,
+   EuiFlexGroup,
+@@ -43,27 +43,31 @@ export function RuleChangesHistoryTimeline({
+   onLoadMore,
+ }: ChangeHistoryTimelineProps): JSX.Element {
+   const { euiTheme } = useEuiTheme();
+-  const sentinelRef = useRef<HTMLDivElement>(null);
+ 
+-  // Track scrolling to load more items
+-  useEffect(() => {
+-    if (!sentinelRef.current) {
++  const observerRef = useRef<IntersectionObserver | null>(null);
++  const onLoadMoreRef = useRef(onLoadMore);
++  onLoadMoreRef.current = onLoadMore;
++
++  // Callback ref so the observer attaches/detaches as the sentinel mounts,
++  // independent of onLoadMore's identity.
++  const sentinelRef = useCallback((node: HTMLDivElement | null) => {
++    observerRef.current?.disconnect();
++
++    if (!node) {
+       return;
+     }
+ 
+-    const observer = new IntersectionObserver(
++    observerRef.current = new IntersectionObserver(
+       ([entry]) => {
+         if (entry.isIntersecting) {
+-          onLoadMore();
++          onLoadMoreRef.current();
+         }
+       },
+       { threshold: 0 }
+     );
+ 
+-    observer.observe(sentinelRef.current);
+-
+-    return () => observer.disconnect();
+-  }, [onLoadMore]);
++    observerRef.current.observe(node);
++  }, []);
+ 
+   const styles = useMemo(
+     () => ({
