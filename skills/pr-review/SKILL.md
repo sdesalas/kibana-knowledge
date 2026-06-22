@@ -166,7 +166,7 @@ Leave this section **empty** in the initial output. It is a running log populate
 After completing the analysis, write the full review to a Markdown file in the current project:
 
 ```
-/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/pr-review-<number>.md
+/Users/sdesalas/Code/sdesalas/kibana-knowledge/reviews/pr-review-<number>.md
 ```
 
 Where `<number>` is the PR number (e.g. `pr-review-1234.md`). If the PR has no number (e.g. a pasted diff or local branch), use a short slug derived from the title or branch name (e.g. `pr-review-add-rate-limiting.md`).
@@ -217,3 +217,6 @@ For a small PR that adds rate-limiting middleware to an API endpoint:
 > **Open questions:** Is 100/min the right number? Couldn't find prior discussion in commit history. Should failed-open vs failed-closed behavior match other endpoints?
 >
 > **Notes for your codebase map:** Rate limiting is centralized in `RateLimiter` (Redis-backed). Configured per-route in `config/rate_limits.py`. Existing convention is to fail open on Redis errors — this PR diverges from that.
+>
+> **Review activities:**
+>
