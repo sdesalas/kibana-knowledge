@@ -152,7 +152,7 @@ Things you are uncertain about after reading the diff *and* the surrounding code
 A short summary (3–6 bullets) of what this PR reveals about how the codebase works — architectural patterns, conventions, quirks, or the role of specific components. Written so the user can paste it into their running notes doc. Focus on what's *newly learned*, not a recap of the PR.
 
 ### Review activities
-Leave this section **empty** in the initial output. It is a running log populated during the review session — not written upfront.
+This is a running log populated during the review session — not written upfront. Leave this section **empty** in the initial output, unless some investigation work has been carried out in the current session (see Follow-up investigations).
 
 ## Tone and calibration
 
@@ -220,3 +220,6 @@ For a small PR that adds rate-limiting middleware to an API endpoint:
 >
 > **Review activities:**
 >
+> 1. **Checked Redis failure behavior.** Read `RateLimiter.__call__` in `middleware/rate_limiter.py:42–67` — no `try/except` around the Redis call, confirming the PR will 500 on Redis errors. Checked three other endpoints using `RateLimiter` — all three wrap it in `try/except` and return `200`. This PR diverges from the convention; raised in Open questions.
+>
+> 2. **Verified `X-Forwarded-For` handling.** Traced the header through `middleware/proxy_headers.py:23` — reads the leftmost IP, falling back to `request.remote_addr` when the header is absent (direct connections). Assumption in main analysis holds.
