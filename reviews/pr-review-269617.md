@@ -172,6 +172,14 @@ Three bugs fixed:
 
 ## Review activities
 
+**Jun 5 — local testing pass (from PR review comments):**
+
+- **Pulled the branch and ran it on a clean local ES/Kibana build** with `ruleChangesHistoryEnabled` (and `xpack.alerting.ruleChangeTracking.enabled`) on. Manually walked the main rule-management user flows to confirm the feature wires up without regressing the shared touchpoints — rule **create/install**, **duplicate**, **enable**, **disable**, **snooze/unsnooze**, and **bulk update** — then opened the new History page off the ⋮ menu and exercised the timeline + diff. Posted screenshots on several threads.
+- **Confirmed the shared-UI edits work in the running app**: breadcrumb appends the History crumb (`breadcrumbs.ts:105`), the inline back link renders (`header_page/index.tsx:58`), the timeline is hidden on the new path (`use_show_timeline_for_path.ts:36`), and the infinite-scroll data hook fetches/pages (`use_infinite_change_history.ts:45`). No regressions seen on the rule-details or rules-list pages from the shared changes.
+- **Flagged orphaned i18n message components** in `changes_history_timeline/translations.tsx` (commented at lines 18/111/176/225/231 — the `RULE_*_MESSAGE` JSX block defined but never rendered). banderror independently flagged the same set.
+- **Flagged the orphaned/unused `SecurityPageName.rulesChangesHistory` deep link** (`deep_links.ts:76`). This is the origin of **risk 2** — still live (re-flagged Jun 19, "I think its back").
+- **Flagged code duplication in `helpers.tsx`** (line 186) — asked to reuse the `RULES_CHANGES_HISTORY_PATH` constant so there's one source of truth for the path.
+
 **Jun 15 — earlier sessions (from chat transcripts):**
 
 - **Reviewed `changes_diff.tsx` + `reconstructBefore` semantics.** Verified `old_values` is generated server-side in `compute_old_values.ts` as an RFC 7396 merge patch and that `reconstructBefore` (`changes_diff/utils.ts`) matches the spec (`null` → key deleted, value → key set). **Flagged an RFC 7396 null-ambiguity** — the patch can't distinguish a deleted key from a key legitimately set to `null`. Concluded it's **theoretical, not exploitable** in the current schema: the only `nullable: true` field in the whole `rule_schema` is `actions[].throttle`, and `mergePatchFromTo` treats arrays as atomic (whole-array replace), so it never emits a `null` patch for it. Recommended a code comment documenting the limitation + a `compute_old_values.test.ts` guard if any rule field ever becomes nullable.
