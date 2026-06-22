@@ -95,7 +95,7 @@ The document should open with a header block before any sections:
 ```
 # PR Review: #<number> — <title>
 
-**PR:** [org/repo#<number>](<github url>)
+**PR:** [org/repo#<number>](<github url>) by @creator
 ```
 
 Other relevant links (Slack threads, GitHub issues, related commits, design docs) should be included as well but they belong inline within the section where they are referenced.
@@ -192,6 +192,7 @@ Avoid these. They're common failure modes when analyzing PRs.
 - Asking the user for files you could read yourself from the repo.
 - Treating every PR as substantive. A dependency bump doesn't need a flow trace.
 - Generating suggested approval comments or LGTM verdicts. This skill produces analysis; the user decides what to do with it.
+- Writing a "Final verdict", "Overall verdict", or any closing summary that attempts to judge the PR. This review is the *start* of the process — the user will investigate further before drawing conclusions. End with open questions and recommendations for further investigation, not a judgment.
 - Padding the Assumptions or Risks sections. Empty is fine when there's nothing real to say.
 
 ## Worked example (abbreviated)
