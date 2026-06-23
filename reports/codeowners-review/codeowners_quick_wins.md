@@ -4,6 +4,10 @@
 >
 > Also added based on team feedback: the report now distinguishes **Pattern 1** (shared-common folders we incidentally co-own — the focus of all Tier 1/2/3 entries below) from **Pattern 2** (de-facto another-team integrations sitting inside our chartered folders, e.g. alerts-table embed on Rule Details, AI assistant in Rule Creation, agent-builder hooks, CPS additions to alert docs). Pattern 2 requires a different methodology (adding *more specific* CODEOWNERS lines to carve out sub-paths inside chartered code) and is sketched in the new "Pattern 2 backlog" section at the end of this document.
 
+## Related PRs
+
+- [elastic/kibana#274430 — \[Detection Engineering\] update codeowners](https://github.com/elastic/kibana/pull/274430) — consolidates `@elastic/security-detections-response`, `@elastic/security-detection-rule-management`, and `@elastic/security-detection-engine` into the new `@elastic/security-detection-engineering` team.
+
 ## Baseline (files owned)
 
 Output of `./analyse_codeowners.py @elastic/security-detection-rule-management`:
