@@ -1,13 +1,17 @@
 # CODEOWNERS Quick Wins — Reducing PR Review Load on `@elastic/security-detection-rule-management`
 
+> **Update (Jun 2026).** Re-run after fixing a CODEOWNERS-matching bug in `analyse_pr_savings.py` that mis-attributed Cypress shared-common files (`cypress/fixtures`, `cypress/objects`, `cypress/screens/common`, `cypress/support`, `cypress/helpers`) to `@elastic/security-engineering-productivity`. The bug treated `/cypress/*` as recursive when CODEOWNERS' single-`*` stops at slashes. With the fix, the baseline file count and PR-ping numbers below are slightly higher than the original run, and four new Cypress / test-config candidates surface inside Tier 1 (entries #4, #11, #12, #13).
+>
+> Also added based on team feedback: the report now distinguishes **Pattern 1** (shared-common folders we incidentally co-own — the focus of all Tier 1/2/3 entries below) from **Pattern 2** (de-facto another-team integrations sitting inside our chartered folders, e.g. alerts-table embed on Rule Details, AI assistant in Rule Creation, agent-builder hooks, CPS additions to alert docs). Pattern 2 requires a different methodology (adding *more specific* CODEOWNERS lines to carve out sub-paths inside chartered code) and is sketched in the new "Pattern 2 backlog" section at the end of this document.
+
 ## Baseline (files owned)
 
 Output of `./analyse_codeowners.py @elastic/security-detection-rule-management`:
 
 ```
-Fully owned (only this team): 1900
-Shared with other teams:       357
-Total owned:                  2257
+Fully owned (only this team): ~1960
+Shared with other teams:       ~365
+Total owned:                  2324
 ```
 
 The team currently appears as an owner on **53 lines** in `.github/CODEOWNERS`. Most are legitimately core (rule management server/public/api, prebuilt rules, rule monitoring, MITRE picker, fleet integrations, OpenAPI docs for detection APIs, rule_management cypress / api integration suites, etc.). The candidates below are entries that put the team on the review hook for code that is **not** part of the team's chartered business area.
@@ -15,33 +19,37 @@ The team currently appears as an owner on **53 lines** in `.github/CODEOWNERS`. 
 ## PR review savings — last 6 months
 
 ```
-Commits on main:                                                  9668
-PRs that pinged @elastic/security-detection-rule-management:       192   (32.0/mo)
+Commits on main:                                                 10155
+PRs that pinged @elastic/security-detection-rule-management:       213   (35.5/mo)
 
-If ALL 15 candidates were dropped:
-  PRs still pinged (team-essential file touched):                  144   (24.0/mo)
-  PRs no longer pinged (only candidate-path files):                 48    (8.0/mo)
-  Review-load reduction:                                           25.0%
+If ALL 19 candidates were dropped:
+  PRs still pinged (team-essential file touched):                  153   (25.5/mo)
+  PRs no longer pinged (only candidate-path files):                 60   (10.0/mo)
+  Review-load reduction:                                           28.2%
 ```
 
 | Tier | Candidate | CODEOWNERS line(s) | Files | PRs touched (6mo) | Uniquely freed (6mo) | Uniquely freed (/mo) |
 | ---- | --------- | ------------------ | ----: | ----------------: | --------------------: | ---------------------: |
-| 1 | `kbn-rule-data-utils` | 644 | 20 | 12 | 12 | **2.0** |
-| 1 | `server/routes` | 2722 | 5 | 11 | 7 | **1.2** |
-| 1 | `kbn-openapi-generator` | 624 | 46 | 9 | 4 | 0.7 |
-| 1 | `kbn-change-history` | 1015 | 16 | 6 | 4 | 0.7 |
-| 1 | `kbn-securitysolution-utils` | 1335 | 37 | 3 | 3 | 0.5 |
-| 1 | `detections_response/utils` (test helpers) | 2724 | 41 | 12 | 3 | 0.5 |
-| 1 | `common/test` (ESS roles fixture) | 2716 | 2 | 5 | 3 | 0.5 |
-| 1 | `kbn-openapi-bundler` | 622 | 111 | 2 | 2 | 0.3 |
-| 1 | `kbn-zod-helpers` | 721 | 35 | 4 | 2 | 0.3 |
-| 1 | `kbn-openapi-common` (paired with bundler/generator) | 623 | 14 | 3 | 0 | 0.0 |
-| 2 | `components/links_to_docs` | 3005 | 5 | 3 | 2 | 0.3 |
-| 2 | `components/ml_popover` | 3006 | 41 | 3 | 1 | 0.2 |
-| 2 | `components/missing_privileges` | 3007 | 11 | 2 | 1 | 0.2 |
-| 2 | `components/popover_items` | 3008 | 2 | 1 | 1 | 0.2 |
-| 3 | `alerting/.../change_tracking` | 2530 | 5 | 3 | 1 | 0.2 |
-| | **Totals (de-duplicated)** | **15 lines** | **~391** | — | **48** | **8.0** |
+| 1 | `kbn-rule-data-utils` | 654 | 20 | 14 | 13 | **2.2** |
+| 1 | `server/routes` | 2878 | 5 | 12 | 9 | **1.5** |
+| 1 | `kbn-change-history` | 1029 | 16 | 9 | 5 | 0.8 |
+| 1 | `cypress/support` | 2867 | 5 | 5 | **5** | **0.8** |
+| 1 | `kbn-openapi-generator` | 634 | 46 | 9 | 4 | 0.7 |
+| 1 | `detections_response/utils` (test helpers) | 2880 | 41 | 14 | 4 | 0.7 |
+| 1 | `kbn-securitysolution-utils` | 1362 | 37 | 3 | 3 | 0.5 |
+| 1 | `common/test` (ESS roles fixture) | 2872 | 2 | 5 | 3 | 0.5 |
+| 1 | `kbn-openapi-bundler` | 632 | 111 | 3 | 2 | 0.3 |
+| 1 | `kbn-zod-helpers` | 732 | 35 | 4 | 2 | 0.3 |
+| 1 | `cypress/screens/common` | 2866 | 5 | 4 | 1 | 0.2 |
+| 1 | `cypress/objects` | 2865 | 4 | 4 | 1 | 0.2 |
+| 1 | `detections_response/telemetry` (api integration) | 2881 | 5 | 4 | 1 | 0.2 |
+| 1 | `kbn-openapi-common` (paired with bundler/generator) | 633 | 14 | 2 | 0 | 0.0 |
+| 2 | `components/links_to_docs` | 3130 | 5 | 2 | 2 | 0.3 |
+| 2 | `components/missing_privileges` | 3132 | 11 | 2 | 1 | 0.2 |
+| 2 | `components/popover_items` | 3133 | 2 | 1 | 1 | 0.2 |
+| 2 | `components/ml_popover` | 3131 | 41 | 3 | 0 | 0.0 |
+| 3 | `alerting/.../change_tracking` | 2645 | 5 | 4 | 1 | 0.2 |
+| | **Totals (de-duplicated)** | **19 lines** | **~410** | — | **60** | **10.0** |
 
 > Per-row "uniquely freed" sums to more than the deduplicated total because some PRs touch multiple candidates — e.g. several `kbn-change-history` PRs also touched `alerting/.../change_tracking`, so dropping either one alone wouldn't free the PR, but dropping both does. See [PR references — per candidate](#pr-references--per-candidate) at the end of this document.
 
@@ -49,33 +57,33 @@ If ALL 15 candidates were dropped:
 
 ## Tier 1 — Recommended removals (sorted by biggest wins)
 
-Platform packages we incidentally own, plus the cross-team paths surfaced by the discovery pass. All low-risk: every removal falls back to a sensible co-owner (or the plugin default `@elastic/security-solution`). Ordered by PRs uniquely freed per month, biggest first.
+Platform packages we incidentally own, plus the cross-team paths surfaced by the discovery pass and by team feedback. All low-risk: every removal falls back to a sensible co-owner (or the plugin default `@elastic/security-solution`). Ordered by PRs uniquely freed per month, biggest first.
 
 ### 1. `@kbn/rule-data-utils` (★ biggest single win)
 
-- **Line:** L644
+- **Line:** L654
 - **Files removed:** 20
 - **Current owners:** `@elastic/security-detection-rule-management @elastic/security-detection-engine @elastic/response-ops @elastic/actionable-obs-team`
 - **Fallback after removal:** three remaining co-owners.
-- **PRs uniquely freed in 6 months:** **12** (2.0/mo)
+- **PRs uniquely freed in 6 months:** **13** (2.2/mo)
 
-Shared 4 ways for ECS rule-data field names. Detection-engine, response-ops, and actionable-obs-team between them cover both the runtime alerting consumers and the schema/field-name source-of-truth. The 12 PRs over 6 months reflect response-ops and observability churn that has no rule-management content.
+Shared 4 ways for ECS rule-data field names. Detection-engine, response-ops, and actionable-obs-team between them cover both the runtime alerting consumers and the schema/field-name source-of-truth. The 13 PRs over 6 months reflect response-ops and observability churn that has no rule-management content.
 
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -641,3 +641,3 @@
+@@ -654,1 +654,1 @@
 -src/platform/packages/shared/kbn-rule-data-utils @elastic/security-detection-rule-management @elastic/security-detection-engine @elastic/response-ops @elastic/actionable-obs-team
 +src/platform/packages/shared/kbn-rule-data-utils @elastic/security-detection-engine @elastic/response-ops @elastic/actionable-obs-team
 ```
 
 ### 2. `server/routes` (★ second-biggest win)
 
-- **Line:** L2722
+- **Line:** L2878
 - **Files affected:** 5 (`index.ts`, `jest.config.js`, `limited_concurrency.ts`, `data_generator/**`)
 - **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting`
 - **Fallback after removal:** detection-engine + threat-hunting
-- **PRs uniquely freed in 6 months:** **7** (1.2/mo)
+- **PRs uniquely freed in 6 months:** **9** (1.5/mo)
 
 This is the security_solution plugin's top-level route-registry directory — 5 files of routing manifest, not a domain folder. Every new route added by ANY security_solution sub-team (entity-analytics, attacks/alerts, cases, on-week experiments, microsoft defender, etc.) touches this folder and pings all 3 co-owners. The team's review value-add here is nil; detection-engine and threat-hunting cover it perfectly well between them.
 
@@ -89,52 +97,94 @@ Sample PRs from the last 6 months that pinged rule-management purely via this li
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -2719,3 +2719,3 @@
+@@ -2878,1 +2878,1 @@
 -/x-pack/solutions/security/plugins/security_solution/server/routes @elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting
 +/x-pack/solutions/security/plugins/security_solution/server/routes @elastic/security-detection-engine @elastic/security-threat-hunting
 ```
 
-### 3. `@kbn/openapi-generator`
+### 3. `@kbn/change-history`
 
-- **Line:** L624
+- **Line:** L1029
+- **Files removed:** 16
+- **Current owner:** sole — `@elastic/security-detection-rule-management`
+- **Fallback after removal:** none
+- **PRs uniquely freed in 6 months:** **5** (0.8/mo)
+
+README explicitly describes it as "solution-agnostic … use it from any plugin or module that needs audit-style history." Several of the package's PRs in 6 months were stream/schema renames, ILM-policy work, and `@kbn/data-streams` space-support changes — all platform churn from teams outside ours.
+
+```diff
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -1029,1 +1029,0 @@
+-x-pack/platform/packages/shared/kbn-change-history @elastic/security-detection-rule-management
+```
+
+### 4. `cypress/support` (★ surfaced by team feedback)
+
+- **Line:** L2867
+- **Files affected:** 5
+- **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting`
+- **Fallback after removal:** detection-engine + threat-hunting
+- **PRs uniquely freed in 6 months:** **5** (0.8/mo)
+
+Cross-cutting Cypress test-runner support (commands, auth wiring, custom hooks). Surfaced after fixing a CODEOWNERS-matching bug in `analyse_pr_savings.py` that previously mis-attributed this and other Cypress shared-common files to `@elastic/security-engineering-productivity`. Every PR over 6 months that touched only this line — without touching any other rule-management-owned code — is generic test-infra churn:
+
+- `#260570` — *[Security & Observability] Add AI Agent announcement modal with opt-out to classic assistant*
+- `#261873` — *fix(serverless,tests): switch Security Cypress tests to use UIAM authentication*
+- `#259074` — *Add `kbn/test-saml-auth` package*
+- `#237977` — *Update cypress (main)*
+- `#257396` — *[Security Solution] Fix alert assignment cypress tests: add fallback logic when resolving the authenticated user's fullname*
+
+None of these need rule-management eyes.
+
+```diff
+@@ -2867,1 +2867,1 @@
+-/x-pack/solutions/security/test/security_solution_cypress/cypress/support @elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting
++/x-pack/solutions/security/test/security_solution_cypress/cypress/support @elastic/security-detection-engine @elastic/security-threat-hunting
+```
+
+### 5. `@kbn/openapi-generator`
+
+- **Line:** L634
 - **Files removed:** 46
 - **Current owner:** sole — `@elastic/security-detection-rule-management`
 - **Fallback after removal:** none (package-level fallback only)
 - **PRs uniquely freed in 6 months:** **4** (0.7/mo)
 
-Lives under `src/platform/packages/shared/` (platform tier, intentionally cross-team). Consumers outside rule-management include siem_migrations, entity_analytics, timeline, and many `.gen.ts` files maintained by other teams. The team's actual interest is the *output* (`*.gen.ts` files and bundled OpenAPI specs under `common/api/detection_engine/**`), which is owned via the more specific paths at L2990-2994.
+Lives under `src/platform/packages/shared/` (platform tier, intentionally cross-team). Consumers outside rule-management include siem_migrations, entity_analytics, timeline, and many `.gen.ts` files maintained by other teams. The team's actual interest is the *output* (`*.gen.ts` files and bundled OpenAPI specs under `common/api/detection_engine/**`), which is owned via the more specific paths.
 
-> Drop this together with `kbn-openapi-bundler` (L622) and `kbn-openapi-common` (L623) — see entries #8 and #10 below. They're a logically inseparable toolchain.
+> Drop this together with `kbn-openapi-bundler` (entry #9) and `kbn-openapi-common` (entry #14) — they're a logically inseparable toolchain.
 
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -622,3 +622,0 @@
+@@ -632,3 +632,0 @@
 -src/platform/packages/shared/kbn-openapi-bundler @elastic/security-detection-rule-management
 -src/platform/packages/shared/kbn-openapi-common @elastic/security-detection-rule-management
 -src/platform/packages/shared/kbn-openapi-generator @elastic/security-detection-rule-management
 ```
 
-### 4. `@kbn/change-history`
+### 6. `detections_response/utils` (api integration test helpers)
 
-- **Line:** L1015
-- **Files removed:** 16
-- **Current owner:** sole — `@elastic/security-detection-rule-management`
-- **Fallback after removal:** none
+- **Line:** L2880
+- **Files affected:** 41
+- **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management`
+- **Fallback after removal:** `@elastic/security-detection-engine`
 - **PRs uniquely freed in 6 months:** **4** (0.7/mo)
 
-README explicitly describes it as "solution-agnostic … use it from any plugin or module that needs audit-style history." 6 of the package's PRs in 6 months were stream/schema renames, ILM-policy work, and `@kbn/data-streams` space-support changes — all platform churn from teams outside ours.
+Shared test utilities under `security_solution_api_integration/test_suites/detections_response/utils/` (actions, alerts, connectors, count_down_es, event_log, exception_list_and_item, …). Touched constantly by every detection-response team. The actually-rule-management-specific test suite lives at `test_suites/detections_response/rules_management/` and stays ours.
 
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -1012,3 +1012,3 @@
--x-pack/platform/packages/shared/kbn-change-history @elastic/security-detection-rule-management
+@@ -2880,1 +2880,1 @@
+-x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/utils @elastic/security-detection-engine @elastic/security-detection-rule-management
++x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/utils @elastic/security-detection-engine
 ```
 
-### 5. `@kbn/securitysolution-utils`
+### 7. `@kbn/securitysolution-utils`
 
-- **Line:** L1335
+- **Line:** L1362
 - **Files removed:** 37
 - **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management`
 - **Fallback after removal:** `@elastic/security-detection-engine`
@@ -145,32 +195,14 @@ Generic date/duration utilities used by exceptions, endpoint forms (defend-workf
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -1332,3 +1332,3 @@
+@@ -1362,1 +1362,1 @@
 -x-pack/solutions/security/packages/kbn-securitysolution-utils @elastic/security-detection-engine @elastic/security-detection-rule-management
 +x-pack/solutions/security/packages/kbn-securitysolution-utils @elastic/security-detection-engine
 ```
 
-### 6. `detections_response/utils` (api integration test helpers)
+### 8. `common/test` (ESS roles fixture)
 
-- **Line:** L2724
-- **Files affected:** 41
-- **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management`
-- **Fallback after removal:** `@elastic/security-detection-engine`
-- **PRs uniquely freed in 6 months:** **3** (0.5/mo)
-
-Shared test utilities under `security_solution_api_integration/test_suites/detections_response/utils/` (actions, alerts, connectors, count_down_es, event_log, exception_list_and_item, …). Touched constantly by every detection-response team. The actually-rule-management-specific test suite lives at `test_suites/detections_response/rules_management/` (L3002) and stays ours.
-
-```diff
---- a/.github/CODEOWNERS
-+++ b/.github/CODEOWNERS
-@@ -2721,3 +2721,3 @@
--x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/utils @elastic/security-detection-engine @elastic/security-detection-rule-management
-+x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/utils @elastic/security-detection-engine
-```
-
-### 7. `common/test` (ESS roles fixture)
-
-- **Line:** L2716
+- **Line:** L2872
 - **Files affected:** 2 (`ess_roles.json`, `index.ts`)
 - **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting`
 - **Fallback after removal:** detection-engine + threat-hunting
@@ -181,24 +213,24 @@ A 2-file shared RBAC fixture (`ess_roles.json` + barrel). Every cross-team Secur
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -2713,3 +2713,3 @@
+@@ -2872,1 +2872,1 @@
 -/x-pack/solutions/security/plugins/security_solution/common/test @elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting
 +/x-pack/solutions/security/plugins/security_solution/common/test @elastic/security-detection-engine @elastic/security-threat-hunting
 ```
 
-### 8. `@kbn/openapi-bundler`
+### 9. `@kbn/openapi-bundler`
 
-- **Line:** L622
+- **Line:** L632
 - **Files removed:** 111
 - **Current owner:** sole — `@elastic/security-detection-rule-management`
 - **Fallback after removal:** none
 - **PRs uniquely freed in 6 months:** **2** (0.3/mo)
 
-Drop together with `kbn-openapi-generator` and `kbn-openapi-common` — see entry #3. Diff is shown there.
+Drop together with `kbn-openapi-generator` (#5) and `kbn-openapi-common` (#14) — see entry #5 for the combined diff.
 
-### 9. `@kbn/zod-helpers`
+### 10. `@kbn/zod-helpers`
 
-- **Line:** L721
+- **Line:** L732
 - **Files removed:** 35
 - **Current owner:** sole — `@elastic/security-detection-rule-management`
 - **Fallback after removal:** none
@@ -209,19 +241,82 @@ Generic Zod schema/validation helpers. Used by siem_migrations rule/dashboard ge
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -718,3 +718,3 @@
+@@ -732,1 +732,0 @@
 -src/platform/packages/shared/kbn-zod-helpers @elastic/security-detection-rule-management
 ```
 
-### 10. `@kbn/openapi-common`
+### 11. `cypress/screens/common` (★ surfaced by team feedback)
 
-- **Line:** L623
+- **Line:** L2866
+- **Files affected:** 5
+- **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting`
+- **Fallback after removal:** detection-engine + threat-hunting
+- **PRs uniquely freed in 6 months:** **1** (0.2/mo)
+
+Shared screen/page selectors (`controls.ts`, `data_grid.ts`, `filter_group.ts`, `page.ts`, `toast.ts`). The one uniquely-freed PR is `#245588 — [Controls Anywhere] Feature Branch`. Lower volume than `cypress/support` (#4), but mechanically the same change and same justification.
+
+```diff
+@@ -2866,1 +2866,1 @@
+-/x-pack/solutions/security/test/security_solution_cypress/cypress/screens/common @elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting
++/x-pack/solutions/security/test/security_solution_cypress/cypress/screens/common @elastic/security-detection-engine @elastic/security-threat-hunting
+```
+
+### 12. `cypress/objects` (★ surfaced by team feedback)
+
+- **Line:** L2865
+- **Files affected:** 4
+- **Current owners:** same 3-way as #11
+- **Fallback after removal:** detection-engine + threat-hunting
+- **PRs uniquely freed in 6 months:** **1** (0.2/mo)
+
+Shared Cypress test-data fixtures (rule objects, exception objects, etc.). Same justification; drop together with `cypress/support` (#4) and `cypress/screens/common` (#11).
+
+```diff
+@@ -2865,1 +2865,1 @@
+-/x-pack/solutions/security/test/security_solution_cypress/cypress/objects @elastic/security-detection-engine @elastic/security-detection-rule-management @elastic/security-threat-hunting
++/x-pack/solutions/security/test/security_solution_cypress/cypress/objects @elastic/security-detection-engine @elastic/security-threat-hunting
+```
+
+### 13. `detections_response/telemetry` (api integration) (★ surfaced by team feedback)
+
+- **Line:** L2881
+- **Files affected:** ~5
+- **Current owners:** `@elastic/security-detection-engine @elastic/security-detection-rule-management`
+- **Fallback after removal:** `@elastic/security-detection-engine`
+- **PRs uniquely freed in 6 months:** **1** (0.2/mo)
+
+Cross-team API-integration telemetry tests. The single uniquely-freed PR is `#265100 — [Security Solution] Fix flaky rule telemetry tests`. Low volume on its own, but pairs naturally with `detections_response/utils` (#6) so the team's footprint in the detection-response api-integration suite is consistent.
+
+```diff
+@@ -2881,1 +2881,1 @@
+-x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/telemetry @elastic/security-detection-engine @elastic/security-detection-rule-management
++x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/telemetry @elastic/security-detection-engine
+```
+
+### 14. `@kbn/openapi-common`
+
+- **Line:** L633
 - **Files removed:** 14
 - **Current owner:** sole — `@elastic/security-detection-rule-management`
 - **Fallback after removal:** none
 - **PRs uniquely freed in 6 months:** **0** (0.0/mo)
 
-On its own this had 0 uniquely-freed PRs over 6 months — its 3 raw PR touches were always paired with team-core code. Listed here only because dropping `kbn-openapi-bundler` and `kbn-openapi-generator` without also dropping `-common` would leave the team owning a logically inseparable subset of the same toolchain. Drop all three together; the ROI argument rests on the bundler + generator. Diff is shown under entry #3.
+On its own this had 0 uniquely-freed PRs over 6 months — its 2 raw PR touches were always paired with team-core code. Listed here only because dropping `kbn-openapi-bundler` and `kbn-openapi-generator` without also dropping `-common` would leave the team owning a logically inseparable subset of the same toolchain. Drop all three together; the ROI argument rests on the bundler + generator. Diff is shown under entry #5.
+
+---
+
+### Tier 1 candidates considered and dropped (0 uniquely-freed PRs in 6mo window)
+
+Surfaced by the team-feedback re-run; held to the same "≥ 1 uniquely-freed PR / 6mo" bar as the rest of Tier 1.
+
+| Dropped candidate | 6mo PRs touched | 6mo uniquely freed | Reason for dropping |
+| ----------------- | ---------------: | -------------------: | ------------------- |
+| `cypress/fixtures` (L2863) | 0 | 0 | Inert in 6mo window |
+| `cypress/helpers` (L2864) | 1 | 0 | One PR (#263662), always co-touched with chartered code |
+| `server/utils` (L2879) | 0 | 0 | Inert |
+| `detections_response/user_roles` (L2882) | 0 | 0 | Inert |
+| `api_integration/sources` (L2883) | 0 | 0 | Inert |
+| `api_integration/services/detections_response` (L2884) | 1 | 0 | One PR (#251166), co-touched |
 
 ---
 
@@ -239,28 +334,28 @@ Four of the original UI candidates have been **dropped** because they produced n
 
 Remaining UI candidates (low impact but ~free to land), sorted by biggest wins:
 
-### 11. `public/common/components/links_to_docs`
+### 15. `public/common/components/links_to_docs`
 
-- **Line:** L3005, **5 files**, sole owner today, fallback to `@elastic/security-solution`.
+- **Line:** L3130, **5 files**, sole owner today, fallback to `@elastic/security-solution`.
 - **PRs uniquely freed in 6 months:** **2** (0.3/mo)
 
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -3002,3 +3002,3 @@
+@@ -3130,1 +3130,0 @@
 -/x-pack/solutions/security/plugins/security_solution/public/common/components/links_to_docs @elastic/security-detection-rule-management
 ```
 
-### 12-14. `ml_popover`, `missing_privileges`, `popover_items`
+### 16-18. `missing_privileges`, `popover_items`, `ml_popover`
 
-- **Lines:** L3006, L3007, L3008, **54 files total**, sole owner today, fallback to `@elastic/security-solution`.
-- **PRs uniquely freed in 6 months:** 1 + 1 + 1 = **3** (0.5/mo combined)
+- **Lines:** L3132, L3133, L3131, **54 files total**, sole owner today, fallback to `@elastic/security-solution`.
+- **PRs uniquely freed in 6 months:** 1 + 1 + 0 = **2** (0.3/mo combined). `ml_popover` had 0 uniquely-freed PRs in the latest run.
 - `ml_popover` is the largest single file group (41 files) and is also used by `entity_analytics/.../pad_ml_popover` — if the team prefers to keep visibility, it can be shared with `@elastic/security-entity-analytics` instead of removed.
 
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -3003,3 +3003,0 @@
+@@ -3131,3 +3131,0 @@
 -/x-pack/solutions/security/plugins/security_solution/public/common/components/ml_popover @elastic/security-detection-rule-management
 -/x-pack/solutions/security/plugins/security_solution/public/common/components/missing_privileges @elastic/security-detection-rule-management
 -/x-pack/solutions/security/plugins/security_solution/public/common/components/popover_items @elastic/security-detection-rule-management
@@ -270,9 +365,9 @@ Remaining UI candidates (low impact but ~free to land), sorted by biggest wins:
 
 ## Tier 3 — Debatable
 
-### 15. `alerting/.../rules_client/lib/change_tracking`
+### 19. `alerting/.../rules_client/lib/change_tracking`
 
-- **Line:** L2530
+- **Line:** L2645
 - **Files removed:** 5
 - **Current owner:** sole — `@elastic/security-detection-rule-management` (this line **overrides** the alerting plugin default of `@elastic/response-ops` at L1146)
 - **Fallback after removal:** `@elastic/response-ops`
@@ -285,7 +380,7 @@ The line exists because rule-management originally landed change-tracking inside
 ```diff
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -2527,3 +2527,3 @@
+@@ -2645,1 +2645,0 @@
 -/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/change_tracking @elastic/security-detection-rule-management
 ```
 
@@ -324,27 +419,31 @@ The discovery pass also surfaces the team's *high-traffic* lines that should NOT
 
 | Tier | Candidate | Line | Files dropped | Uniquely freed /mo | Risk |
 | ---- | --------- | ---- | ------------: | -----------------: | ---- |
-| 1 | `kbn-rule-data-utils` (drop us; 3 co-owners stay) | 644 | 20 | **2.0** | Low |
-| 1 | `server/routes` (drop us; 2 co-owners stay) | 2722 | 5 | **1.2** | Low |
-| 1 | `kbn-openapi-generator` | 624 | 46 | 0.7 | Low |
-| 1 | `kbn-change-history` | 1015 | 16 | 0.7 | Low |
-| 1 | `kbn-securitysolution-utils` | 1335 | 37 | 0.5 | Low |
-| 1 | `detections_response/utils` (drop us; detection-engine stays) | 2724 | 41 | 0.5 | Low |
-| 1 | `common/test` (drop us; 2 co-owners stay) | 2716 | 2 | 0.5 | Low |
-| 1 | `kbn-openapi-bundler` | 622 | 111 | 0.3 | Low |
-| 1 | `kbn-zod-helpers` | 721 | 35 | 0.3 | Low |
-| 1 | `kbn-openapi-common` (paired with bundler/generator) | 623 | 14 | 0.0 | Low |
-| 2 | `components/links_to_docs` | 3005 | 5 | 0.3 | Low |
-| 2 | `components/ml_popover` | 3006 | 41 | 0.2 | Medium — consider sharing |
-| 2 | `components/missing_privileges` | 3007 | 11 | 0.2 | Low |
-| 2 | `components/popover_items` | 3008 | 2 | 0.2 | Low |
-| 3 | `alerting/.../change_tracking` | 2530 | 5 | 0.2 | Medium — coordinate w/ response-ops |
-| | **Total** | **15 lines** | **~391 files** | **8.0/mo (= 48 PRs / 6mo, 25% of team review load)** | |
+| 1 | `kbn-rule-data-utils` (drop us; 3 co-owners stay) | 654 | 20 | **2.2** | Low |
+| 1 | `server/routes` (drop us; 2 co-owners stay) | 2878 | 5 | **1.5** | Low |
+| 1 | `kbn-change-history` | 1029 | 16 | 0.8 | Low |
+| 1 | `cypress/support` (drop us; 2 co-owners stay) | 2867 | 5 | **0.8** | Low |
+| 1 | `kbn-openapi-generator` | 634 | 46 | 0.7 | Low |
+| 1 | `detections_response/utils` (drop us; detection-engine stays) | 2880 | 41 | 0.7 | Low |
+| 1 | `kbn-securitysolution-utils` | 1362 | 37 | 0.5 | Low |
+| 1 | `common/test` (drop us; 2 co-owners stay) | 2872 | 2 | 0.5 | Low |
+| 1 | `kbn-openapi-bundler` | 632 | 111 | 0.3 | Low |
+| 1 | `kbn-zod-helpers` | 732 | 35 | 0.3 | Low |
+| 1 | `cypress/screens/common` (drop us; 2 co-owners stay) | 2866 | 5 | 0.2 | Low |
+| 1 | `cypress/objects` (drop us; 2 co-owners stay) | 2865 | 4 | 0.2 | Low |
+| 1 | `detections_response/telemetry` (drop us; detection-engine stays) | 2881 | 5 | 0.2 | Low |
+| 1 | `kbn-openapi-common` (paired with bundler/generator) | 633 | 14 | 0.0 | Low |
+| 2 | `components/links_to_docs` | 3130 | 5 | 0.3 | Low |
+| 2 | `components/missing_privileges` | 3132 | 11 | 0.2 | Low |
+| 2 | `components/popover_items` | 3133 | 2 | 0.2 | Low |
+| 2 | `components/ml_popover` | 3131 | 41 | 0.0 | Medium — consider sharing |
+| 3 | `alerting/.../change_tracking` | 2645 | 5 | 0.2 | Medium — coordinate w/ response-ops |
+| | **Total** | **19 lines** | **~410 files** | **10.0/mo (= 60 PRs / 6mo, 28.2% of team review load)** | |
 
 ## Suggested rollout
 
-1. **PR 1 — Tier 1** (10 lines, ~327 files, ~5.7 freed PRs/mo). Low risk, biggest single drop. The `server/routes` line is the most strategic — it removes the team from cross-team route-wiring noise that has no business pinging us.
-2. **PR 2 — Tier 2** (4 lines, ~59 files, ~0.9 freed PRs/mo). Generic UI building blocks. Easy to revert per-component if anyone misses visibility.
+1. **PR 1 — Tier 1** (14 lines, ~346 files, ~9.1 freed PRs/mo). Low risk, biggest single drop. The `server/routes` and `kbn-rule-data-utils` lines together are the most strategic — they remove the team from cross-team route-wiring and ECS-rule-data noise that has no business pinging us. The four Cypress / API-integration shared-commons entries (#4, #11, #12, #13) and the OpenAPI toolchain (#5, #9, #14) are also bundled in here.
+2. **PR 2 — Tier 2** (4 lines, ~59 files, ~0.7 freed PRs/mo). Generic UI building blocks. Easy to revert per-component if anyone misses visibility. `ml_popover` had 0 uniquely-freed PRs in the latest window — keep or drop is a judgement call.
 3. **PR 3 — Tier 3** (1 line, 5 files, ~0.2 freed PRs/mo). Coordinate with `@elastic/response-ops` as a courtesy heads-up; they become sole steward of `change_tracking/**`.
 
 ## How to verify after applying
@@ -353,12 +452,39 @@ The discovery pass also surfaces the team's *high-traffic* lines that should NOT
 # Number-of-files snapshot
 ./analyse_codeowners.py @elastic/security-detection-rule-management
 
-# Replay of last 6 months of PRs
-python3 analyse_pr_savings.py
+# Replay of last 6 months of PRs (requires KIBANA_REPO env var if the script
+# lives outside the kibana checkout, e.g. in a knowledge folder).
+KIBANA_REPO=/path/to/kibana python3 analyse_pr_savings.py
 ```
 
-Expected delta on the file snapshot: `Total owned` drops from **2257** → **~1866** files.
-Expected delta on the 6-month PR replay: monthly review pings drop from **32.0/mo → 24.0/mo** (–25%).
+Expected delta on the file snapshot: `Total owned` drops from **2324** → **~1914** files.
+Expected delta on the 6-month PR replay: monthly review pings drop from **35.5/mo → 25.5/mo** (–28.2%).
+
+---
+
+## Pattern 2 backlog — carve-outs inside chartered folders (separate workstream)
+
+The Pattern-1 analysis above can only flag CODEOWNERS lines that *as a whole* don't belong to the team. It cannot see the second class of irrelevant pings called out by team feedback: PRs that modify code *inside* a chartered folder, but where the actual content is de-facto owned by another team (alerts-table integration on the Rule Details page, AI assistant in Rule Creation, agent-builder hooks, CPS additions to alert documents, etc.). These PRs are counted as "team-essential touched" by `analyse_pr_savings.py` and actively *hidden* from the candidate discovery — they're unavoidable given the current CODEOWNERS structure.
+
+Addressing Pattern 2 requires the opposite of what the rest of this document does: **adding more-specific CODEOWNERS lines that carve out a sub-path inside a chartered line and reassign it to the de-facto owner.** Below is the starting backlog identified via codebase inspection of the team's chartered Detection Engine folders. Each entry needs a quick conversation with the named team to confirm they accept ownership before landing.
+
+| Sub-path inside chartered code | Files | De-facto owner | Notes |
+| ------------------------------ | ----- | -------------- | ----- |
+| `public/detection_engine/rule_creation_ui/components/ai_assistant/` | 1 | `@elastic/security-genai` (verify) | AI-assistant integration into rule-creation UI |
+| `public/detection_engine/rule_creation_ui/components/add_rule_attachment_to_chat_button/` | 2 | `@elastic/security-genai` (verify) | "Attach rule to chat" affordance |
+| `public/detection_engine/rule_creation_ui/pages/rule_creation/hooks/use_agent_builder_rule_creation.tsx` | 1 | Agent-builder team (verify) | Agent-builder rule creation entry |
+| `public/detection_engine/rule_details_ui/pages/rule_details/index.tsx` (partial) | 1 | `@elastic/security-threat-hunting` (alerts-table integration only) | Imports `AlertsTable`, `GroupedAlertsTable`, `AlertsTableFilterGroup` from `public/detections/components/alerts_table` (owned by threat-hunting at L3003). A whole-file carve-out is too coarse; consider splitting `index.tsx` into a rule-details shell + alerts-table-integration sub-component owned by threat-hunting. |
+| Other CPS integrations | TBD | `@elastic/security-cloud-security` (verify) | Confirmed at least one Pattern-2 PR: `#266495 — [Security Solution][CPS] Adding CPS Data to Alert Document and Event Log` — pinged the team via `detections_response/utils` (already a Pattern-1 candidate) and other paths. Need a fresh sweep of the team's chartered server-side folders for CPS-prefixed files / imports from `@kbn/cloud-security-posture-plugin`. |
+
+### Suggested methodology to quantify Pattern 2 before acting
+
+The `analyse_pr_savings.py` script can be extended to flag Pattern-2 PRs distinctly:
+
+1. For each PR in the 6-month window that pinged the team and is **not** "uniquely freed" by any candidate, look at the touched chartered files.
+2. Cross-reference with the PR's `requested_teams` / primary `Team:*` label via the GitHub API. If the rule-management team isn't the primary owner of the PR's intent, flag it as a Pattern-2 candidate.
+3. Group those Pattern-2-flagged PRs by which chartered files they touched. Sub-paths that appear repeatedly across PRs led by other teams become carve-out candidates.
+
+This requires API access (not just local git log) and isn't a trivial extension, but it'd produce a data-backed Pattern-2 candidate list comparable to the Pattern-1 entries above. Without it, Pattern 2 has to be addressed by hand-curation + spot-checks against recent PR history.
 
 ---
 
@@ -366,7 +492,7 @@ Expected delta on the 6-month PR replay: monthly review pings drop from **32.0/m
 
 Every PR from the last 6 months that touched each candidate path. ★ marks PRs *uniquely freed* by dropping that single line (i.e. the candidate is the only reason the team got pinged). Unmarked rows are PRs that touched the candidate but also touched team-essential or another-candidate code — they don't free the team's review by themselves. Sorted in the same order as the per-candidate breakdown table above (biggest wins first).
 
-### 1. `kbn-rule-data-utils` (L644)
+### 1. `kbn-rule-data-utils` (L654)
 
 - ★ [#266332](https://github.com/elastic/kibana/pull/266332) — [ResponseOps][PerAlertSnooze] Add alert severity field to alert documents
 - ★ [#264156](https://github.com/elastic/kibana/pull/264156) — [Observability] Move rule locators from observability plugin to triggersActionsUi
@@ -381,7 +507,7 @@ Every PR from the last 6 months that touched each candidate path. ★ marks PRs 
 - ★ [#242125](https://github.com/elastic/kibana/pull/242125) — [Alerts] Add name of Maintenance Window in alert documents
 - ★ [#240996](https://github.com/elastic/kibana/pull/240996) — [OBX-UX-MGMT] Store Alert Muted Status Directly in Alert Documents
 
-### 2. `server/routes` (L2722)
+### 2. `server/routes` (L2878)
 
 - ★ [#261285](https://github.com/elastic/kibana/pull/261285) — SIEM Readiness Serverless Fixes
 - ★ [#258440](https://github.com/elastic/kibana/pull/258440) — [Entity Analytics] Deprecate asset criticality APIs and update privilege check
@@ -395,7 +521,24 @@ Every PR from the last 6 months that touched each candidate path. ★ marks PRs 
 - &nbsp;&nbsp;[#247068](https://github.com/elastic/kibana/pull/247068) — [Security Solution][Attacks/Alerts][Setup and miscellaneous] Unified Alerts Management Endpoints (#247065)
 - &nbsp;&nbsp;[#243361](https://github.com/elastic/kibana/pull/243361) — [Security Solution] Query unified alerts route
 
-### 3. `kbn-openapi-generator` (L624)
+### 3. `kbn-change-history` (L1029)
+
+- ★ [#268894](https://github.com/elastic/kibana/pull/268894) — [Security Solution] Add ILM policy for the change history index
+- ★ [#268740](https://github.com/elastic/kibana/pull/268740) — [Security Solution] Rename transaction.id to span.id in @kbn/change-history
+- ★ [#259737](https://github.com/elastic/kibana/pull/259737) — [kbn-data-streams] Add explicit 'default' space support
+- ★ [#256385](https://github.com/elastic/kibana/pull/256385) — [SecuritySolution] Create '@kbn/change-history' package
+- &nbsp;&nbsp;[#265775](https://github.com/elastic/kibana/pull/265775) — [@kbn/change-history] Rename stream to .kibana_change_history; snapshots-only schema and API
+- &nbsp;&nbsp;[#261981](https://github.com/elastic/kibana/pull/261981) — [Security Solution] Add core alerting framework capability to support rule change histories
+
+### 4. `cypress/support` (L2867)
+
+- ★ [#260570](https://github.com/elastic/kibana/pull/260570) — [Security & Observability] Add AI Agent announcement modal with opt-out to classic assistant
+- ★ [#261873](https://github.com/elastic/kibana/pull/261873) — fix(serverless,tests): switch Security Cypress tests to use UIAM authentication
+- ★ [#259074](https://github.com/elastic/kibana/pull/259074) — Add `kbn/test-saml-auth` package
+- ★ [#237977](https://github.com/elastic/kibana/pull/237977) — Update cypress (main)
+- ★ [#257396](https://github.com/elastic/kibana/pull/257396) — [Security Solution] Fix alert assignment cypress tests: add fallback logic when resolving the authenticated user's fullname
+
+### 5. `kbn-openapi-generator` (L634)
 
 - ★ [#265634](https://github.com/elastic/kibana/pull/265634) — [Security Solution] Adds Inbox plugin
 - ★ [#258186](https://github.com/elastic/kibana/pull/258186) — Update remainder kbn-zod/v3 to kbn-zod/v4
@@ -407,26 +550,12 @@ Every PR from the last 6 months that touched each candidate path. ★ marks PRs 
 - &nbsp;&nbsp;[#250857](https://github.com/elastic/kibana/pull/250857) — [OpenAPI generator] add `transformSchemaName` config options
 - &nbsp;&nbsp;[#248570](https://github.com/elastic/kibana/pull/248570) — [DOCS] Fix OpenAPI linting error in detection_engine
 
-### 4. `kbn-change-history` (L1015)
-
-- ★ [#268894](https://github.com/elastic/kibana/pull/268894) — [Security Solution] Add ILM policy for the change history index
-- ★ [#268740](https://github.com/elastic/kibana/pull/268740) — [Security Solution] Rename transaction.id to span.id in @kbn/change-history
-- ★ [#259737](https://github.com/elastic/kibana/pull/259737) — [kbn-data-streams] Add explicit 'default' space support
-- ★ [#256385](https://github.com/elastic/kibana/pull/256385) — [SecuritySolution] Create '@kbn/change-history' package
-- &nbsp;&nbsp;[#265775](https://github.com/elastic/kibana/pull/265775) — [@kbn/change-history] Rename stream to .kibana_change_history; snapshots-only schema and API
-- &nbsp;&nbsp;[#261981](https://github.com/elastic/kibana/pull/261981) — [Security Solution] Add core alerting framework capability to support rule change histories
-
-### 5. `kbn-securitysolution-utils` (L1335)
-
-- ★ [#254703](https://github.com/elastic/kibana/pull/254703) — [Security Solution][Detection Engine] Automatically inject metadata _id into ES|QL detection rules
-- ★ [#254689](https://github.com/elastic/kibana/pull/254689) — [ES|QL] `@elastic/esql` package installation
-- ★ [#246669](https://github.com/elastic/kibana/pull/246669) — [ES|QL] Rename @kbn/esql-ast to @kbn/esql-language
-
-### 6. `detections_response/utils` test helpers (L2724)
+### 6. `detections_response/utils` test helpers (L2880)
 
 - ★ [#262662](https://github.com/elastic/kibana/pull/262662) — [Security Solution] Add alerts_suppressed_count metrics tests for all rule types
 - ★ [#255922](https://github.com/elastic/kibana/pull/255922) — [ResponseOps][Connectors] Support user defined unique connector ID in connect creation form
 - ★ [#259917](https://github.com/elastic/kibana/pull/259917) — [Security Solution] Add "alerts_candidate_count" rule execution metric
+- &nbsp;&nbsp;[#266495](https://github.com/elastic/kibana/pull/266495) — [Security Solution][CPS] Adding CPS Data to Alert Document and Event Log
 - &nbsp;&nbsp;[#266690](https://github.com/elastic/kibana/pull/266690) — [Security Solution] Migrate install prebuilt rules & detections assets setup to initialization framework - UI
 - &nbsp;&nbsp;[#263662](https://github.com/elastic/kibana/pull/263662) — [Security Solution] Prebuilt rule deprecation workflow automated tests
 - &nbsp;&nbsp;[#250131](https://github.com/elastic/kibana/pull/250131) — [Security Solution] Rules managment RBAC subfeatures
@@ -435,9 +564,14 @@ Every PR from the last 6 months that touched each candidate path. ★ marks PRs 
 - &nbsp;&nbsp;[#248259](https://github.com/elastic/kibana/pull/248259) — [Security Solution] Installation review pagination: Frontend
 - &nbsp;&nbsp;[#247375](https://github.com/elastic/kibana/pull/247375) — [Security Solution] Installation review pagination: Backend
 - &nbsp;&nbsp;[#244287](https://github.com/elastic/kibana/pull/244287) — Use `allowSingleOrDouble`, allow `snake_case` in destructured variables
-- &nbsp;&nbsp;[#239690](https://github.com/elastic/kibana/pull/239690) — Clean up tsconfig references in Kibana
 
-### 7. `common/test` ESS roles fixture (L2716)
+### 7. `kbn-securitysolution-utils` (L1362)
+
+- ★ [#254703](https://github.com/elastic/kibana/pull/254703) — [Security Solution][Detection Engine] Automatically inject metadata _id into ES|QL detection rules
+- ★ [#254689](https://github.com/elastic/kibana/pull/254689) — [ES|QL] `@elastic/esql` package installation
+- ★ [#246669](https://github.com/elastic/kibana/pull/246669) — [ES|QL] Rename @kbn/esql-ast to @kbn/esql-language
+
+### 8. `common/test` ESS roles fixture (L2872)
 
 - ★ [#250929](https://github.com/elastic/kibana/pull/250929) — updates the rulesV1 feature references to rulesV2
 - ★ [#246125](https://github.com/elastic/kibana/pull/246125) — [Security Solution] Fix Entity Analytics Dashboard Enablement Test and Add Scout Implementation
@@ -445,47 +579,68 @@ Every PR from the last 6 months that touched each candidate path. ★ marks PRs 
 - &nbsp;&nbsp;[#250131](https://github.com/elastic/kibana/pull/250131) — [Security Solution] Rules managment RBAC subfeatures
 - &nbsp;&nbsp;[#245722](https://github.com/elastic/kibana/pull/245722) — [Security Solution] Rules exceptions subfeatures
 
-### 8. `kbn-openapi-bundler` (L622)
+### 9. `kbn-openapi-bundler` (L632)
 
 - ★ [#258544](https://github.com/elastic/kibana/pull/258544) — [OpenAPI] Dedupe merged tags by name
 - ★ [#249485](https://github.com/elastic/kibana/pull/249485) — [OAS]: Restrict mapping key prefixing only to Discriminator Object Mapping
 
-### 9. `kbn-zod-helpers` (L721)
+### 10. `kbn-zod-helpers` (L732)
 
 - ★ [#263354](https://github.com/elastic/kibana/pull/263354) — [Zod Helper][OAS Docs] Fix OAS docs generation for routes using buildRouteValidationWithZod
 - ★ [#256329](https://github.com/elastic/kibana/pull/256329) — [Security Solution] Zod v4 Migration for Detection Engine
 - &nbsp;&nbsp;[#258854](https://github.com/elastic/kibana/pull/258854) — Upgrade zod to real v4
 - &nbsp;&nbsp;[#252702](https://github.com/elastic/kibana/pull/252702) — Upgrade to Zod v4
 
-### 10. `kbn-openapi-common` (L623)
+### 11. `cypress/screens/common` (L2866)
+
+- &nbsp;&nbsp;[#260949](https://github.com/elastic/kibana/pull/260949) — Upgrade EUI to v116.0.0
+- &nbsp;&nbsp;[#250131](https://github.com/elastic/kibana/pull/250131) — [Security Solution] Rules managment RBAC subfeatures
+- ★ [#245588](https://github.com/elastic/kibana/pull/245588) — [Controls Anywhere] Feature Branch
+- &nbsp;&nbsp;[#239634](https://github.com/elastic/kibana/pull/239634) — [Detection Engine] Extracts Rules/Alerts/Exceptions permission to new Rules feature privileges
+
+### 12. `cypress/objects` (L2865)
+
+- &nbsp;&nbsp;[#263687](https://github.com/elastic/kibana/pull/263687) — [EDR Workflows][Serverless] Enable Endpoint exceptions move feature flag
+- &nbsp;&nbsp;[#255339](https://github.com/elastic/kibana/pull/255339) — [ML] Update Security ML jobs to use entity analytics fields for host and user fields
+- &nbsp;&nbsp;[#247674](https://github.com/elastic/kibana/pull/247674) — [Security Solution][Detection Engine] adds AI rule creation
+- ★ [#238869](https://github.com/elastic/kibana/pull/238869) — [Cases] IBM Resilient form improvements
+
+### 13. `detections_response/telemetry` (L2881)
+
+- ★ [#265100](https://github.com/elastic/kibana/pull/265100) — [Security Solution] Fix flaky rule telemetry tests
+- &nbsp;&nbsp;[#261814](https://github.com/elastic/kibana/pull/261814) — [Security Solution][Detection Engine] Add missing telemetry for AI rule creation
+- &nbsp;&nbsp;[#248644](https://github.com/elastic/kibana/pull/248644) — [Defend Workflows] Remove deprecated endpoint list constants and replace with ENDPOINT_ARTIFACT_LISTS
+- &nbsp;&nbsp;[#244287](https://github.com/elastic/kibana/pull/244287) — Use `allowSingleOrDouble`, allow `snake_case` in destructured variables
+
+### 14. `kbn-openapi-common` (L633)
 
 - &nbsp;&nbsp;[#264125](https://github.com/elastic/kibana/pull/264125) — [Security Solution] Make kbn-openapi-generator producing lazy loaded Zod schemas
 - &nbsp;&nbsp;[#252702](https://github.com/elastic/kibana/pull/252702) — Upgrade to Zod v4
-- &nbsp;&nbsp;[#239690](https://github.com/elastic/kibana/pull/239690) — Clean up tsconfig references in Kibana
 
-### 11. `components/links_to_docs` (L3005)
+### 15. `components/links_to_docs` (L3130)
 
 - ★ [#258466](https://github.com/elastic/kibana/pull/258466) — [DOCS][SECURITY]: Update detection engine UI links to docs
 - ★ [#251767](https://github.com/elastic/kibana/pull/251767) — [DOCS][Detection Engine]: Updates doc link to detection reqs page
 - &nbsp;&nbsp;[#243176](https://github.com/elastic/kibana/pull/243176) — Fix several doc links in security solution
 
-### 12. `components/ml_popover` (L3006)
-
-- ★ [#244032](https://github.com/elastic/kibana/pull/244032) — Update EUI to 109.2.0
-- &nbsp;&nbsp;[#238060](https://github.com/elastic/kibana/pull/238060) — [ML] `@kbn/ml-common-types` & `@kbn/ml-server-schemas`
-- &nbsp;&nbsp;[#255637](https://github.com/elastic/kibana/pull/255637) — Replace deprecated EUI icons in files owned by @elastic/security-detection-rule-management
-
-### 13. `components/missing_privileges` (L3007)
+### 16. `components/missing_privileges` (L3132)
 
 - ★ [#266523](https://github.com/elastic/kibana/pull/266523) — [Entity Analytics] EA homepage privileges banner (#17084)
 - &nbsp;&nbsp;[#244926](https://github.com/elastic/kibana/pull/244926) — [Security Solution][Attacks/Alerts][Setup and miscellaneous] Attacks indices RBAC (#243079)
 
-### 14. `components/popover_items` (L3008)
+### 17. `components/popover_items` (L3133)
 
 - ★ [#258853](https://github.com/elastic/kibana/pull/258853) — [Security Solution][Attacks] Align AssigneesBadge with TagsBadge (popover + stop propagation)
 
-### 15. `alerting/.../change_tracking` (L2530)
+### 18. `components/ml_popover` (L3131)
+
+- &nbsp;&nbsp;[#270551](https://github.com/elastic/kibana/pull/270551) — fix(a11y): add aria-label/aria-labelledby to EuiPopover/EuiModal components in @elastic/security-solution
+- &nbsp;&nbsp;[#238060](https://github.com/elastic/kibana/pull/238060) — [ML] `@kbn/ml-common-types` & `@kbn/ml-server-schemas`
+- &nbsp;&nbsp;[#255637](https://github.com/elastic/kibana/pull/255637) — Replace deprecated EUI icons in files owned by @elastic/security-detection-rule-management
+
+### 19. `alerting/.../change_tracking` (L2645)
 
 - ★ [#266096](https://github.com/elastic/kibana/pull/266096) — [Security Solution] Add request-scoped change tracking client to the alerting framework
+- &nbsp;&nbsp;[#268724](https://github.com/elastic/kibana/pull/268724) — [Security Solution] Implement Rule Changes History API
 - &nbsp;&nbsp;[#265775](https://github.com/elastic/kibana/pull/265775) — [@kbn/change-history] Rename stream to .kibana_change_history; snapshots-only schema and API
 - &nbsp;&nbsp;[#261981](https://github.com/elastic/kibana/pull/261981) — [Security Solution] Add core alerting framework capability to support rule change histories
