@@ -71,6 +71,21 @@ So the PR, as written, renames the team onto all the peripheral paths and preser
 
 One nice side effect already in the PR: the `change_tracking` line lost its explanatory comment (`# Change tracking inside alerting framework is managed by ...`). Minor, but if that line stays, the comment was useful context — worth keeping or rewording rather than dropping silently.
 
+### @banderror's framing (verbatim)
+
+Surfaced on the PR via @sdesalas's comment, this is the lens used to prioritise what to drop:
+
+> In my experience, most PRs review requests that we could categorize as irrelevant come from two type of PRs:
+
+> 1. PRs that modify code in some "common" folder, where our code is mixed with other teams' code.
+> Example: Cypress "tasks", "screens"; common components; etc.
+> 2. PRs that modify code in our legit owned folders to update something that is, de-facto, owned by another team.
+> Example: alerts table integration on the Rule Details page; agent builder integration; CPS, etc.
+
+> I would suggest looking into these two.
+
+Throughout this review these are referred to as **Pattern 1** (shared "common" folders) and **Pattern 2** (another team's code inside our chartered folders).
+
 ## Recommendation
 
 **Land the consolidation correctly first; treat the quick-wins trimming as a deliberate, separate decision.** Concretely:
@@ -122,3 +137,7 @@ One nice side effect already in the PR: the `change_tracking` line lost its expl
 5. **Scoped banderror's Pattern 1 against this PR's diff (what's droppable here).** Pattern 2 (carve-outs inside our own folders) needs new specific lines + cross-team sign-off — out of scope for a rename PR. For Pattern 1, verified fallbacks: `public/common/components/*` and `public/common/hooks/use_form_with_warnings` are sole-owned and fall back to the plugin default `@elastic/security-solution` (L1383) — safest to drop now. The `detections_response/*` test helpers fall back to the api-integration default `@elastic/security-solution` (L2819) — also safe. Key nuance: `security_solution_cypress` has **no base owner line**, and post-merge the old 3-way cypress/`server/routes`/`server/utils`/`common/test` lines are now `engineering + threat-hunting`, so dropping us hands **sole** ownership to threat-hunting (not the report's assumed "detection-engine co-owner stays"). Those need threat-hunting's OK first. Platform `kbn-*` packages are Pattern-1 too but are `kibana.jsonc`-driven, so they belong in the regen follow-up, not this diff.
 6. **Wrote the Recommendation section** capturing the prioritised plan (finish rename + regen as blocking; take the two safe Pattern-1 drop groups here; defer threat-hunting handoffs and platform-package decisions; skip Pattern 2).
 7. **Excluded `kbn-change-history` from drop candidates** per team input: Kibana core has indicated they'll take ownership once the feature is delivered, so it stays on `engineering` for now (planned hand-off, not a drop). Updated the Recommendation (step 4) and the quick-wins tie-in table accordingly.
+8. **Confirmed the `callouts` fallback.** Removing `/x-pack/solutions/security/plugins/security_solution/public/common/components/callouts` (L2876) leaves the path matched only by the plugin default `x-pack/solutions/security/plugins/security_solution @elastic/security-solution` (L1383) — so it falls back cleanly to `@elastic/security-solution`. The other `security_solution`-ish lines (L1241 cases-test, L2810 es_archives) don't match this path.
+9. **Confirmed the `test_suites/sources` fallback.** Removing `x-pack/solutions/security/test/security_solution_api_integration/test_suites/sources` (L2885) falls back to `@elastic/security-solution` via the hand-maintained default `/x-pack/solutions/security/test/security_solution_api_integration @elastic/security-solution` (L2819), which is later than (and overrides) the generated `@elastic/security-detection-engine` default at L1390. Clean fallback — same safe bucket as the other test-helper drops.
+10. **Clarified why `cypress/support` (and the other cypress shared-commons) sit in step 3, not step 2.** Verified `security_solution_cypress` has **no** base-owner fallback line. Post-merge `cypress/support` is `@elastic/security-detection-engineering @elastic/security-threat-hunting`, so dropping us leaves threat-hunting as **sole** owner — a real handoff needing their sign-off, not a zero-coordination drop. This diverges from the quick-wins report, which assumed `detection-engine` would remain as a second security co-owner (pre-merge); post-merge `detection-engine` *is* `engineering`.
+11. **Added @banderror's comment verbatim** to the Tie-in with the CODEOWNERS quick-wins research section (sourced from @sdesalas's PR comment quoting him), and tied his two categories to the Pattern 1 / Pattern 2 terminology used throughout the review.
