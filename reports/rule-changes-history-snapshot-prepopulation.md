@@ -191,12 +191,14 @@ Without this, the only workaround is a no-op `rulesClient.update()` on each rule
 
 ## Recommendation
 
-Implement **both** — they are complementary, not alternatives:
+**Option A (initialization flow) is the better starting point.**
 
-1. **Solution B first** (backend task): This is the correct place to handle "what happens on upgrade" and covers DaC users. It should be the primary mechanism.
-2. **Solution A as a fast-path** (UI bootstrap, optional): Add a lightweight check in the Security app initialisation that nudges baseline snapshot creation only if the task hasn't completed yet. This is useful for dev environments or cloud instances where the upgrade task might have run before the feature flag was fully on.
+Option B's appeal is broad coverage — including DaC/pipeline users — but iterating across all rules for all spaces at Kibana startup is a meaningful performance risk in large or shared deployments, particularly Elastic's serverless offering. That risk likely outweighs the DaC coverage benefit, especially since:
 
-The fallback UI callout from PR #269617 remains a good safety net for edge cases where pre-population hasn't run yet.
+- The fallback UI callout from PR #269617 already handles the no-baseline case gracefully — DaC users see a clear explanation rather than a broken diff
+- Most deployments have at least one human who opens the Security app, which is all Option A needs to fire
+
+Option A is lower risk, fits the existing init flow architecture, and scopes work naturally per space. If DaC-heavy usage patterns prove to be a real pain point in practice, Option B can be revisited with a design that avoids the startup cost (e.g. lazy per-space triggering on first API access rather than a global sweep at boot).
 
 ---
 
