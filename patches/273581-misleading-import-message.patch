@@ -1,0 +1,15 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_diff/changes_diff.tsx b/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_diff/changes_diff.tsx
+index 1f263b81b3c..6b40ccb8a7f 100644
+--- a/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_diff/changes_diff.tsx
++++ b/x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_diff/changes_diff.tsx
+@@ -38,7 +38,9 @@ export function RuleChangesDiff({ item, isLoading }: ChangesPanelProps): JSX.Ele
+       return { oldSource: '', newSource: '', numOfChangedFields: 0, noDiffAvailable: true };
+     }
+ 
+-    const hasNoDiff = EDIT_ACTIONS_REQUIRING_PRIOR_STATE.includes(item.action) && !item.old_values;
++    const hasNoDiff = EDIT_ACTIONS_REQUIRING_PRIOR_STATE.includes(item.action) &&
++      !item.old_values &&
++      new Date(item.rule.created_at).getTime() !== new Date(item.rule.updated_at).getTime();
+     const after = Object.fromEntries(
+       Object.entries(item.rule).filter(([k]) => !IGNORED_DIFF_FIELDS.has(k))
+     );
