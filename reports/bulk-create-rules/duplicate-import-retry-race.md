@@ -164,8 +164,7 @@ unless noted):
 
 ## Open question: where the retry originates
 
-The duplicate creation is fully explained by *a* retry ~120 s in; what is **not** yet pinned
-is which layer issues it and which timeout fires. Enough context to resume:
+Here is the most likely explanation:
 
 Dev request path: **browser → base path proxy (user port, e.g. 5606) → `@hapi/h2o2` →
 Kibana server child process (`dev.basePathProxyTarget`, e.g. 5616)**. In `--dev`,
