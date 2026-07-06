@@ -13,7 +13,7 @@ The user wants to understand a PR. They may provide it as:
 - A **GitHub URL** (e.g. `github.com/org/repo/pull/123`) — handle per "Fetching the PR" below.
 - A **PR number** alone (e.g. "review #456" or "PR 456") — same as above; `gh` infers the repo from the current directory.
 - A **pasted diff** — work from that directly. Ask for the PR number or URL so the description can be fetched; if unavailable, proceed with the diff alone.
-- A **branch or commit reference** in the current repo — use `git diff main...branch-name` or `git show <sha>`. Ask whether there's a corresponding PR number.
+- A **branch or commit reference** in the current repo — use `git diff main...branch-name` (three-dot, merge-base diff) or `git show <sha>`. **Never** use `git diff main` / `git diff main..branch-name` (two-dot) — those include upstream churn since the branch forked and will balloon the file list. Ask whether there's a corresponding PR number.
 - An **open file** or file path — treat as "help me understand this change" if it's a diff/patch file.
 
 If the user says something like "review the PR" or "look at my pull request" with no identifier, ask: *"What's the PR number or URL?"* Don't guess from context — a wrong PR wastes the whole analysis.
@@ -31,6 +31,14 @@ gh pr diff <number>
 ```
 
 If `gh` is not installed or not authenticated, fall back to `web_fetch` on the PR URL for the description and the `.diff` URL (e.g. `https://github.com/org/repo/pull/123.diff`) for the diff. If both fail, tell the user and ask them to paste the description and/or diff.
+
+**Getting the authoritative file list** (needed for Ownership, Files touched, and any focused-review pass):
+
+```bash
+gh pr view <number> --json files --jq '.files[].path'
+```
+
+If working from a local branch without `gh`, use `git diff <base>...HEAD --name-only` (three-dot). Never `git diff <base>` alone — it's a two-tip diff and includes upstream churn since the branch forked.
 
 ## Fetching linked issues
 

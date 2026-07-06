@@ -48,6 +48,26 @@ If the user gives multiple foci (`/focused-review types and memory`), run each i
 - Keep the output tight: bullets of concrete findings, file:line references, and one-line justifications. No prose padding.
 - If a PR review document is active in the session, also update it in place — see [Output](#output).
 
+### Determining which files the pass applies to
+
+Nail this down *first*, before you start reading code. Wrong file list = wrong review.
+
+- **PR number is known** → ask GitHub, it's authoritative:
+  ```bash
+  gh pr view <n> --json files --jq '.files[].path'
+  # or the actual patch:
+  gh pr diff <n>
+  ```
+- **Local branch, no PR handy** → use the **merge-base** diff (three-dot notation):
+  ```bash
+  git diff main...HEAD --name-only        # files this branch introduced
+  git diff main...HEAD --stat             # with line counts
+  ```
+- **Never** use `git diff main` or `git diff main..HEAD` (two-dot). Those are two-tip diffs and include everything that landed on `main` since the branch forked, ballooning the file list with merge churn.
+- **Uncommitted changes only** → `git diff --name-only` (working tree) or `git diff --cached --name-only` (staged).
+
+If in doubt about which base branch, check `gh pr view <n> --json baseRefName` or `git config branch.$(git branch --show-current).merge`.
+
 ---
 
 ## architecture
