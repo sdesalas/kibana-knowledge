@@ -1,208 +1,597 @@
-# Duplicate rules on large import: a retry race, not a chunking bug
+# Duplicate rules on large import: investigation log
 
-This is an investigation into retry behavior experienced in local dev environment when
-processing large imports (taking longer than 2 minutes to process).
-## TL;DR
+Investigation into POST retry behavior experienced in local dev environment that creates
+duplicate rules when importing a 12,000-rule `.ndjson` on a clean stack.
 
-Importing a 12,000-rule `.ndjson` into a **clean** stack produced **12,400** installed
-rules and a response of `success_count: 400` + `11,600 × 409 "Rule with this rule_id
-already exists"`. The file was fine and the Option B chunking was fine. The real cause:
-the single browser upload was **re-dispatched ~120 s later** (a 2-minute timeout retry),
-so **two overlapping executions of the same import** raced. Rule import is a
-read-then-create with no `rule_id` uniqueness constraint, so the overlap created 400
-duplicate rules.
+A single browser upload gets re-dispatched ~120s after the click (not visible in Network tab),
+creating two overlapping executions of the same import run against Kibana. Rule import is a
+read-then-create with no `rule_id` uniqueness constraint at the SO/ES layer, so the
+overlap creates duplicate rules.
 
-> **This is a pre-existing bug, not introduced by the bulk import path.** The same
-> `"Rule with this rule_id already exists"` reproduces on the **legacy** import path (bulk
-> flag off) with ~6,000 rules on a local deployment. There the retry lands after the
-> original has already created *every* rule, so **all 6,000** come back as 409 conflicts
-> (the retry creates nothing new — no duplicates). The bulk path shows the same race but,
-> because the retry overlaps the original mid-flight, it hits only a *subset* as conflicts
-> and duplicates the unrefreshed tail. Same root cause (timeout retry + read-then-create,
-> no `rule_id` uniqueness); the surface differs only in timing.
+> **This is a pre-existing bug (the retry behavior), but the bulk import path manifests a worse outcome, creating rule duplication in addition to prior `409 Conflict` responses**
+>
+> The same `"Rule with this rule_id already exists"` reproduces on the **legacy** import
+> path (bulk flag off) with ~6,000 rules on a local deployment. However, due to slower
+> processing the retry lands after the original has already created *every* rule,
+> so **all 6,000** come back as 409 conflicts (the retry creates nothing new — no duplicates).
+> The bulk path shows the same race but, because the retry overlaps the original mid-flight,
+> it hits only a *subset* as conflicts and duplicates the unrefreshed tail.
 
-## Symptom
+This document is a chronological log of what was tried and what it showed — including the
+failed attempts and the tests that did *not* prove what they were supposed to. It is not a
+recommendations doc.
 
-- File: `12000rules.internal.ndjson`, 12,000 rules, all internal (`rule_source.type:
-  internal`, `immutable: false`, `version: 1`), unique `rule_id`/`id`.
-- Bulk path (`bulkCreateRulesEnabled`) on, batch size `RULE_MANAGEMENT_BULK_IMPORT_BATCH_SIZE`
-  dropped to 4000 for testing.
+## Symptom (as experienced)
+
+- Fixture: `12000rules.internal.ndjson` — 12,000 rules, all internal
+  (`rule_source.type: internal`, `immutable: false`, `version: 1`), unique
+  `rule_id`/`id`.
+- Bulk path (`bulkCreateRulesEnabled`) on, batch size
+  `RULE_MANAGEMENT_BULK_IMPORT_BATCH_SIZE` = 4000 for testing.
 - Clean ES (no rules).
-- Response: `success: false`, `success_count: 400`, `rules_count: 12000`,
-  `errors: 11,600 × {status_code: 409, "Rule with this rule_id already exists"}`.
-- UI reported **12,400** installed rules.
+- One browser click on the "Import rule" button.
+- HTTP response returned to the UI (after ~2 min 15 s): `success: false`,
+  `success_count: 400`, `rules_count: 12000`, `errors: 11,600 × { status_code: 409, "Rule
+  with this rule_id already exists" }`.
+- Rules list in the UI showed **12,400** rules — 400 more than the file contained.
 
-## Investigation (data, not vibes)
+The same "Rule with this rule_id already exists" error also reproduces on the **legacy**
+import path (bulk flag off) with a smaller file (~6,000 rules) on a slower local
+deployment. In that variant the retry lands after the original run has already committed
+every rule, so all 6,000 come back as 409 conflicts and no duplicates are created. Same
+underlying pattern, different timing.
 
-All queries hit local ES (`.kibana_alerting_cases_9.5.0_001`). APM traces live in the
-**remote monitoring cluster**, so those were read there, not locally.
+## Investigation timeline
 
-1. **File is clean.** 12,000 rows, 0 duplicate `rule_id`/`id`/`name`.
+Each step: what we asked, what we did (with commands or code refs), what we saw.
 
-2. **Response is internally consistent.** 400 success + 11,600 unique 409s = 12,000; all
-   11,600 error ids are in the file.
+### 1. Verified the fixture is clean
 
-3. **The 400 "successes" are exactly the file tail.** Positions **11600–11999** — the tail
-   of the last batch. First 11,600 → 409, last 400 → success.
+**Question:** are there duplicates in the input file itself?
 
-4. **Duplicates are real and are those same 400.** ES: total `12,400`, distinct `rule_id`
-   ~`12,000`, and exactly **400** `rule_id`s with `doc_count: 2`. Cross-check: the 400
-   duplicated ids == the 400 the response called "success" (100% overlap), positions
-   11600–11999.
+Ran distinct-count queries against the ndjson (`jq`) and against the file after upload
+(`_search` on the `.kibana_alerting_cases_*` index).
 
-5. **Both copies of each duplicate were created ~1 s apart, at the very end.** e.g.
-   `12:09:14.910` + `12:09:15.714`; `12:09:16.816` + `12:09:17.850`. All creation spanned
-   `12:07:06 → 12:09:17`.
+**Result:** 12,000 rows, 0 duplicate `rule_id` / `id` / `name`. File is fine.
 
-6. **APM: the same request ran twice, overlapping.** Import transactions:
+### 2. Confirmed the response is internally consistent
 
-   | tx | trace | start | duration | ends |
-   |----|-------|-------|----------|------|
-   | Tx2 | `1210aa13…` | 12:06:02.9 | 13.5 s | 12:06:16 |
-   | **Tx1** | **`983e40a8…`** | 12:07:00.5 | 137.4 s | **12:09:17.9** |
-   | **Tx3** | **`983e40a8…`** | 12:09:00.9 | 18.0 s | **12:09:18.9** |
+Broke down the HTTP response body:
 
-   Tx1 and Tx3 **share a `trace.id`** (same logical request) with different
-   `transaction.id`s. Tx3 starts **120.4 s** after Tx1 — a 2-minute timeout retry. Tx1 and
-   Tx3 overlap `12:09:00.9 → 12:09:17.9`, and the duplicate creations (12:09:14–17) fall in
-   that window.
+- `success_count`: 400
+- `errors`: 11,600 unique `rule_id`s, all 409 with `"Rule with this rule_id already exists"`
+- 400 + 11,600 = 12,000 = `rules_count`
 
-   Confirmed by re-running: one browser click, two server POSTs `~2 min` apart.
+All 11,600 error `rule_id`s are present in the file.
 
-## Root cause
+**The 400 "successes" are the tail of the file** — positions 11,600–11,999 (the last
+batch of the file's ordering).
 
-1. The large import takes >120 s to respond, and the request is **re-sent after ~120 s** —
-   same trace, new execution. The timeout that fires and the layer that re-issues sit in
-   front of the route handler, not in the import code itself — re-issuing a request on an upstream socket timeout (see "Open question: where the retry
-   originates" below).
-2. The re-dispatch is almost certainly the **dev basePath proxy** (`dev.basePathProxyTarget`)
-   re-forwarding, not the browser: the retry re-used the original `traceparent` (Tx1 and Tx3
-   share a `trace.id`), whereas a browser retry would mint a fresh trace. That proxy is
-   dev-only, and well-behaved prod proxies/LBs and browsers do not retry `POST`, so this
-   exact trigger is unlikely in production. The hole it exposes is not dev-only, though: any
-   double submission — a double-click, a refresh-and-resubmit, or an LB set to retry on
-   gateway timeouts — drives the same race.
-3. Rule import is **read-then-create**: `findRules` for `rule_id` conflicts, then
-   `bulkCreateRules`. `rule_id` is **not** a uniqueness key at the SO/ES layer — only the
-   conflict check guards it.
-4. The retry (Tx3) started while the original (Tx1) was finishing. Tx3's conflict check saw
-   the 11,600 rules Tx1 had already committed → 409. The tail 400 weren't visible yet
-   (created <1 s earlier / not refreshed), so Tx3 **created them again** → 400 duplicates.
-5. The saved response is **Tx3's** (the retry). Tx1's own response would have been ~12,000
-   success.
+### 3. Confirmed the duplicates in ES and cross-checked
 
-## What it is NOT
+Queried the `.kibana_alerting_cases_9.5.0_001` index directly:
 
-- **Not the fixture.** 12,000 distinct rules; nothing duplicated in the file.
-- **Not the Option B chunking.** Batches are disjoint and each does conflict-check before
-  create, so a *single* clean run reports 12,000 success / 0 conflict / 0 dupes regardless
-  of batch count. Reproduced logic is correct; the 1,200-rule file (~13 s, well under the
-  120 s timeout) imports cleanly every time.
+- Total rule SOs: **12,400**
+- Distinct `rule_id`: **~12,000**
+- `rule_id`s with `doc_count: 2`: exactly **400**
 
-## Why 1,200 was always clean
+Cross-check: the 400 duplicated `rule_id`s are the same 400 the response called
+"successes" — 100 % overlap, positions 11,600–11,999.
 
-~13 s runtime, nowhere near the 120 s timeout, so no retry, no overlap.
+The two copies of each duplicate were created ~1 s apart at the very end of the run
+(e.g. `12:09:14.910` + `12:09:15.714`; `12:09:16.816` + `12:09:17.850`). All creations
+spanned `12:07:06 → 12:09:17`.
 
-## Recommendations
+### 4. Read APM — found the request ran twice
 
-Two classes: mitigations that stop the corruption by serializing, and changes that make
-import idempotent so it cannot dupe regardless of retries. Only the latter fully closes the
-window.
+Filtered APM by `transaction.name: "POST /api/detection_engine/rules/_import"` over the
+run window (APM lives in the remote monitoring cluster).
 
-**Stop the corruption (narrow the window):**
+| tx | trace | start | duration | ends |
+|----|-------|-------|----------|------|
+| Tx2 | `1210aa13…` | 12:06:02.9 | 13.5 s | 12:06:16 |
+| **Tx1** | **`983e40a8…`** | 12:07:00.5 | 137.4 s | **12:09:17.9** |
+| **Tx3** | **`983e40a8…`** | 12:09:00.9 | 18.0 s | **12:09:18.9** |
 
-1. **Import-route concurrency limiter** (`RULE_MANAGEMENT_IMPORT_CONCURRENCY = 1` +
-   `routeLimitedConcurrencyTag`) — present in the reference implementation, missing from the
-   current route. The retry then waits for the original, sees all rules as conflicts, and
-   creates nothing → all-409 response, zero duplicates. (See
-   `reports/security_solution_route_concurrency_limiter.md`.)
-2. **Per-space import lock** — the deployment already has a `.kibana_locks` index. A lock
-   keyed by (import, space) serializes imports explicitly and also guards cross-request
-   double submissions.
-3. **Keep imports fast** (the Option B chunking already helps) so they finish under common
-   proxy/LB timeouts and never invite a retry. Runtime reduction, not a correctness fix.
+**Tx1 and Tx3 share a `trace.id`** with different `transaction.id`s. Tx3 starts
+**120.4 s** after Tx1 — matches the 120 s socket-idle timeout applied to Kibana's HTTP
+listener (see step 8). Tx1 and Tx3 overlap `12:09:00.9 → 12:09:17.9`; the duplicate
+creations `12:09:14–17` fall in that window.
 
-**Close the window (true idempotency):**
+**Conclusion at this point:** the import is racing against itself. Something is
+re-dispatching the request at t+120 s. The next steps chase where the re-dispatch
+originates.
 
-4. **Deterministic SO id from `rule_id` (+ space) with `op_type: create`.** The dupe is only
-   possible because each create gets a fresh random SO `_id` while `rule_id` is a plain
-   attribute, so two creates for one `rule_id` both succeed. A `rule_id`-derived `_id` with
-   no-overwrite makes the second create hit a `409` at the SO layer — the only option that
-   fully closes the race. Caveat: rules currently use random UUID SO ids with `rule_id`
-   separate (arbitrary user string, prebuilt vs custom, migration of existing rules), so it
-   is a real behavior change — confirm the rules client accepts a `rule_id`-derived id
-   cleanly first.
-5. **Asynchronous import via Task Manager** — return `202` + task id, run in the background,
-   poll for status. Removes the long synchronous request that invites the timeout/retry
-   altogether; best structural fit for imports that run for minutes. Largest scope.
-6. **Request idempotency key** — client sends a stable key, server dedupes replays. Standard
-   retry-safe pattern, but needs UI cooperation and a small server-side store.
+### 5. Added per-layer ingress probes
 
-Narrowing-only, not a fix on its own: refreshing the index before the conflict `findRules`,
-or per-rule conditional creates, shrink the window but two simultaneous creates can still
-both miss.
+To pin the retry-emitting layer, added two probes gated by
+`KBN_DEBUG_IMPORT_RETRY=1` (off by default):
 
-## Files involved
+- `packages/kbn-cli-dev-mode/src/base_path_proxy/http1.ts` — new `logProxyIngress()`
+  called in each `pre:` step of the h2o2 proxy route. Logs `remote=<host>:<port>`
+  (TCP source port of whatever hits the proxy), `traceparent`, `x-forwarded-*`,
+  `content-length`, timestamp. Also `listener.on('timeout', …)` logs the 120 s socket
+  destroy events.
+- `x-pack/solutions/security/plugins/security_solution/server/routes/import_retry_debug.ts`
+  — new `registerImportRetryDebug()` that registers `core.http.registerOnPreAuth` and
+  filters to `/api/detection_engine/rules/_import`. Logs `reqId`, `traceparent`,
+  `X-Forwarded-For`, `X-Forwarded-Port`, `content-length`, `User-Agent`, timestamp.
+  Wired in `plugin.ts` next to `registerLimitedConcurrencyRoutes(core)`.
 
-Import flow touched by this race (paths under
+Tags emitted:
+
+- `[import-retry]` — dev proxy (front, `--server.port`)
+- `importRetryDebug` — child Kibana (`--dev.basePathProxyTarget`)
+
+### 6. Re-ran the import in Chrome — three POSTs at the server per click
+
+Repro command (with the probes on):
+
+```bash
+KBN_DEBUG_IMPORT_RETRY=1 yarn start \
+  --server.basePath=/kbn \
+  --elasticsearch.hosts=http://localhost:9205 \
+  --server.port=5606 \
+  --dev.basePathProxyTarget=5616 \
+  | tee /tmp/kbn-import-retry.log
+```
+
+In a second terminal:
+
+```bash
+: > /tmp/kbn-import-retry.log
+tail -F /tmp/kbn-import-retry.log | grep -E '\[import-retry\]|importRetryDebug'
+```
+
+Then one click in the UI. Grepped the log after ~5 min:
+
+```
+proxy basePath ... remote=127.0.0.1:57367 ...  ts=T
+child ingress ... xfport=57367 ...            ts=T
+proxy socket timeout ... remote=127.0.0.1:57367 ts=T+120s
+proxy basePath ... remote=127.0.0.1:57374 ...  ts=T+120s     ← new browser port
+child ingress ... xfport=57374 ...            ts=T+120s
+proxy socket timeout ... remote=127.0.0.1:57374 ts=T+240s
+proxy basePath ... remote=127.0.0.1:59924 ...  ts=T+240s     ← new browser port
+child ingress ... xfport=59924 ...            ts=T+240s
+```
+
+**Observations:**
+
+- Three distinct `remote=127.0.0.1:XXXXX` values at the proxy — three separate inbound
+  TCP connections. The proxy did not multiply a single connection into three upstream
+  requests.
+- Each `X-Forwarded-Port` at the child matches the corresponding proxy `remote` port
+  1:1.
+- Each new POST arrives 1–3 ms after the previous socket was destroyed by the 120 s
+  timeout.
+- Same `traceparent` on all three POSTs.
+- DevTools showed **one** row for the request.
+
+### 7. Ran the same import through curl — no retry
+
+Command (adjust ndjson path to whatever is present locally):
+
+```bash
+curl -v \
+  -X POST 'http://localhost:5606/kbn/api/detection_engine/rules/_import?overwrite=true&overwrite_exceptions=true&overwrite_action_connectors=true' \
+  -H 'kbn-xsrf: whatever' \
+  -H 'elastic-api-version: 2023-10-31' \
+  -u elastic:changeme \
+  -F 'file=@.knowledge/data/rules-import/12000disabled-rules.internal.ndjson' \
+  -o /tmp/import-response.json \
+  -w '\nhttp=%{http_code} time=%{time_total}\n'
+```
+
+**Result:** at t+120 s curl exits with `curl: (52) Empty reply from server`,
+`http=100 time=~120`. The probe log shows exactly **one** proxy ingress and **one** child
+ingress. No retry. Rules them out as retry sources: node HTTP agent, kernel/loopback,
+libcurl, `@hapi/h2o2`, `@hapi/wreck`, the dev base-path proxy itself.
+
+### 8. Where the 120 s comes from
+
+Confirmed by reading the config schemas and the listener setup:
+
+- `packages/kbn-cli-dev-mode/src/config/http_config.ts:36-38` — dev-proxy `socketTimeout`,
+  default `120000` ms.
+- `src/core/packages/http/server-internal/src/http_config.ts:161-163` — production
+  Kibana HTTP server `socketTimeout`, also default `120 * SECOND`.
+- `src/platform/packages/shared/kbn-server-http-tools/src/get_listener.ts:46-49` — the
+  common listener helper used by both:
+
+  ```ts
+  listener.setTimeout(config.socketTimeout);
+  listener.on('timeout', (socket) => {
+    socket.destroy();
+  });
+  ```
+
+  Both the dev proxy and the child Kibana listener register this handler. The idle
+  timer starts once the request body has been fully received; if no response bytes are
+  written back within `socketTimeout`, the socket is destroyed.
+- `src/core/packages/http/server-internal/src/http_server.ts:1113-1115` — per-route
+  hapi `timeout.socket` on the child, also defaulting to `this.config.socketTimeout`.
+
+In the current repro the socket that gets destroyed and logged is the front proxy's
+inbound socket. The child listener is subject to the same timeout on its own inbound
+connection from h2o2. Our probe only logs proxy-side timeout events; child-side socket
+teardown was not directly instrumented.
+
+### 9. Disabled Elastic APM RUM — retry still happens
+
+Added to `config/kibana.dev.yml`:
+
+```yaml
+elastic.apm.active: false
+elastic.apm.enabled: false
+elastic.apm.contextPropagationOnly: false
+```
+
+(The last line is required — without it Kibana refuses to start with `Error: APM is
+disabled, but context propagation is enabled`.)
+
+Restarted Kibana. Re-ran the import from the browser.
+
+**Result:** Still three POSTs per click, still 120 s apart. `traceparent` is now `-` in
+the probe output (as expected with APM off), pattern otherwise identical. Rules out
+`@elastic/apm-rum` / Kibana APM instrumentation as the retry source.
+
+### 10. Firefox 152 — three POSTs too
+
+Same repro in a fresh Firefox 152 profile (`rv:152.0 Gecko` in `User-Agent`). Same
+pattern: three POSTs, 120 s apart, new TCP source port each time.
+
+This is *not* what Firefox's documented behaviour predicts — since Firefox 46 (2016)
+Firefox is documented as *not* auto-retrying non-idempotent POSTs
+([bugzilla 1269055](https://bugzilla.mozilla.org/show_bug.cgi?id=1269055)). We did not
+confirm the mechanism against Firefox source.
+
+### 11. Chrome through a MITM proxy — retry disappears
+
+Setup mitmproxy in a separate terminal:
+
+```bash
+mitmdump \
+  --listen-port 8080 \
+  --set http2=false \
+  --set stream_large_bodies=100m \
+  --set flow_detail=2 \
+  -w /tmp/mitm.flows \
+  2>&1 | tee /tmp/mitm-dump.log
+```
+
+Verify it's up:
+
+```bash
+curl -s -o /dev/null -w 'proxy=%{http_code}\n' -x http://localhost:8080 http://example.com/
+```
+
+Launch a throwaway Chrome pointed through it (note the `<-loopback>` bypass override,
+Chrome bypasses `localhost` for proxies by default):
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --user-data-dir=/tmp/chrome-mitm \
+  --proxy-server=http://localhost:8080 \
+  --proxy-bypass-list="<-loopback>" \
+  http://localhost:5606/kbn &
+```
+
+Cleared the Kibana probe log, ran the import from that Chrome window. Grepped both
+`/tmp/mitm-dump.log` and `/tmp/kbn-import-retry.log` for `_import`.
+
+**Result:**
+
+- mitmproxy saw **one** POST to `_import` from Chrome (client port `[::1]:62158`).
+  Upstream: `server closed connection` at t+120 s. mitmproxy converted the closed socket
+  into a `502 Bad Gateway` response and sent it to Chrome. The Kibana UI displayed a
+  Bad Gateway error.
+- The Kibana probe log showed **one** proxy ingress and **one** child ingress. Child
+  handler ran to completion at t+2 min 13 s (`child completed`).
+- The 12,000 rules were imported successfully — the server-side run finished, the
+  browser just never saw the response.
+
+**Key observation:** the retry did not fire when the browser received a real HTTP
+response (502) from the intermediate proxy, instead of a naked socket close from Kibana.
+
+## What is known
+
+1. The import route is being called two or three times per single UI click. Each call is
+   a separate POST arriving at the base-path proxy on its own TCP connection.
+2. The re-dispatch is emitted client-side. The dev base-path proxy receives multiple
+   inbound TCP connections; it does not fan one out.
+3. The re-dispatch is triggered ~120 s after the initial POST, coincident with Kibana's
+   listener socket-idle timeout (`socketTimeout: 120000`) closing the socket.
+4. The 120 s value is defined in the Kibana HTTP config schema and applied to both the
+   dev proxy listener and the child Kibana listener via a shared helper (see step 8).
+5. Chrome (`AppleWebKit/…`) and Firefox 152 (`rv:152.0 Gecko`) both reproduce the pattern.
+   curl does not.
+6. APM RUM off does not stop it.
+7. mitmproxy in the middle stops it: it converts Kibana's socket close into a
+   `502 Bad Gateway` response to the browser, and no retry fires.
+8. The bulk rule import is a **read-then-create** with no `rule_id` uniqueness at the
+   SO/ES layer:
+   - `logic/detection_rules_client/methods/bulk_import_rules.ts` reads existing
+     `rule_id`s via `findRules` then calls `rulesClient.bulkCreateRules`.
+   - `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts`
+     creates each rule with a fresh random SO `_id`. Two concurrent creates for the same
+     `rule_id` both succeed because `rule_id` is a plain attribute.
+   - The overlap window is where duplicates come from: Tx3's conflict check saw the
+     11,600 rules Tx1 had already committed, but the tail 400 (created <1 s earlier and
+     not yet visible) were not yet refreshed → Tx3 created them again.
+
+## What has been ruled out
+
+Each item lists the check that ruled it out.
+
+- **The fixture** — 12,000 distinct rules; no duplicates in `rule_id`/`id`/`name`.
+- **Chunking logic (Option B)** — batches are disjoint and each does conflict-check
+  before create; a single clean run reports 12,000 success / 0 conflicts. Reproduced by
+  importing a 1,200-rule file (~13 s, well under 120 s), always clean.
+- **Base-path proxy re-forwarding** — three distinct `remote=127.0.0.1:XXXXX` source
+  ports at the proxy per browser import, 1:1 with three distinct `X-Forwarded-Port`
+  values at the child. The proxy receives three separate inbound TCP connections.
+- **OS / kernel / loopback** — curl reproduces with a single POST at the server. No
+  layer below the client application re-issues.
+- **`@hapi/h2o2`** — `rg 'retry|redispatch|retries' node_modules/@hapi/h2o2` returns
+  zero matches; the downstream `disconnect` handler calls `promise.req.destroy()`, which
+  cancels the upstream request rather than retrying it.
+- **`@hapi/wreck`** — zero retry matches; internal `options.timeout` produces a
+  `Boom.gatewayTimeout` on expiry, not a retry.
+- **`http2-proxy` + `http2-wrapper`** — zero retry matches (not on the path in the
+  current repro, which reported HTTP/1.1).
+- **`@kbn/cli-dev-mode` `dev_server.ts`** — only restarts the child on file-watcher
+  events; no HTTP-level retry. No restart log lines appeared during the repro window.
+- **Kibana core browser fetch** — `src/core/packages/http/browser-internal/src/fetch.ts`
+  wraps `window.fetch` in a `try/catch` that throws on error. No retry.
+- **Kibana core HTTP interceptors** —
+  `src/core/packages/http/browser-internal/src/intercept.ts` contains no retry logic.
+- **`importRules` and the import UI modal** —
+  `x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_management/api/api.ts`
+  and `.../common/components/import_data_modal/index.tsx` call `http.fetch` inside an
+  `AbortController`-based `await`; no retry, no `onError` re-invoke.
+- **Elastic APM RUM** — retries persist with `elastic.apm.active: false` and
+  `traceparent=-`.
+
+## Still unresolved
+
+- Why mitmproxy in the middle eliminates the retry. Established: when the browser talks
+  directly to Kibana, the retry fires; when a MITM proxy is in the middle, the browser
+  gets a `502 Bad Gateway` from the proxy (which is what the Kibana UI displayed on
+  the mitmproxy run) instead of a naked socket close, and no retry fires. The exact
+  browser-side rule that distinguishes the two cases was not investigated further — it
+  does not help this investigation.
+- Whether the child Kibana listener's own socket timeout fires and what its downstream
+  effect is. Only the front-proxy timeout events are instrumented in the current probes.
+
+## To narrow this further (not yet done)
+
+- Add a child-side socket-timeout logger (mirror the front proxy's
+  `listener.on('timeout', …)`) to confirm whether the child's inbound socket is also
+  destroyed at 120 s.
+
+## Streaming-response prior art in Kibana
+
+Not a recommendation, just a pointer to existing precedent for the "server writes bytes
+before the handler finishes" pattern that keeps the socket non-idle:
+
+- `x-pack/platform/packages/shared/ml/response_stream/server/stream_factory.ts` — the
+  original `streamFactory(logger, isCloud)`. Returns
+  `{ push, end, responseWithHeaders }`. Under the hood it wires a `PassThrough` stream
+  and pushes to the client. When `isCloud` is true it emits a periodic
+  `: keepalive <padding>\n\n` chunk every 250 ms to defeat cloud proxy buffering.
+- `x-pack/solutions/search/plugins/search_playground/server/utils/stream_factory.ts` —
+  an adapted copy of the same pattern, minus gzip and ndjson.
+- `examples/response_stream/server/routes/single_string_stream.ts` — full example of a
+  route that returns a streaming response:
+
+  ```ts
+  const { end, push, responseWithHeaders } = streamFactory(
+    request.headers,
+    logger,
+    request.body.compressResponse
+  );
+  // ... push(...) asynchronously ...
+  return response.ok(responseWithHeaders);
+  ```
+
+## Files touched during investigation
+
+Instrumentation (added for this investigation, gated by `KBN_DEBUG_IMPORT_RETRY=1`):
+
+- `packages/kbn-cli-dev-mode/src/base_path_proxy/http1.ts` — `logProxyIngress()` + socket
+  timeout logger.
+- `x-pack/solutions/security/plugins/security_solution/server/routes/import_retry_debug.ts`
+  — new file registering `core.http.registerOnPreAuth` for `_import`.
+- `x-pack/solutions/security/plugins/security_solution/server/plugin.ts` — call
+  `registerImportRetryDebug(core, logger)` alongside `registerLimitedConcurrencyRoutes`.
+
+Import flow read while investigating (paths under
 `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/`
 unless noted):
 
 - `api/rules/import_rules/route.ts` — import endpoint; triggered twice by the retry.
 - `api/constants.ts` — `RULE_MANAGEMENT_IMPORT_CONCURRENCY` and the batch-size constants.
 - `logic/import/import_rules.ts` — orchestrator; chunks per path (legacy vs bulk).
-- `logic/detection_rules_client/methods/bulk_import_rules.ts` — **bulk path** read-then-create:
-  `findRules` conflict lookup → `rulesClient.bulkCreateRules`. Where the tail-duplication
-  surfaces.
+- `logic/detection_rules_client/methods/bulk_import_rules.ts` — bulk path
+  read-then-create.
 - `logic/detection_rules_client/methods/import_rules.ts` +
-  `logic/detection_rules_client/methods/import_rule.ts` — **legacy path** (flag off);
-  per-rule read-then-create. The all-conflict 6k repro runs through here.
-- `logic/search/find_rules.ts` — the conflict read (`rule_id` OR-list) used by both paths.
+  `logic/detection_rules_client/methods/import_rule.ts` — legacy path (flag off).
+- `logic/search/find_rules.ts` — the conflict read (`rule_id` OR-list).
 - `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts`
-  — creates each rule with a fresh SO id and no `rule_id` uniqueness check, so a racing
-  create inserts a second row for an existing `rule_id`.
+  — creates each rule with a fresh SO id.
 
-## Open question: where the retry originates
+Config / infra read while investigating:
 
-Here is the most likely explanation:
-
-Dev request path: **browser → base path proxy (user port, e.g. 5606) → `@hapi/h2o2` →
-Kibana server child process (`dev.basePathProxyTarget`, e.g. 5616)**. In `--dev`,
-`@kbn/cli-dev-mode` runs the base path proxy in the CLI parent process and spawns the actual
-Kibana server as a child (managed/restarted by `dev_server.ts`). The `_import` route runs in
-that child; the APM `process.pid` on the transactions is that child.
-
-What the proxy code shows (`packages/kbn-cli-dev-mode/src/base_path_proxy/http1.ts`):
-
-- Proxies every method via `@hapi/h2o2` with `passThrough`/`xforward`, `maxPayload: 1 GB`,
-  `validate: { payload: true }`.
-- **No explicit `timeout`** on the proxy handler, and h2o2 forwards once (no built-in
-  retry). So neither the ~120 s value nor the re-dispatch is configured here — both come
-  from a default or a layer below.
-
-Leads to check when pinning it:
-
-- `@kbn/server-http-tools` `getServerOptions` — the socket / keep-alive / payload timeouts
-  applied to both the proxy server and the real server. A ~2-minute socket timeout here is
-  the prime suspect.
-- `@hapi/h2o2` → `@hapi/wreck` upstream request defaults (socket/response timeout) and its
-  agent — confirm whether wreck errors at ~120 s and whether anything re-issues on that
-  error.
-- Node HTTP server defaults on the child (`server.requestTimeout`, `headersTimeout`,
-  `keepAliveTimeout`).
-- APM (monitoring cluster): two transactions share one `trace.id`, ~120 s apart, distinct
-  `transaction.id`; inspect each transaction's `parent.id` span to see whether the second is
-  a proxy re-forward. Correlate with any `dev_server.ts` worker restart at that moment — a
-  mid-import recompile could also re-issue the request.
-- Cheap isolation repro: put an artificial >120 s handler behind the dev proxy (no large
-  payload, no ES) and watch for a second downstream request; that separates the timeout from
-  import/ES specifics.
+- `packages/kbn-cli-dev-mode/src/config/http_config.ts` — dev proxy `socketTimeout`
+  default (120 000).
+- `src/core/packages/http/server-internal/src/http_config.ts` — production Kibana
+  `socketTimeout` default (also 120 s).
+- `src/platform/packages/shared/kbn-server-http-tools/src/get_listener.ts` — the
+  `listener.setTimeout` + `socket.destroy()` used by both.
+- `src/core/packages/http/server-internal/src/http_server.ts` — per-route hapi
+  `timeout.socket`.
+- `packages/kbn-cli-dev-mode/src/base_path_proxy/http1.ts` and
+  `.../base_path_proxy/http2.ts` — dev proxy handlers.
+- `node_modules/@hapi/h2o2/lib/index.js`, `node_modules/@hapi/wreck/lib/index.js` —
+  proxy libs verified for retry code.
+- `src/core/packages/http/browser-internal/src/fetch.ts`,
+  `.../intercept.ts` — Kibana core browser fetch, verified for retry code.
 
 ## Reproduce
 
+### Original (UI) repro
+
 - Import `12000rules.internal.ndjson` via the UI on a clean stack with
   `bulkCreateRulesEnabled` on.
-- Watch APM (remote monitoring cluster), filter `transaction.name: "POST
-  /api/detection_engine/rules/_import"`. Two transactions ~120 s apart sharing one
-  `trace.id` = the retry.
-- Or check ES: `total siem alerts` > file count and ~400 `rule_id`s with `doc_count: 2`.
+- In APM (remote monitoring cluster) filter
+  `transaction.name: "POST /api/detection_engine/rules/_import"`. Two transactions
+  ~120 s apart sharing one `trace.id` = the retry.
+- In ES: `total siem alerts` > file count and ~400 `rule_id`s with `doc_count: 2`.
+
+### Local debug repro with per-layer ingress probes
+
+Probes are gated by `KBN_DEBUG_IMPORT_RETRY=1` (off by default).
+
+**Start Kibana with the flag on and tee the output:**
+
+```bash
+KBN_DEBUG_IMPORT_RETRY=1 yarn start \
+  --server.basePath=/kbn \
+  --elasticsearch.hosts=http://localhost:9205 \
+  --server.port=5606 \
+  --dev.basePathProxyTarget=5616 \
+  | tee /tmp/kbn-import-retry.log
+```
+
+**In a second terminal, tail just the probe output:**
+
+```bash
+tail -F /tmp/kbn-import-retry.log | grep -E '\[import-retry\]|importRetryDebug'
+```
+
+Emit tags:
+
+- `[import-retry]` — dev proxy (front, `--server.port`).
+- `importRetryDebug` — child Kibana (`--dev.basePathProxyTarget`).
+
+**Clear the log between runs (leaves `tail -F` intact):**
+
+```bash
+: > /tmp/kbn-import-retry.log
+```
+
+**Summarize a run:**
+
+```bash
+grep -aE '\[import-retry\]|importRetryDebug' /tmp/kbn-import-retry.log \
+  | grep -oE 'proxy (basePath|bypass)|child ingress|child completed|child aborted|socket timeout|socket close\(hadError\)' \
+  | sort | uniq -c
+```
+
+A clean single request is `1 proxy basePath / 1 child ingress / 1 child completed`. The
+retry shows as ≥2 of the first two.
+
+### curl baseline (no retry)
+
+Run from the repo root, adjust the ndjson filename to match what's present locally:
+
+```bash
+curl -v \
+  -X POST 'http://localhost:5606/kbn/api/detection_engine/rules/_import?overwrite=true&overwrite_exceptions=true&overwrite_action_connectors=true' \
+  -H 'kbn-xsrf: whatever' \
+  -H 'elastic-api-version: 2023-10-31' \
+  -u elastic:changeme \
+  -F 'file=@.knowledge/data/rules-import/12000disabled-rules.internal.ndjson' \
+  -o /tmp/import-response.json \
+  -w '\nhttp=%{http_code} time=%{time_total}\n'
+```
+
+Expected outcome (~2 min): `curl: (52) Empty reply from server`,
+`http=100 time=~120`. Probe log shows exactly one `proxy basePath` and one `child
+ingress`.
+
+### Disabling Elastic APM RUM (control)
+
+Add to `config/kibana.dev.yml`:
+
+```yaml
+elastic.apm.active: false
+elastic.apm.enabled: false
+elastic.apm.contextPropagationOnly: false
+```
+
+Restart. Browser repros continue to show three POSTs per import; `traceparent` becomes
+`-` in the probe output.
+
+### Chrome through a MITM proxy
+
+Install mitmproxy:
+
+```bash
+brew install mitmproxy
+```
+
+Start it in its own terminal (leave running for the whole repro):
+
+```bash
+mitmdump \
+  --listen-port 8080 \
+  --set http2=false \
+  --set stream_large_bodies=100m \
+  --set flow_detail=2 \
+  -w /tmp/mitm.flows \
+  2>&1 | tee /tmp/mitm-dump.log
+```
+
+Verify it's listening:
+
+```bash
+curl -s -o /dev/null -w 'proxy=%{http_code}\n' -x http://localhost:8080 http://example.com/
+# expected: proxy=200
+```
+
+Launch a throwaway Chrome pointed at it. The `<-loopback>` bypass override is required —
+Chrome bypasses `localhost` for proxies by default:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --user-data-dir=/tmp/chrome-mitm \
+  --proxy-server=http://localhost:8080 \
+  --proxy-bypass-list="<-loopback>" \
+  http://localhost:5606/kbn &
+```
+
+Log into Kibana in that window. Trigger the import.
+
+Read the `_import` flows after the run:
+
+```bash
+grep -cE '^\[::1\]:[0-9]+: POST http://localhost:5606/kbn/api/detection_engine/rules/_import' /tmp/mitm-dump.log
+```
+
+Expected outcome: **1** POST at mitmproxy, **1** proxy ingress in the probe log, **1**
+child ingress, `child completed` at ~t+2 min 13 s. Chrome shows a `502 Bad Gateway`
+(synthesized by mitmproxy). No retry.
+
+## Next steps
+
+Two independent pathways to investigate, in no particular order.
+
+1. **Respond earlier to avoid timeout.** Investigate ways to either keep the connection
+   open with a streamed response or return an early response from Kibana, so we don't
+   trigger a retry with a closed connection. As one starting point among others,
+   `@kbn/ml-response-stream` and
+   `examples/response_stream/server/routes/single_string_stream.ts` (see
+   "Streaming-response prior art in Kibana" above) show how a route can send response
+   headers early and push the body asynchronously; whether that shape fits `_import` is
+   an open question.
+2. **Idempotency — make retries harmless.** Investigate ways to make the `_import` call
+   idempotent, so that a retry does not cause additional records to be created. Code
+   that touches the current
+   read-then-create behaviour lives around
+   `logic/detection_rules_client/methods/bulk_import_rules.ts` and
+   `logic/search/find_rules.ts`; the underlying create path goes through
+   `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts`.
+   These are anchor points to read while framing the problem, not a prescribed
+   solution.
