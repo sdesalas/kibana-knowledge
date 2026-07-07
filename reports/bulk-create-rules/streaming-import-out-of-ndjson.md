@@ -20,9 +20,9 @@ at once.
 
 Two facts collide:
 
-1. **The upload is a forward-only, one-shot stream.** `request.body.file` is a
-   `HapiReadableStream` (route configured with `body: { output: 'stream' }`). You can read it
-   once, front to back. You cannot seek, and you cannot read it twice.
+1. **The upload is a forward-only, one-shot stream.** [`request.body.file`](https://github.com/sdesalas/kibana/blob/b299d9361e345ad424ae864c6bf415097fc82d02/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts#L119)
+   is a `HapiReadableStream` (route configured with `body: { output: 'stream' }`). You can read
+   it once, front to back. You cannot seek, and you cannot read it twice.
 
 2. **The things we must create *first* are at the *end* of the file.** Confirmed from the
    export writer `api/rules/export_rules/route.ts`:
