@@ -8,7 +8,7 @@ creating two overlapping executions of the same import run against Kibana. Rule 
 read-then-create with no `rule_id` uniqueness constraint at the SO/ES layer, so the
 overlap creates duplicate rules.
 
-> **This is a pre-existing bug in local dev mode (the retry behavior), but the bulk import path manifests a worse outcome, creating rule duplication in addition to prior `409 Conflict` responses**
+> **This is a pre-existing bug in local dev mode (ie the retry behavior - triggered by the local "base-path proxy" closing a socket connection), but the bulk import path manifests a worse outcome, creating rule duplication in addition to prior `409 Conflict` responses**
 >
 > The same `"Rule with this rule_id already exists"` reproduces on the **legacy** import
 > path (bulk flag off) with ~6,000 rules on a local deployment. However, due to slower
