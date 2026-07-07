@@ -1,5 +1,11 @@
 # Duplicate rules on large import: investigation log
 
+**Related links:**
+
+- Issue: [[Security Solution] Rule import creates extra rules while importing a large number of rules #176207](https://github.com/elastic/kibana/issues/176207#issuecomment-4903270379) — comment describing this retry/duplication finding.
+- PR: [[Security Solution] Optimize bulk `rule/_import` (create path) via `bulkCreateRules()` #275695](https://github.com/elastic/kibana/pull/275695#issuecomment-4903329234) — where this is communicated.
+- Slack (internal): [thread](https://elastic.slack.com/archives/C0B7YAUDDB5/p1783422777665579).
+
 Investigation into POST retry behavior experienced in local dev environment that creates
 duplicate rules when importing a 12,000-rule `.ndjson` on a clean stack.
 
