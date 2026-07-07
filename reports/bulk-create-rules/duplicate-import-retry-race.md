@@ -8,7 +8,7 @@ creating two overlapping executions of the same import run against Kibana. Rule 
 read-then-create with no `rule_id` uniqueness constraint at the SO/ES layer, so the
 overlap creates duplicate rules.
 
-> **This is a pre-existing bug (the retry behavior), but the bulk import path manifests a worse outcome, creating rule duplication in addition to prior `409 Conflict` responses**
+> **This is a pre-existing bug in local dev mode (the retry behavior), but the bulk import path manifests a worse outcome, creating rule duplication in addition to prior `409 Conflict` responses**
 >
 > The same `"Rule with this rule_id already exists"` reproduces on the **legacy** import
 > path (bulk flag off) with ~6,000 rules on a local deployment. However, due to slower
@@ -94,8 +94,9 @@ run window (APM lives in the remote monitoring cluster).
 | **Tx3** | **`983e40a8…`** | 12:09:00.9 | 18.0 s | **12:09:18.9** |
 
 **Tx1 and Tx3 share a `trace.id`** with different `transaction.id`s. Tx3 starts
-**120.4 s** after Tx1 — matches the 120 s socket-idle timeout applied to Kibana's HTTP
-listener (see step 8). Tx1 and Tx3 overlap `12:09:00.9 → 12:09:17.9`; the duplicate
+**120.4 s** after Tx1 — matches the 120 s socket-idle timeout on the **dev base-path
+proxy's** listener (see steps 8 and 12; the child's per-route `idleSocket` is 1 h and does
+not fire). Tx1 and Tx3 overlap `12:09:00.9 → 12:09:17.9`; the duplicate
 creations `12:09:14–17` fall in that window.
 
 **Conclusion at this point:** the import is racing against itself. Something is
@@ -185,8 +186,19 @@ curl -v \
 
 **Result:** at t+120 s curl exits with `curl: (52) Empty reply from server`,
 `http=100 time=~120`. The probe log shows exactly **one** proxy ingress and **one** child
-ingress. No retry. Rules them out as retry sources: node HTTP agent, kernel/loopback,
-libcurl, `@hapi/h2o2`, `@hapi/wreck`, the dev base-path proxy itself.
+ingress. No retry.
+
+What this actually rules out is the set of layers that could *emit a new request on their
+own*: node HTTP agent, kernel/loopback, libcurl, `@hapi/h2o2`, `@hapi/wreck`. curl went
+**through** the dev base-path proxy and still received the same naked socket close at
+t+120 s — it just didn't re-dispatch, because curl (unlike a browser) doesn't retry.
+
+⚠️ **Correction (in light of step 12):** an earlier version of this step also listed
+~~the dev base-path proxy itself~~ as "ruled out as a retry source." That is misleading.
+The proxy does not *generate* the duplicate POST — but its listener's `socketTimeout`
+closing the idle socket is the **trigger** the browser reacts to (proven in step 12).
+So the proxy is ruled out as the *emitter* of the retry, **not** as the cause: it is the
+hop whose socket close sets the retry off.
 
 ### 8. Where the 120 s comes from
 
@@ -294,16 +306,111 @@ Cleared the Kibana probe log, ran the import from that Chrome window. Grepped bo
 **Key observation:** the retry did not fire when the browser received a real HTTP
 response (502) from the intermediate proxy, instead of a naked socket close from Kibana.
 
+### 12. Moved the timeout — retry moved with it (causation, not coincidence)
+
+**Question:** is the ~120 s re-dispatch actually *caused* by the socket-idle timeout, or
+just correlated with it?
+
+Set `server.socketTimeout: 30000` in `config/kibana.dev.yml` (nothing was set before, so
+the proxy had been on the `120000` default) and re-ran the browser import with the probes
+on.
+
+The dev proxy reads `server.socketTimeout` via `httpConfigSchema` in
+`packages/kbn-cli-dev-mode/src/config/load_config.ts` — the **same** config key the child
+Kibana HTTP server reads. `getServerOptions`
+(`src/platform/packages/shared/kbn-server-http-tools/src/get_server_options.ts`) does
+**not** set a per-route `routes.timeout.socket`; the only timer on the proxy's inbound
+socket is the listener-level `setTimeout(config.socketTimeout)` + `socket.destroy()` from
+`get_listener.ts`. So the proxy has no per-route escape hatch — unlike the `_import` route
+on the child, which sets `idleSocket: 3600000` (1 h). That is why the route's 1 h override
+never helped: it applies to the child, but the proxy destroys the browser connection first.
+
+**Result:** the retry cadence moved from 120 s to **30 s**, to the millisecond:
+
+```
+proxy basePath ... remote=127.0.0.1:62909 ...        ts=09:33:34.488
+child ingress ... xfport=62909 ...                   ts=09:33:34.495
+proxy socket timeout (idle >30000ms) remote=…:62909  ts=09:34:04.649   ← +30.0s
+proxy basePath ... remote=127.0.0.1:62902 ...        ts=09:34:04.649   ← retry, same instant
+proxy socket timeout (idle >30000ms) remote=…:62902  ts=09:34:34.849   ← +30.0s
+proxy basePath ... remote=127.0.0.1:62910 ...        ts=09:34:34.850   ← retry
+```
+
+**Conclusion:** the re-dispatch is *caused* by the dev proxy's `server.socketTimeout`
+destroying the idle inbound socket — not merely coincident with it. Moving the knob moves
+the retry 1:1. The re-dispatch is emitted by the browser within ~1 ms of the socket being
+destroyed, and it fires repeatedly (a new POST every timeout interval) until the import
+run outlives the window.
+
+**Corollary (local mitigation):** raising `server.socketTimeout` above the import duration
+(e.g. `3600000`) in `config/kibana.dev.yml` pushes the idle-close out past the run, so no
+naked socket close, no browser retry, no duplicates — *locally*. This masks the race
+rather than fixing it; any real upstream intermediary (Cloud proxy, ELB) with its own idle
+timeout could still trip the same client behaviour. For how this maps to production —
+where the dev proxy does not exist — see step 13.
+
+### 13. The dev base-path proxy — the hop that closes the socket — does not run in production
+
+**Question:** the socket that gets idle-closed at the timeout is the front dev proxy's
+inbound socket (steps 8, 12). Does that proxy exist in a production deployment?
+
+Traced the startup path:
+
+- The dev base-path proxy is part of `@kbn/cli-dev-mode`, which is only bootstrapped under
+  the `--dev` flag: `getBootstrapScript(cliArgs.dev)` in `src/cli/serve/serve.js`. With
+  `--dev` false it uses core's `bootstrap` from `@kbn/core/server` — **no dev parent, no
+  optimizer, no base-path proxy** (see also `.knowledge/operations/kibana_serve_and_start_dist.md`).
+- `yarn start` is `node scripts/kibana --dev`, so local dev gets the proxy. Production does
+  not: the Docker image entrypoint runs `bin/kibana` with **no `--dev`**
+  (`CMD ["/usr/local/bin/kibana-docker"]` →
+  `exec /usr/share/kibana/bin/kibana …` in
+  `src/dev/build/tasks/os_packages/docker_generator/resources/base/bin/kibana-docker`).
+
+**Conclusion:** the *specific reproduction in this log* — the front dev proxy destroying the
+browser's inbound socket at `server.socketTimeout` (120 s) and the browser re-dispatching —
+**cannot occur in production**, because that proxy hop only exists in `--dev`. In prod the
+browser talks to Kibana through the deployment's own ingress (Cloud proxy / ELB / nginx),
+not the dev proxy.
+
+**What this does NOT rule out:** the underlying vulnerability — a naked socket close from
+*any* intermediary with an idle timeout shorter than the import duration triggering a
+browser re-dispatch against a non-idempotent read-then-create. Whether a production ingress
+(e.g. the Cloud proxy's idle timeout) reproduces the same naked-close → retry has not been
+tested. The `_import` route's per-route `idleSocket: 3600000` only governs Kibana's own
+listener, not an upstream proxy. So: the dev-proxy manifestation is dev-only; the class of
+bug may still be reachable in prod via a different hop.
+
+**Related ECH constraint (confirmed):** on Elastic Cloud Hosted, setting
+`xpack.securitySolution.maxRuleImportExportSize` and
+`xpack.securitySolution.maxRuleImportPayloadBytes` in Kibana user settings causes the
+instances to **fail to start** — reproduced across several retries. Kibana's own schema does
+not cap either value (both plain `schema.number` with no `max`, see
+`x-pack/solutions/security/plugins/security_solution/server/config.ts:26-27`), and they are
+server-side (not in `exposeToBrowser`), so they are validated at boot. Because the values
+`20000` / `209715200` are valid to Kibana, the mechanism is almost certainly the **Cloud
+settings allowlist** (maintained in Cloud infra, not in this repo) rejecting these keys; the
+exact startup `FATAL` line was not captured here, but the startup failure itself is
+confirmed. **Implication:** on ECH the import limits are effectively pinned to the defaults
+(`10000` rules / `10 MB` payload), which bounds how large a single import can get on Cloud
+and therefore how the retry / duplication risk manifests there — the 12,000-rule
+reproduction requires raising these limits, which is not possible on ECH via user settings.
+
 ## What is known
 
 1. The import route is being called two or three times per single UI click. Each call is
    a separate POST arriving at the base-path proxy on its own TCP connection.
 2. The re-dispatch is emitted client-side. The dev base-path proxy receives multiple
    inbound TCP connections; it does not fan one out.
-3. The re-dispatch is triggered ~120 s after the initial POST, coincident with Kibana's
-   listener socket-idle timeout (`socketTimeout: 120000`) closing the socket.
-4. The 120 s value is defined in the Kibana HTTP config schema and applied to both the
-   dev proxy listener and the child Kibana listener via a shared helper (see step 8).
+3. The re-dispatch is **caused** by the dev proxy's socket-idle timeout closing the inbound
+   socket, not merely coincident with it. Moving `server.socketTimeout` from 120 s to 30 s
+   moved the retry to 30 s, 1:1 (see step 12). The browser re-dispatches within ~1 ms of the
+   socket being destroyed, and repeats every interval until the run outlives the window.
+4. The timeout value is defined once in the Kibana HTTP config schema (`server.socketTimeout`,
+   default 120 s) and applied to both the dev proxy listener and the child Kibana listener via
+   a shared helper (see steps 8 and 12). The proxy has no per-route override, so the `_import`
+   route's own `idleSocket: 3600000` (1 h) never takes effect — the proxy closes the browser
+   connection first. Raising `server.socketTimeout` past the import duration is a local-only
+   mitigation that masks the race.
 5. Chrome (`AppleWebKit/…`) and Firefox 152 (`rv:152.0 Gecko`) both reproduce the pattern.
    curl does not.
 6. APM RUM off does not stop it.
@@ -397,7 +504,9 @@ before the handler finishes" pattern that keeps the socket non-idle:
 
 ## Files touched during investigation
 
-Instrumentation (added for this investigation, gated by `KBN_DEBUG_IMPORT_RETRY=1`):
+Instrumentation (added for this investigation, gated by `KBN_DEBUG_IMPORT_RETRY=1`).
+Full diff:
+[duplicate-import-retry-race.debug.patch](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/duplicate-import-retry-race.debug.patch).
 
 - `packages/kbn-cli-dev-mode/src/base_path_proxy/http1.ts` — `logProxyIngress()` + socket
   timeout logger.
