@@ -16,7 +16,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/.env.sh}"
-IMPORT_FILE="${IMPORT_FILE:-${SCRIPT_DIR}/../../data/rules-import/1000enabled-rules.ndjson}"
+IMPORT_FILE="${IMPORT_FILE:-${SCRIPT_DIR}/../../data/rules-import/1000disabled-rules.ndjson}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "env file not found: ${ENV_FILE}" >&2
@@ -49,7 +49,7 @@ IMPORT_PATH="/api/detection_engine/rules/_import?overwrite=true&overwrite_except
 IMPORT_API_VERSION='2023-10-31'
 IMPORT_BUILD_NUMBER='102936'
 
-KBN_VERSION='9.5.0-SNAPSHOT'
+KBN_VERSION='9.6.0-SNAPSHOT'
 POST_DELETE_WAIT_SECS=10
 
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
