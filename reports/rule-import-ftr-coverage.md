@@ -106,6 +106,8 @@ or detection-rule import helpers.
 | Overwrite branch | Well covered | Dedicated files + inline |
 | Conflict handling | Well covered | In-batch dupes + existing-rule conflicts, partial success |
 | Error paths (schema) | Good | Invalid extension, malformed fields, 409, 10k cap |
+| UI | Good | 8 Cypress cases, focused on toasts and round-trips. |
+| Scout | **Missing** | No coverage - though probably better to extend existing FTR coverage |
 | Error paths (transport) | **Gap** | No corrupt-NDJSON-line test, no empty-file test, no missing `file` field test |
 | Change tracking | **Partial** | Only 2 cases (custom rules); no prebuilt-import case. See bulk-specific subsection below |
 | **Scale (batching boundaries)** | **Gap** | High-water mark is 150 rules (exceptions test); pure rule imports top out at ~10. 10,001-rule test only checks rejection. **No test exercises `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` chunking** |
@@ -115,8 +117,6 @@ or detection-rule import helpers.
 | RBAC on `_import` itself | **Partial** | Actions / response-actions RBAC covered. No test for a user lacking plain `rules_management` privilege calling `_import` |
 | All rule types | **Partial** | Mostly `custom_query`. No EQL / ML / threshold / new-terms / ES\|QL / indicator-match round-trip through import |
 | Skipped tests | **Known holes** | 4 skipped in prebuilt suite (upgradeable-after-import, equal-payload overwrite, overwrite w/o version) |
-| Scout | **Missing** | No coverage |
-| UI | **Thin** | 8 Cypress cases, focused on toasts and round-trips, not response shapes |
 | **Import-layer batching over `bulkCreateRules`** | **Gap** | Outer 100-rule chunk loop + inner `batchSize: 100` — never exercised end-to-end |
 | **Create / overwrite persistence split** | **Gap** | Refactor split persistence: creates → `bulkCreateRules`, overwrites → `pMap` at `RULE_IMPORT_BULK_UPDATE_CONCURRENCY=50`. No single-request test mixes them |
 | **Aggregate schedule-limit + whole-chunk fan-out** | **Gap (optional)** | Needs a dedicated sibling FTR config overriding `maxScheduledPerMinute` to a low value. Precedent exists in the same suite. See subsection below |
