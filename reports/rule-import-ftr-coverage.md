@@ -107,7 +107,7 @@ or detection-rule import helpers.
 | Conflict handling | Well covered | In-batch dupes + existing-rule conflicts, partial success |
 | Error paths (schema) | Good | Invalid extension, malformed fields, 409, 10k cap |
 | Error paths (transport) | **Gap** | No corrupt-NDJSON-line test, no empty-file test, no missing `file` field test |
-| Change tracking | **Partial** | Only 2 cases (custom rules); no prebuilt case, no `metadata.bulkCount` assertion |
+| Change tracking | **Partial** | Only 2 cases (custom rules); no prebuilt-import case. See bulk-specific subsection below |
 | **Scale (batching boundaries)** | **Gap** | High-water mark is 150 rules (exceptions test); pure rule imports top out at ~10. 10,001-rule test only checks rejection. **No test exercises `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` chunking** |
 | **KQL-metacharacter `rule_id`s** | **Gap** | No API test with `(`, `)`, `*`, `<`, `>`, `and`, `or`, `not` in `rule_id`. Jest coverage exists but no end-to-end assertion through `findRules` |
 | **Concurrent imports** | **Gap** | No test of two overlapping requests |
@@ -117,33 +117,30 @@ or detection-rule import helpers.
 | Skipped tests | **Known holes** | 4 skipped in prebuilt suite (upgradeable-after-import, equal-payload overwrite, overwrite w/o version) |
 | Scout | **Missing** | No coverage |
 | UI | **Thin** | 8 Cypress cases, focused on toasts and round-trips, not response shapes |
+| **Import-layer batching over `bulkCreateRules`** | **Gap** | Outer 100-rule chunk loop + inner `batchSize: 100` — never exercised end-to-end |
+| **Create / overwrite persistence split** | **Gap** | Refactor split persistence: creates → `bulkCreateRules`, overwrites → `pMap` at `RULE_IMPORT_BULK_UPDATE_CONCURRENCY=50`. No single-request test mixes them |
+| **Aggregate schedule-limit + whole-chunk fan-out** | **Gap (optional)** | Needs a dedicated sibling FTR config overriding `maxScheduledPerMinute` to a low value. Precedent exists in the same suite. See subsection below |
+| **Large payload regression guard (~6 000 rules)** | **Gap (optional)** | Existing tests top out at ~150 rules. Clients who bump `maxRuleImportPayloadBytes` above the 10 MiB default (avg rule ≈ 12 KB → 6 000 rules ≈ 72 MB) have no coverage. The whole motivation for the refactor was heap pressure at scale, so this is the most direct guard that the perf story doesn't regress. See subsection below |
 
-### Bulk-specific behaviors (from `rulesClient.bulkCreateRules`)
+### Bulk-specific behaviors observable through `_import`
 
-The refactor swaps a per-rule loop for
+The refactor makes the `_import` endpoint the first consumer of
 [`rulesClient.bulkCreateRules`](../../x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts).
-The following are behavioral differences vs the legacy per-rule `rulesClient.create`
-path that are worth checking end-to-end. Only creates hit `bulkCreateRules`;
-overwrites still go through per-rule `importRule` → `update`.
+Because the alerting plugin does not expose `bulkCreateRules` as an HTTP route,
+its end-to-end behavior can, in principle, only be exercised from a consumer.
+In practice, most of the behavioral differences vs the legacy per-rule loop
+turn out to be either impractical to trigger via `_import` or unobservable from
+the outside.
 
-| # | Behavior | Change vs legacy | FTR coverage today | Worth FTR? |
-|---|----------|------------------|--------------------|------------|
-| B1 | **Aggregate schedule-limit** — bulk sums all enabled intervals upfront and throws on overflow, fanning the error out to every `rule_id` in the chunk. Legacy shrank capacity per rule and could partially succeed. | Yes | None | **Yes** |
-| B2 | **`bulkEnsureAuthorized`** — one authz call for all `(rule_type, consumer)` pairs. Any denial throws → all rules in the chunk fail. Legacy `ensureAuthorized` per rule; one denial did not block the others. | Yes | Partial (actions/response-actions RBAC only) | **Yes** |
-| B3 | **Schedule-before-SO ordering** — tasks are scheduled first, then SO bulk-created (no `throwOnConflict`). SO row failures trigger best-effort `bulkRemove` of the orphan task. Legacy was SO-create → schedule → SO-update with `scheduledTaskId`, rollback on schedule failure. | Yes | None (no `scheduledTaskId` / execution-status assertions on import) | **Yes** |
-| B4 | **Batch / chunk boundaries** — outer 100-rule chunks in `import_rules.ts` + inner `batchSize: 100` in `bulkCreateRules`. Errors in one chunk do not stop later chunks (`exitEarlyOnError: false`). | Yes | Pure-rule imports top out at ~10; 150-rule test is exception-heavy; 10 001 tests rejection only | **Yes** |
-| B5 | **Whole-chunk abort fan-out** — Phase A2/A3 throws in `bulkCreateRules` are caught in `methods/import_rules.ts` and the same message is assigned to every unresponded `rule_id` in that chunk. | Yes (new import surface) | Jest only | **Probably** |
-| B6 | **Per-row bulk SO errors → import response** — `{ successfulIds, errors[] }` re-paired via `inputById`; unmapped errors dropped silently. | Partial | Per-row mapping covered in Jest; no FTR isolates an alerting-layer SO failure | **Probably** |
-| B7 | **Bulk audit + change tracking** — single bulk `logRuleChanges` and one `RuleAuditAction.BULK_CREATE` audit event per chunk, with shared `changeTracking.metadata.bulkCount`. Legacy emitted one `CREATE` audit per rule. | Partial (per-audit shape changes) | Custom `rule_import` + `bulk_count` covered; prebuilt import case missing | **Probably** (prebuilt only) |
-| B8 | **API key generation** — parallel minting (`API_KEY_GENERATE_CONCURRENCY=50`), batch invalidation on failure. Disabled rules skip keys (same as legacy). | Partial | No E2E asserting keys exist / rules actually execute after bulk import | **Probably** |
-| B9 | **Mixed create + overwrite in one request** — persistence now split: creates go through `bulkCreateRules`, overwrites through `pMap` with `RULE_IMPORT_BULK_UPDATE_CONCURRENCY=50`. | Yes (persistence split) | Paths covered separately, not one request | **Yes** |
+**Worth an FTR via `_import`:**
 
-**No new FTR needed** for: duplicate `rule_id` (route dedupes pre-bulk), duplicate
-SO id in one call (import always uses fresh UUIDs), action/connector validation
-(unchanged, well-covered), overwrite revision bump (unchanged path), `enabled` /
-`schedule` defaults (unchanged), task-schedule retry semantics (hard to
-reproduce deterministically; owned by alerting unit tests), and
-`exitEarlyOnError` (import does not expose it).
+- **Change tracking** — history is observable via the history endpoint. Extend `rule_management/trial_license_complete_tier/change_tracking.ts` with a prebuilt-import case + `metadata.bulkCount` assertion. Already in the highest-value additions list below.
+
+**Worth an FTR, but only via a dedicated sibling config (optional):**
+
+- **Aggregate schedule-limit + whole-chunk abort fan-out.** Default `xpack.alerting.rules.maxScheduledPerMinute` is **32 000**, so no realistic payload trips the limit. A sibling FTR config that overrides the setting to a low value (e.g. `10`) can trigger it deterministically, and the same throw path exercises fan-out (`bulkCreateRules` throws → import `catch` fans the error out to every not-yet-responded `rule_id` in the chunk). Two-in-one guard. Precedent for the pattern already exists in the same suite: [`ess.rule_changes_history_disabled.config.ts`](../../x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/configs/ess.rule_changes_history_disabled.config.ts) (spreads parent, overrides `kbnTestServer.serverArgs`, points `testFiles` at a subset). Alerting suite's [`config_with_schedule_circuit_breaker.ts`](../../x-pack/platform/test/alerting_api_integration/security_and_spaces/group3/config_with_schedule_circuit_breaker.ts) is the model for the `maxScheduledPerMinute` override. Cost: 1 config file + 1 test file + 1 line in `ftr_security_stateful_configs.yml` — no new Buildkite step. See Tier 2 in the follow-up PR shape.
+
+- **Large payload regression guard (~6 000 rules).** The refactor exists because the legacy per-rule import path had heap issues at scale. Nothing in the current suite validates that (pure-rule imports top out at ~10; the 150-rule case is exception-heavy). Realistic customer rules average ~12 KB, so a 6 000-rule import is ~72 MB — well above the 10 MiB `maxRuleImportPayloadBytes` default. A sibling config bumps `xpack.securitySolution.maxRuleImportPayloadBytes` to ~100 MB (clients can actually do this in production), imports 6 000 disabled rules, and asserts the response comes back successfully within a generous timeout. Guards the "does the perf story still hold?" property directly. Rules should be **disabled** to keep task manager out of the picture and avoid crossing paths with the schedule-limit config. Runtime is minutes, not seconds — belongs in its own file so it can be quarantined easily if it flakes.
 
 ---
 
@@ -155,18 +152,23 @@ per-rule → bulk refactor will loudly break something in CI if it regresses the
 externally-visible contract. The prebuilt classification logic in particular is
 covered thoroughly across the customization matrix.
 
-That said, the **bulk-specific risk surface is thinly tested**. The current path
-uses a per-rule loop, so tests never had reason to exercise batch boundaries,
-concurrent round-trips, or `rule_id` values that would round-trip through a
-hand-built KQL filter. The refactor changes all three of those.
+That said, the **import layer on top of `bulkCreateRules`** — outer 100-rule
+chunking, create/overwrite persistence split, KQL filter over `rule_id`s — is
+new behavior that tests never had reason to exercise before, and needs its own
+guards. The internals of `bulkCreateRules` itself mostly don't cleanly manifest
+via `_import` (see the bulk-specific subsection above); the two exceptions are
+change tracking (extends the existing history-endpoint test) and the schedule-
+limit / large-payload cases, which need dedicated sibling configs.
 
 The highest-value additions for the follow-up PR, in priority order:
+
+**Tier 1 — import-layer guards (must-have):**
 
 1. **Batch-boundary test.** Import ≥ `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` × 2
    (≥ 201) custom rules in one request, mixing create and overwrite. Directly
    exercises the new outer chunk + inner `bulkCreateRules` batching. Sits
    naturally next to the existing 150-rule exceptions test in
-   `trial_license_complete_tier/import_rules.ts`. (Covers B4.)
+   `trial_license_complete_tier/import_rules.ts`.
 2. **Adversarial `rule_id` FTR test.** 8–10 rules with `rule_id`s containing
    `"`, `\`, `(`, `)`, `*`, `<`, `>`, and the tokens `and` / `or` / `not`.
    Assert each rule round-trips (created, then found by `_find`). Guards the
@@ -174,25 +176,32 @@ The highest-value additions for the follow-up PR, in priority order:
 3. **Mixed-outcome batch.** One request with created + overwritten + conflicted
    + prebuilt-classified rules, asserting the per-row error/success structure of
    the response. Guards the new inline classification block in
-   `methods/import_rules.ts` **and** the new create/overwrite persistence split
-   (B9).
-4. **Enabled bulk import → task scheduled.** Import M enabled rules; `_find`
-   them and assert each has a `scheduledTaskId` (and disabled rules do not).
-   Optionally poll for `active` execution status. Guards the inverted
-   schedule-before-SO ordering (B3) and the parallel API key path (B8).
-5. **Aggregate schedule-limit circuit breaker.** With cluster near schedule
-   capacity, import K enabled 1-minute rules where K − 1 would fit individually
-   but Σ intervals overflows. Assert **all K** fail with the circuit-breaker
-   message and none persist. Legacy would partial-succeed; bulk aborts the
-   chunk. (Covers B1.)
-6. **Bulk authz all-fail-in-chunk.** User with `create` for query rules but not
-   ML. Import a mixed batch and assert both rows error (not "query succeeds, ML
-   fails"). Covers B2 — the observable break from the legacy per-rule authz.
-7. **Prebuilt-import change tracking.** Extend
+   `methods/import_rules.ts` and the new create/overwrite persistence split.
+4. **Prebuilt-import change tracking.** Extend
    `rule_management/trial_license_complete_tier/change_tracking.ts` with a
-   prebuilt-import case and an assertion on `metadata.bulkCount` /
-   `RuleAuditAction.BULK_CREATE`. Locks in the payload assembled in `route.ts`
-   and the bulk audit shape (B7).
+   prebuilt-import case and an assertion on `metadata.bulkCount`.
+
+**Tier 2 — dedicated sibling configs (optional, high value / low plumbing cost):**
+
+5. **Aggregate schedule-limit + whole-chunk fan-out.** Sibling config
+   overriding `xpack.alerting.rules.maxScheduledPerMinute` to a low value
+   (e.g. `10`), pointing at a small test file. Import K enabled rules where
+   Σ intervals overflow: assert **all K** fail with the circuit-breaker error,
+   assert every `rule_id` in the response has an error entry with the same
+   message (the whole-chunk fan-out from the import `catch`), assert nothing
+   persists. Same shape as
+   [`ess.rule_changes_history_disabled.config.ts`](../../x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/configs/ess.rule_changes_history_disabled.config.ts) — cheap plumbing.
+6. **Large payload regression guard (~6 000 rules).** Sibling config bumping
+   `xpack.securitySolution.maxRuleImportPayloadBytes` to ~100 MB. Import 6 000
+   disabled rules (avg ~12 KB each ≈ 72 MB payload). Assert the response
+   succeeds within a generous timeout. Directly validates the refactor's
+   perf-at-scale motivation and guards against future regressions for clients
+   who configure larger payloads in production. Own file so it can be
+   quarantined without impacting the rest of the suite.
+
+Everything else that changed inside `bulkCreateRules` is either impractical to
+trigger via `_import` or unobservable end-to-end — see the "Bulk-specific
+behaviors" subsection above for the rejections and why.
 
 Everything else in the gap matrix is nice-to-have but not directly at risk from
 this refactor:
@@ -209,24 +218,28 @@ this refactor:
 
 ## Suggested follow-up PR shape
 
-New / modified files, each next to existing suites. Split into two tiers so the
-must-haves can ship independently if the bulk-specific ones grow in scope.
+**Tier 1 — import-layer guards** (must-have, wire into existing configs):
 
-**Tier 1 — refactor guards (recommended for the follow-up PR):**
-
-- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts` — new (B4)
+- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts` — new
 - `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_with_adversarial_rule_ids.ts` — new
-- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_mixed_outcomes.ts` — new (B9 + classification)
-- `test_suites/detections_response/rule_management/trial_license_complete_tier/change_tracking.ts` — extend with a prebuilt-import case + `BULK_CREATE` audit assertion (B7)
+- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_mixed_outcomes.ts` — new
+- `test_suites/detections_response/rule_management/trial_license_complete_tier/change_tracking.ts` — extend with a prebuilt-import case
 
-**Tier 2 — bulk-behavior guards (add if bandwidth allows, or as a second PR):**
+Wire the new files into the surrounding `index.ts`. No new helpers required —
+the shared `importRules` / `importRulesWithSuccess` in
+`test_suites/detections_response/utils/rules/import_rules.ts` is enough.
 
-- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_enabled_tasks.ts` — new (B3, B8): assert `scheduledTaskId` for imported enabled rules
-- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_schedule_limit.ts` — new (B1): aggregate schedule-limit fan-out
-- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_bulk_authz.ts` — new (B2): mixed rule-type authz denial fans out to the whole chunk
+**Tier 2 — dedicated sibling configs** (optional):
 
-Wire each into the surrounding `index.ts`. No new helpers required — the shared
-`importRules` / `importRulesWithSuccess` in
-`test_suites/detections_response/utils/rules/import_rules.ts` is enough. Tier 2
-files may need a low-capacity test-config override (schedule-limit) and an extra
-role fixture (bulk authz).
+*Schedule-limit + whole-chunk fan-out (guards both with one config):*
+
+- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/configs/ess.low_schedule_limit.config.ts` — new sibling config, overrides `xpack.alerting.rules.maxScheduledPerMinute=10` (model:
+  [`ess.rule_changes_history_disabled.config.ts`](../../x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/configs/ess.rule_changes_history_disabled.config.ts))
+- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/schedule_limit_fan_out.ts` — new test file, pointed to by the sibling config's `testFiles`
+- `.buildkite/ftr-manifests/ftr_security_stateful_configs.yml` — one line adding the new config to the `enabled:` list (no new Buildkite step)
+
+*Large payload regression guard (~6 000 rules):*
+
+- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/configs/ess.large_payload.config.ts` — new sibling config, overrides `xpack.securitySolution.maxRuleImportPayloadBytes=104857600` (~100 MB)
+- `test_suites/detections_response/rule_import_export/trial_license_complete_tier/import_rules_large_payload.ts` — new test file, imports 6 000 disabled rules
+- `.buildkite/ftr-manifests/ftr_security_stateful_configs.yml` — one line for this config too
