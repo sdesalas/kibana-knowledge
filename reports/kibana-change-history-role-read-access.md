@@ -10,7 +10,7 @@
 
 `.kibana_change_history` stores change-history events (rules, workflows, etc.). We expected it to behave like a **system** data stream: invisible / unreadable to normal users without product-origin, and marked `system=true` on the DS and backing indices.
 
-Local checks (`check-change-history-system.sh`) showed:
+Local checks ([`check-change-history-system.sh`](https://github.com/sdesalas/kibana-knowledge/blob/main/scripts/check-change-history-system.sh)) showed:
 
 - data stream: `system=false`, `hidden=true`, `managed=true`
 - backing indices: attributes `hidden,open` — **not** `system`
