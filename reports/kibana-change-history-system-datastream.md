@@ -58,7 +58,7 @@ Yngrid confirmed it went live the previous Tuesday. Yngrid also found this open 
 
 ## Why PR #145822 is the exact precedent
 
-PR #145822 solved the **identical problem** for two workflows data streams (`.workflows-events` and `.workflows-execution-data-stream-logs`). Those streams were also caught by an overly broad system index pattern. The fix:
+PR #145822 solved a **similar problem** for two workflows data streams (`.workflows-events` and `.workflows-execution-data-stream-logs`). Those streams were also caught by an overly broad system index pattern. The fix:
 
 1. Added a `SystemDataStreamDescriptor` for each stream using a composable template loaded from a JSON resource file.
 2. Tightened the system index pattern to explicitly exclude the data stream names using complement syntax (e.g. `.workflows~(-events*|-execution-data-stream-logs*)`).
@@ -75,27 +75,33 @@ So use the **current code in `KibanaPlugin.java`** as the template, not the raw 
 
 ## Conversion Risk (Open Question)
 
-Because `.kibana_change_history` has been live on serverless since ~2026-07-15, there are likely existing backing indices already written as a data stream but **currently registered under the `.kibana_*` system index pattern**. Adding a `SystemDataStreamDescriptor` retroactively means ES must re-classify those as a system data stream rather than a system index — and this is a known problem area.
+Because `.kibana_change_history` has been live on serverless since ~2026-07-15, there are likely existing backing indices already written as a data stream but **currently registered under the `.kibana_*` system index pattern**. Adding a `SystemDataStreamDescriptor` retroactively means ES must re-classify those as a system data stream rather than a system index.
 
 Rudolf flagged this immediately in the discussion:
 
 > *"This is live on serverless correct? IIRC it's far from trivial to change a system index into a datastream once it's live"*
 
-Yngrid then found a directly relevant open issue:
+Yngrid then found a directly relevant PR:
 
 > *"Found this one: [Converting an Existing Data Stream to a System DataStream is Broken](https://github.com/elastic/elasticsearch/pull/121392)"*
 
-The key questions that need answers from the ES team (Arpad / Mary were pulled into the incident for exactly this):
+### What PR #121392 is about
 
-1. Is it safe to add a `SystemDataStreamDescriptor` for a data stream that is already live on serverless and currently matched by a `SystemIndexDescriptor` pattern?
-2. Will ES handle the re-registration cleanly on next cluster restart / upgrade, or will it conflict with the existing backing indices?
-3. Is there a migration step needed, or does the descriptor addition alone resolve it?
+This was a confirmed bug: when an existing data stream was retroactively declared a system data stream (via a new `SystemDataStreamDescriptor`), the conversion silently failed or errored. The PR fixed this by adding proper conversion support in `system_index_metadata_upgrade_service`, so that on node startup it can detect the existing data stream and promote it to a system data stream safely.
 
-Until these are confirmed, the conversion approach carries risk on existing serverless projects. Rudolf also asked whether the feature could be disabled while this is resolved:
+**The PR is merged**, targeting v8.18.0, v8.19.0, v9.0.0, and v9.1.0. Whether serverless is running a version that includes this fix needs to be confirmed — that determines whether the `SystemDataStreamDescriptor` addition is safe to ship as-is or requires a coordinated rollout.
+
+The key questions that need answers (Arpad and Mary from the ES team were pulled into the incident for exactly this):
+
+1. Is the serverless fleet running a version that includes the PR #121392 fix?
+2. Will ES handle the re-registration cleanly on next node startup, or will it conflict with existing backing indices on live projects?
+3. Is there any additional migration step needed beyond adding the descriptor?
+
+Rudolf also asked whether the feature could be disabled while this is investigated:
 
 > *"can we disable it?"*
 
-This remains an open option if the conversion turns out to be unsafe without a migration path.
+This remains an option if the conversion turns out to need a coordinated rollout or if the serverless version predates the PR #121392 fix.
 
 ---
 
