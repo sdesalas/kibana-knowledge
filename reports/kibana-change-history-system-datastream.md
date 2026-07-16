@@ -121,3 +121,33 @@ Must land **before BC3** to be effective on serverless. Steven flagged the timin
 Must stay a system data stream (not demoted to hidden). Rudolf on why:
 
 > *"It needs to be a system ds/index because it stores potentially sensitive info that not all users should have access to. Otherwise you can see changes from other users on saved objects in other spaces."*
+
+---
+
+## Mappings Divergence: `kibana.space_ids` (Kibana vs ES)
+
+Kibana's [`x-pack/platform/packages/shared/kbn-change-history/src/mappings.ts`](https://github.com/elastic/kibana/blob/main/x-pack/platform/packages/shared/kbn-change-history/src/mappings.ts) (`changeHistoryMappings.v1`) and ES's [`kibana-change-history.json`](https://github.com/elastic/elasticsearch/blob/main/modules/kibana/src/main/resources/org/elasticsearch/kibana/kibana-change-history.json) agree on every mapped field except one:
+
+| Path | Kibana `mappings.ts` | ES `kibana-change-history.json` |
+|---|---|---|
+| `kibana.space_ids` | commented out | `keyword` with `ignore_above: 1024` |
+
+Kibana's file header comment states:
+
+> *Do not map `kibana.space_ids` here — `@kbn/data-streams` injects reserved `kibana` mappings for all data streams.*
+
+That assumption breaks once ES owns the template as a system data stream: `@kbn/data-streams` is not in the loop for a template registered by `KibanaPlugin`. The ES version is what actually lands on backing indices in stateless/serverless, so its inclusion of `kibana.space_ids` is correct.
+
+This is the concrete instance of Yngrid's *"it's all messy, because the mappings are in both places `es` and `kibana`"*.
+
+Other notes:
+
+- `object.snapshot` is intentionally unmapped on both sides (Kibana comment says keep it out; ES omits it) — relies on `dynamic: false` so the field is stored in `_source` only.
+- Versioning schemes are independent counters that can drift silently: Kibana uses `v1` (schema major); ES uses `_meta.managed_index_mappings_version: 3` and composable template `"version": 3`.
+
+### Follow-up on Kibana side (out of scope for this ES fix)
+
+Once the `SystemDataStreamDescriptor` lands:
+
+1. Drop the Kibana-installed template for `.kibana_change_history` (ES becomes the sole authority), or teach the Kibana code that reserved `kibana.*` mappings are already present in the ES-owned template.
+2. Decide whether Kibana's `v1` and ES's `managed_index_mappings_version` should stay in lockstep or remain independent — and document it.
