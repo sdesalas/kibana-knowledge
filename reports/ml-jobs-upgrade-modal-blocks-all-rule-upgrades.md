@@ -1,11 +1,10 @@
 # ML jobs upgrade modal gates all prebuilt rule upgrades
 
-**Date:** 2026-07-17  
-**Area:** Security Solution — Detection Engine / Rule Management UI  
-**Status:** Code-path confirmed; matches known open bug  
+**Date:** 2026-07-17
+**Area:** Security Solution — Detection Engine / Rule Management UI
+**Status:** Code-path confirmed; matches known open bug
 **Related:**
 - [kibana#239884](https://github.com/elastic/kibana/issues/239884) — open product bug: modal on every prebuilt upgrade when legacy ML jobs exist (no rule-type check)
-- [sdh-security-team#1698](https://github.com/elastic/sdh-security-team/issues/1698) — closed SDH; confirmed same as #239884
 - [#128334](https://github.com/elastic/kibana/pull/128334) — original V1/V2 → V3 gate (8.3)
 - [#255339](https://github.com/elastic/kibana/pull/255339) — expanded `affectedJobIds` for V3 → `_ea` (9.4)
 
@@ -55,16 +54,16 @@ So in practice this may look like:
 
 ## Key findings (high confidence)
 
-1. **Trigger is installed jobs, not rule type.**  
+1. **Trigger is installed jobs, not rule type.**
    `confirmLegacyMLJobs()` runs before every upgrade path in `use_prebuilt_rules_upgrade.tsx`. The modal opens if `jobs.filter(job => affectedJobIds.includes(job.id)).length > 0`.
 
-2. **No persistence.**  
+2. **No persistence.**
    **Load rules** only continues that upgrade action. Each later upgrade action re-checks and re-prompts.
 
-3. **List widened in 9.4 without updating UX.**  
+3. **List widened in 9.4 without updating UX.**
    [#255339](https://github.com/elastic/kibana/pull/255339) added all V3 non-EA job IDs to `affectedJobIds`. Modal text still says users are running V1/V2 jobs and that “new V3 jobs” have been released.
 
-4. **Affected-jobs list in the modal is misleading.**  
+4. **Affected-jobs list in the modal is misleading.**
    Hook filters `legacyJobsInstalled` for the show/hide decision, but passes full `jobs` into the modal — so current jobs (e.g. `auth_*`, `high_count_*`) can appear under “Affected jobs” even though they are not on the allowlist.
 
 ---
