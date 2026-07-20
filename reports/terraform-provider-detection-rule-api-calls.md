@@ -79,7 +79,7 @@ kibana_resource_envelope.go: runKibanaWrite()
 
 ### TL;DR
 
-Update the Terraform provider to use two existing public Kibana endpoints for batched operations:
+Update the Terraform provider to use two existing public Kibana endpoints for batched operations: `rules/_export` instead of 1000× `GET /rules?id={id}` and `rules/_import` instead of 1000× `PUT /rules`.
 
 - **`POST /api/detection_engine/rules/_export`** — bulk read: send a list of `rule_id`s, get back full rule objects as NDJSON.
 - **`POST /api/detection_engine/rules/_import?overwrite=true`** — bulk write: send NDJSON of full rule payloads, Kibana creates or updates each in one request.
