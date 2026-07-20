@@ -1,6 +1,6 @@
 # Terraform Provider: Detection Rule API Call Patterns
 
-**Repo:** `elastic/terraform-provider-elasticstack`
+**Repo:** [`elastic/terraform-provider-elasticstack`](https://github.com/elastic/terraform-provider-elasticstack)
 **Date:** 2026-07-20
 
 ## How current state is determined during `terraform plan`
@@ -88,7 +88,7 @@ This is the same pattern already in production use in [`elastic/detection-rules`
 
 **NOTE:** We will need to make a change to `_import` so that it respects a caller-supplied `rule.id` on create, which it currently ignores.
 
-**ADDITIONAL NOTE:** This Kibana change is a hard prerequisite. Without it, `_import` assigns a fresh UUID on every create, so Terraform's stored `id` would immediately diverge from the rule Kibana actually created — the provider's state would be broken. The Terraform-side work below is not viable without this change landing first.
+**ADDITIONAL NOTE:** This Kibana change is a hard prerequisite. Without it, `_import` assigns a fresh UUID on every create, so Terraform's stored `id` would immediately diverge from the rule Kibana actually created — the provider's state would be broken. The Terraform-side work below is not viable without this change landing first. It could piggy-back on in-flight work to improve `rules/_import` create-path performance — [`elastic/kibana#264909`](https://github.com/elastic/kibana/issues/264909).
 
 ### Expected impact (1000 rules)
 
@@ -149,18 +149,18 @@ The [`elastic/detection-rules`](https://github.com/elastic/detection-rules) repo
 
 ### Key files
 
-**Terraform provider (`elastic/terraform-provider-elasticstack`):**
-- `internal/entitycore/base_envelope.go:Read()` — current per-instance read; would need a batching bypass or wrapper
-- `internal/entitycore/kibana_resource_envelope.go:runKibanaWrite()` — current per-instance write; same
-- `internal/kibana/security_detection_rule/read.go`, `update.go`, `create.go` — the callbacks to be replaced with batched versions (except create, which stays on per-rule POST until the Kibana change lands)
-- `internal/kibana/security_detection_rule/schema.go:60` — `rule_id` schema (already Optional+Computed)
-- `generated/kbapi/kibana.gen.go` — already has `ImportRulesWithBodyWithResponse`, `ExportRulesWithResponse`
+**Terraform provider ([`elastic/terraform-provider-elasticstack`](https://github.com/elastic/terraform-provider-elasticstack)):**
+- [`internal/entitycore/base_envelope.go`](https://github.com/elastic/terraform-provider-elasticstack/blob/eada3168c4b88f3c0a99bcefee1cfc9b2f7d8c6a/internal/entitycore/base_envelope.go) — `Read()`, current per-instance read; would need a batching bypass or wrapper
+- [`internal/entitycore/kibana_resource_envelope.go`](https://github.com/elastic/terraform-provider-elasticstack/blob/eada3168c4b88f3c0a99bcefee1cfc9b2f7d8c6a/internal/entitycore/kibana_resource_envelope.go) — `runKibanaWrite()`, current per-instance write; same
+- [`internal/kibana/security_detection_rule/read.go`](https://github.com/elastic/terraform-provider-elasticstack/blob/eada3168c4b88f3c0a99bcefee1cfc9b2f7d8c6a/internal/kibana/security_detection_rule/read.go), [`update.go`](https://github.com/elastic/terraform-provider-elasticstack/blob/eada3168c4b88f3c0a99bcefee1cfc9b2f7d8c6a/internal/kibana/security_detection_rule/update.go), [`create.go`](https://github.com/elastic/terraform-provider-elasticstack/blob/eada3168c4b88f3c0a99bcefee1cfc9b2f7d8c6a/internal/kibana/security_detection_rule/create.go) — the callbacks to be replaced with batched versions (except create, which stays on per-rule POST until the Kibana change lands)
+- [`internal/kibana/security_detection_rule/schema.go#L60`](https://github.com/elastic/terraform-provider-elasticstack/blob/eada3168c4b88f3c0a99bcefee1cfc9b2f7d8c6a/internal/kibana/security_detection_rule/schema.go#L60) — `rule_id` schema (already Optional+Computed)
+- `generated/kbapi/kibana.gen.go` — already has `ImportRulesWithBodyWithResponse`, `ExportRulesWithResponse` (generated file, not linked)
 
-**Kibana (`elastic/kibana`):**
-- `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rule.ts` — add `id: ruleToImport.id` to the `createRule` call
-- `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts:92` — add `id?: string` to `ImportRuleArgs`
-- `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts` — propagate `id` through the wrapper
-- (For context, no change needed:) `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/create/create_rule.ts:85` — already respects `options.id`
+**Kibana ([`elastic/kibana`](https://github.com/elastic/kibana)):**
+- [`import_rule.ts`](https://github.com/elastic/kibana/blob/db0d74a79a2b97e872372d7ff298fb482337527c/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rule.ts) — add `id: ruleToImport.id` to the `createRule` call
+- [`detection_rules_client_interface.ts#L92`](https://github.com/elastic/kibana/blob/db0d74a79a2b97e872372d7ff298fb482337527c/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client_interface.ts#L92) — add `id?: string` to `ImportRuleArgs`
+- [`import_rules.ts`](https://github.com/elastic/kibana/blob/db0d74a79a2b97e872372d7ff298fb482337527c/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/import/import_rules.ts) — propagate `id` through the wrapper
+- (For context, no change needed:) [`create_rule.ts#L85`](https://github.com/elastic/kibana/blob/db0d74a79a2b97e872372d7ff298fb482337527c/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/create/create_rule.ts#L85) — already respects `options.id`
 
 ### Alternatives considered and rejected
 
