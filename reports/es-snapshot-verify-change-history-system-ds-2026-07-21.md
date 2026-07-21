@@ -5,7 +5,9 @@
 **Branch / checkout:** `main` on `kibana-5th`  
 **ES under test:** unverified daily snapshot `9.6.0-SNAPSHOT` (`20260721-022000_899296de`)
 
-**Related:** [.knowledge/reports/kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md) (incident-3371 — ES registered `.kibana_change_history` as a system data stream). This report covers **verify-pipeline test failures** that showed up once that ES change landed in the daily unverified snapshot. Kibana itself starts and runs against this snapshot; the breakage is in CI tests, not the product boot path.
+**Tracking:** [elastic/security-team#18291](https://github.com/elastic/security-team/issues/18291) — `.kibana_change_history` registered as `SystemIndexDescriptor` instead of `SystemDataStreamDescriptor` (closed; fix landed in ES).
+
+**Related:** [.knowledge/reports/kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md) (incident-3371). This report covers **verify-pipeline test failures** that showed up once that ES change landed in the daily unverified snapshot. Kibana itself starts and runs against this snapshot; the breakage is in CI tests, not the product boot path.
 
 ---
 
@@ -41,6 +43,8 @@ KBN_ES_SNAPSHOT_USE_UNVERIFIED=1 yarn es snapshot --license trial \
 | Change tracking init | Succeeded (`Change tracking initialized for [security, alerting-rules]`) |
 | Data stream after boot | Exists, `"system": true`, GREEN |
 | Runtime writes | Observed (`Logged 20 change/s to history stream…`) |
+
+Manual rule change history UI flows (create / view history) completed without problems against this same snapshot.
 
 ### Boot logs (same run)
 
@@ -264,6 +268,8 @@ In `change_tracking.ts` / `change_tracking_disabled.ts`:
 
 ES now ships the system descriptor/template. Over time, Kibana may stop competing on template/create and only attach + write via `asInternalUser`. Current client already uses **DSL lifecycle** (not ILM); keep that model aligned with the ES-shipped template. Not required to explain today’s “Kibana won’t start” (it does start).
 
+Also tracked on [#18291](https://github.com/elastic/security-team/issues/18291): mapping duplication between ES `kibana-change-history.json` and Kibana `@kbn/change-history` `mappings.ts` (analogous to workflows [elasticsearch#148871](https://github.com/elastic/elasticsearch/issues/148871)); umbrella discussion on Kibana owning mappings while ES owns the descriptor: [elasticsearch#149309](https://github.com/elastic/elasticsearch/issues/149309).
+
 ### 4. Out of scope
 
 CSP #75 and Scout Discover share — leave alone unless they remain red after the above.
@@ -283,10 +289,26 @@ After Jest/FTR talk to the system data stream with the right privileges (and/or 
 
 ## Links
 
-- ES registration PR: https://github.com/elastic/elasticsearch/pull/154113
-- Precedent (workflows system DS): https://github.com/elastic/elasticsearch/pull/145822
-- Kibana client: `x-pack/platform/packages/shared/kbn-change-history/src/client.ts`
-- Jest suite: `x-pack/platform/packages/shared/kbn-change-history/integration_tests/client.test.ts`
-- FTR enabled: `…/change_tracking.ts`
-- FTR disabled: `…/change_tracking_disabled.ts`
-- Prior incident write-up: `.knowledge/reports/kibana-change-history-system-datastream.md`
+### Tracking / incident
+- [elastic/security-team#18291](https://github.com/elastic/security-team/issues/18291) — change-history system DS registration (this ticket)
+- [elastic/security-team#16301](https://github.com/elastic/security-team/issues/16301) — workflows precedent (same class of bug)
+- Incident: [#incident-3371](https://elastic.slack.com/archives/C0BHNM44YER) · Rootly: https://root.ly/i5vu1c
+- Prior write-up: [.knowledge/reports/kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md)
+
+### Elasticsearch
+- Fix PR: [elasticsearch#154113](https://github.com/elastic/elasticsearch/pull/154113)
+- Precedent PR (workflows): [elasticsearch#145822](https://github.com/elastic/elasticsearch/pull/145822)
+- Retroactive conversion fix: [elasticsearch#121392](https://github.com/elastic/elasticsearch/pull/121392)
+- Workflows mapping-drift follow-up: [elasticsearch#148871](https://github.com/elastic/elasticsearch/issues/148871)
+- Umbrella (Kibana mappings + ES descriptor): [elasticsearch#149309](https://github.com/elastic/elasticsearch/issues/149309)
+- Fix location: [`KibanaPlugin.java`](https://github.com/elastic/elasticsearch/blob/main/modules/kibana/src/main/java/org/elasticsearch/kibana/KibanaPlugin.java)
+- ES template: [`kibana-change-history.json`](https://github.com/elastic/elasticsearch/blob/main/modules/kibana/src/main/resources/org/elasticsearch/kibana/kibana-change-history.json)
+
+### Kibana (this report)
+
+Pinned to `d11b6509841d` (local `main` at investigation time):
+
+- Client: [`client.ts`](https://github.com/elastic/kibana/blob/d11b6509841dc011d7e65e9417c906e27c005ec8/x-pack/platform/packages/shared/kbn-change-history/src/client.ts)
+- Jest suite: [`client.test.ts`](https://github.com/elastic/kibana/blob/d11b6509841dc011d7e65e9417c906e27c005ec8/x-pack/platform/packages/shared/kbn-change-history/integration_tests/client.test.ts)
+- FTR enabled: [`change_tracking.ts`](https://github.com/elastic/kibana/blob/d11b6509841dc011d7e65e9417c906e27c005ec8/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/change_tracking.ts)
+- FTR disabled: [`change_tracking_disabled.ts`](https://github.com/elastic/kibana/blob/d11b6509841dc011d7e65e9417c906e27c005ec8/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/change_tracking_disabled.ts)
