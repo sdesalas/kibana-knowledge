@@ -29,7 +29,7 @@ because nothing on `main` exercises them at scale or through the new split paths
 |-----------------------|----------------------------|----------------------|
 | Outer chunking at `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` (100) | Pure-rule imports top out at ~10; the 150-rule case is exception-heavy. Jest covers the outer `chunk()` loop in unit tests only. | Baseline: import ≥ 201 disabled custom rules; assert success + `_find` |
 | Create vs overwrite persistence split (`bulkCreateRules` vs `pMap` overwrite) | Prebuilt-mix create+overwrite exists at small scale; no custom-only mixed batch across a chunk boundary (≥101) | Baseline: same batch-boundary request mixes creates + overwrites |
-| Hand-built KQL `rule_id` filter → real ES | Jest asserts filter string shape with a mocked `find`. No FTR through ES | Baseline: adversarial `rule_id` import + `_find` |
+| Hand-built KQL `rule_id` filter → real ES | Jest asserts filter string shape with a mocked `find`. Main's unescaped filter 400s on metacharacters | Rewrite PR: adversarial `rule_id` import + `_find` (after escaping lands) |
 | Change tracking for prebuilt import | Custom import + overwrite + `bulkCount` covered; no prebuilt-import history case | Baseline: extend `change_tracking.ts` |
 | Catch fan-out (whole chunk fails → every not-yet-responded `rule_id` gets the error) | New `catch` path around `bulkCreateRules`; nothing on `main` matches this shape | Rewrite PR: Jest on the `catch` path; optional schedule-limit FTR |
 | Large-payload / scale motivation | Commented-out 10k test; rewrite exists because legacy path struggled at scale | Rewrite PR: revive/adapt large-payload FTR under bulk |
@@ -149,7 +149,7 @@ Status column is the scan key. No extra emphasis on rows — if it's a Gap, the 
 | Error paths (transport) | Gap | No FTR for corrupt NDJSON / empty file / missing `file`. Jest cases exist in `route.test.ts` but that suite is `describe.skip`. Include in baseline PR |
 | Change tracking (prebuilt import) | Gap | No `rule_import` history case for prebuilt rules via `_import` (`rule_install` / upgrade are covered; import is not) |
 | Scale (batching boundaries) | Gap | High-water mark is 150 rules (exceptions); pure rule imports top out at ~10. 10,001-rule test only checks rejection. Commented-out 10k success test exists but is disabled. No active test exercises outer chunking end-to-end |
-| KQL-metacharacter `rule_id`s | Gap (FTR) | Jest covers filter construction; no end-to-end assertion through `_import` → ES → `_find` |
+| KQL-metacharacter `rule_id`s | Gap (rewrite PR) | Main builds unescaped `ruleId:(a or b)` filters (HTTP 400 on metacharacters). Escaping + success-path FTR belong with the bulk rewrite, not the main baseline |
 | Create / overwrite in one request | Partial | Prebuilt-mix create+overwrite covered (FTR + Cypress). Gap: custom-only mixed batch (some exist, some don't, `overwrite=true`), and that pattern across a chunk boundary (≥101) |
 | Concurrent imports | Gap | No overlapping-request test. Include in baseline PR — rewrite changes persistence/batching; races are more interesting after that |
 | Mixed-outcome single request | Good enough | Already covered: 2 success + 1 conflict; 1 success + connector failure. Combining create+overwrite+failure in one mega-request is packaging, not a rewrite blocker |
@@ -181,35 +181,48 @@ Lock externally-visible behaviour that already exists on `main` (or should):
 1. Batch-boundary test. Import ≥ `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` × 2
    (≥ 201) disabled custom rules in one request, mixing creates and overwrites.
    Assert response success counts and that rules are readable via `_find`.
-2. Adversarial `rule_id` FTR. 8–10 rules whose `rule_id`s contain `"`, `\`,
-   `(`, `)`, `*`, `<`, `>`, and the tokens `and` / `or` / `not`. Import, then
-   `_find` each by `rule_id`.
-3. Prebuilt-import change tracking. Extend
+2. Prebuilt-import change tracking. Extend
    `rule_management/trial_license_complete_tier/change_tracking.ts` with a
    prebuilt-import case. (`bulk_count` for custom multi-import already exists.)
-4. Transport corruption. Corrupt NDJSON line, empty file, missing `file` field.
-5. Concurrent imports. Two overlapping `_import` requests (distinct `rule_id`s,
+3. Transport corruption. Corrupt NDJSON line, empty file, missing `file` field.
+4. Concurrent imports. Two overlapping `_import` requests (distinct `rule_id`s,
    and a variant that shares a `rule_id` without overwrite).
-6. Rule-type matrix. One successful import round-trip per detection rule type
+5. Rule-type matrix. One successful import round-trip per detection rule type
    (`custom_query`, `threshold`, `eql`, `threat_match`, `new_terms`, `esql`,
    and ML where license/setup allows).
+6. Identity (`id` vs `rule_id`). Payload `id` ignored on create; overwrite by
+   matching `rule_id` keeps the existing SO id; import with existing SO id but
+   a different `rule_id` creates a second rule; same payload `id` twice in one
+   NDJSON; overwrite cannot reassign SO ownership; conflict key is `rule_id`;
+   export round-trip; prebuilt overwrite; cross-space (see
+   [#279741](https://github.com/elastic/kibana/issues/279741)).
+
+Note: adversarial `rule_id` import + `_find` is **not** a main baseline case.
+On main, import looks up existing/prebuilt rules with an unescaped
+`ruleId:(a or b)` KQL filter, so metacharacter `rule_id`s 400 before any
+contract is worth locking. Escaping lands with the bulk rewrite — put the
+success-path FTR there.
 
 ### Rewrite PR (#275695) — new coverage this PR should add
 
 Do not put these in the baseline PR: they assert bulk-path-only behaviour (or
 the scale story that motivated the rewrite).
 
-1. Catch fan-out (prefer Jest). One throw mid-batch → every not-yet-responded
+1. Adversarial `rule_id` FTR (success path). 8–10 rules whose `rule_id`s
+   contain `"`, `\`, `(`, `)`, `*`, `<`, `>`, and the tokens `and` / `or` /
+   `not`. Import, then `_find` each by `rule_id`. Depends on the rewrite's
+   KQL escaping; does not pass on main's unescaped filter construction.
+2. Catch fan-out (prefer Jest). One throw mid-batch → every not-yet-responded
    `rule_id` gets the same error; nothing extra persists. This `catch` wraps
    `bulkCreateRules` and has no legacy equivalent worth locking first.
-2. Schedule-limit + whole-chunk fan-out (optional FTR). Sibling config with low
+3. Schedule-limit + whole-chunk fan-out (optional FTR). Sibling config with low
    `xpack.alerting.rules.maxScheduledPerMinute` (model:
    [`config_with_schedule_circuit_breaker.ts`](../../x-pack/platform/test/alerting_api_integration/security_and_spaces/group3/config_with_schedule_circuit_breaker.ts)
    + local precedent
    [`ess.rule_changes_history_disabled.config.ts`](../../x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/configs/ess.rule_changes_history_disabled.config.ts)).
    First real HTTP consumer of `bulkCreateRules` is `_import` — this is where
    that circuit-breaker path becomes observable end-to-end.
-3. Large payload regression guard. Revive/adapt the commented-out 10,000-rule
+4. Large payload regression guard. Revive/adapt the commented-out 10,000-rule
    success test (longer timeout / sibling config bumping
    `maxRuleImportPayloadBytes` if needed). Disabled rules. Own file so it can
    be quarantined. This is the perf-at-scale claim the rewrite was made for.
@@ -225,10 +238,10 @@ the bulk-specific check here.
 ### Baseline PR
 
 - `…/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts` — new
-- `…/rule_import_export/trial_license_complete_tier/import_rules_with_adversarial_rule_ids.ts` — new
 - `…/rule_import_export/trial_license_complete_tier/import_rules_transport_errors.ts` — new
 - `…/rule_import_export/trial_license_complete_tier/import_rules_concurrent.ts` — new
 - `…/rule_import_export/trial_license_complete_tier/import_rules_by_type.ts` — new
+- `…/rule_import_export/trial_license_complete_tier/import_rules_identity.ts` — new (`id` vs `rule_id`; locks today’s contract from [#279741](https://github.com/elastic/kibana/issues/279741))
 - `…/rule_management/trial_license_complete_tier/change_tracking.ts` — extend with prebuilt-import case
 
 Wire new files into the surrounding `index.ts`. Shared
@@ -238,6 +251,7 @@ existing rule-param helpers (`getEqlRuleForAlertTesting`, etc.) for the type mat
 
 ### Rewrite PR (#275695)
 
+- `…/import_rules_with_adversarial_rule_ids.ts` — new (success path; needs rewrite KQL escaping)
 - Jest: catch fan-out on the import client method (`methods/import_rules` / equivalent)
 - Optional: `configs/ess.low_schedule_limit.config.ts` + `schedule_limit_fan_out.ts` + one line in `.buildkite/ftr-manifests/ftr_security_stateful_configs.yml`
 - Optional: revive/adapt the disabled 10k test under a dedicated large-payload config
