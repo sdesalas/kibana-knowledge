@@ -45,7 +45,9 @@ Empty list, all green:
 
 #### Exception added to the rule
 
-Private folder created and attached:
+Private folder created and attached.
+
+This is not the exception, but the **container**. The exceptions _live inside it_.
 
 ```diff
 - "exceptions_list": [],
@@ -58,6 +60,28 @@ Private folder created and attached:
 +   }
 + ]
 ```
+
+#### Exception entry added again, updated, deleted
+
+From the user’s point of view: they changed an exception on the rule (including deleting the last one). **But there is no history entry at all.** There is no green/red diff to show, because `exceptions_list` on the rule (the **container**) does not change:
+
+```diff
+  "exceptions_list": [
+    {
+      "id": "7ad3eccb-0b37-465f-bfbd-5017f0f18464",
+      "list_id": "3dd089fc-5850-4e75-a437-99f2f9bd7dc4",
+      "namespace_type": "single",
+      "type": "rule_default"
+    }
+  ]
+```
+
+##### Why
+
+- Add / update / delete only changes the **entry** inside the folder.
+- The rule still points at the same private (`rule_default`) folder.
+- We deliberately leave that empty folder linked so the next exception can go in it without rewriting the rule.
+- History only cares about rule-field changes, so it stays silent — even though the rule’s effective behavior just changed.
 
 #### Shared exception list linked to the rule
 
@@ -103,31 +127,9 @@ Same object in red; envelope stays plain:
 
 Note: after unlinking the shared list, the private `rule_default` link is still there — even if you had already deleted every entry inside that private folder.
 
-#### Exception entry deleted
-
-From the user’s point of view: they deleted an exception on the rule (including the last one). **No History entry at all.** There is no green/red diff to show, because `exceptions_list` on the rule does not change:
-
-```diff
-  "exceptions_list": [
-    {
-      "id": "7ad3eccb-0b37-465f-bfbd-5017f0f18464",
-      "list_id": "3dd089fc-5850-4e75-a437-99f2f9bd7dc4",
-      "namespace_type": "single",
-      "type": "rule_default"
-    }
-  ]
-```
-
-##### Why
-
-- Delete only removes the **entry** inside the folder.
-- The rule still points at the same private (`rule_default`) folder.
-- We deliberately leave that empty folder linked so the next exception can go in it without rewriting the rule.
-- History only cares about rule-field changes, so it stays silent — even though the rule’s effective behavior just changed.
-
 ### Why History behaves this way
 
-This is a consequence of the **data model**, not a broken History writer.
+This is a consequence of the **data model**:
 
 - History only records changes to the **rule itself**.
 - The **first** time you add a rule exception, we also **create the private folder** for that rule and **attach it** to the rule. That attachment changes the rule → History shows it. (The diff shows the folder link, not the exception’s name or conditions.)
