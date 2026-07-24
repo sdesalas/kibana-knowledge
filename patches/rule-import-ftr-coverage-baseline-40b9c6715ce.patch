@@ -1,0 +1,5234 @@
+diff --git a/.buildkite/ftr-manifests/ftr_security_stateful_configs.yml b/.buildkite/ftr-manifests/ftr_security_stateful_configs.yml
+index eb1f53cafa7..a87335743c9 100644
+--- a/.buildkite/ftr-manifests/ftr_security_stateful_configs.yml
++++ b/.buildkite/ftr-manifests/ftr_security_stateful_configs.yml
+@@ -85,6 +85,7 @@ enabled:
+   - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_delete/trial_license_complete_tier/configs/ess.config.ts
+   - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_delete/basic_license_essentials_tier/configs/ess.config.ts
+   - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/configs/ess.config.ts
++  - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/configs/ess.large_payload.config.ts
+   - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/configs/ess.config.ts
+   - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/basic_license_essentials_tier/configs/ess.config.ts
+   - x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/configs/ess.config.ts
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules.ts
+index 5bb2b5231d2..13ca6ef5573 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules.ts
+@@ -164,9 +164,11 @@ export default ({ getService }: FtrProviderContext): void => {
+         const ndjson = combineToNdJson(
+           getCustomQueryRuleParams({
+             rule_id: 'rule-1',
++            name: 'Imported rule 1',
+           }),
+           getCustomQueryRuleParams({
+             rule_id: 'rule-2',
++            name: 'Imported rule 2',
+           })
+         );
+ 
+@@ -181,6 +183,18 @@ export default ({ getService }: FtrProviderContext): void => {
+           success_count: 2,
+           rules_count: 2,
+         });
++
++        const { body: found } = await detectionsApi
++          .findRules({
++            query: { page: 1, per_page: 10 },
++          })
++          .expect(200);
++
++        expect(found.total).toBe(2);
++        expect(found.data.map((rule: { rule_id: string }) => rule.rule_id).sort()).toEqual([
++          'rule-1',
++          'rule-2',
++        ]);
+       });
+ 
+       // import is very slow in 7.10+ due to the alerts client find api
+@@ -206,6 +220,14 @@ export default ({ getService }: FtrProviderContext): void => {
+           success_count: 10,
+           rules_count: 10,
+         });
++
++        const { body: found } = await detectionsApi
++          .findRules({
++            query: { page: 1, per_page: 1 },
++          })
++          .expect(200);
++
++        expect(found.total).toBe(10);
+       });
+ 
+       // uncomment the below test once we speed up the alerts client find api
+@@ -249,9 +271,11 @@ export default ({ getService }: FtrProviderContext): void => {
+         const ndjson = combineToNdJson(
+           getCustomQueryRuleParams({
+             rule_id: 'rule-1',
++            name: 'First in file',
+           }),
+           getCustomQueryRuleParams({
+             rule_id: 'rule-1',
++            name: 'Last in file',
+           })
+         );
+ 
+@@ -274,6 +298,20 @@ export default ({ getService }: FtrProviderContext): void => {
+           success_count: 1,
+           rules_count: 2,
+         });
++
++        // In-file duplicate still creates exactly one rule; last entry wins.
++        const { body: found } = await detectionsApi
++          .findRules({
++            query: {
++              page: 1,
++              per_page: 10,
++              filter: 'alert.attributes.params.ruleId: "rule-1"',
++            },
++          })
++          .expect(200);
++
++        expect(found.total).toBe(1);
++        expect(found.data[0].name).toBe('Last in file');
+       });
+ 
+       it('should NOT report a conflict if there is an attempt to import two rules with the same rule_id and overwrite is set to true', async () => {
+@@ -300,13 +338,19 @@ export default ({ getService }: FtrProviderContext): void => {
+       });
+ 
+       it('should report a conflict if there is an attempt to import a rule with a rule_id that already exists', async () => {
+-        const ruleToImport = getCustomQueryRuleParams({
++        const existingRule = getCustomQueryRuleParams({
+           rule_id: 'rule-1',
++          name: 'Already exists',
+         });
+ 
+-        await detectionsApi.createRule({ body: ruleToImport });
++        await detectionsApi.createRule({ body: existingRule });
+ 
+-        const ndjson = combineToNdJson(ruleToImport);
++        const ndjson = combineToNdJson(
++          getCustomQueryRuleParams({
++            rule_id: 'rule-1',
++            name: 'Should not overwrite',
++          })
++        );
+ 
+         const { body } = await detectionsApi
+           .importRules({ query: {} })
+@@ -327,6 +371,12 @@ export default ({ getService }: FtrProviderContext): void => {
+           rules_count: 1,
+           success_count: 0,
+         });
++
++        const { body: persisted } = await detectionsApi
++          .readRule({ query: { rule_id: 'rule-1' } })
++          .expect(200);
++
++        expect(persisted).toMatchObject(existingRule);
+       });
+ 
+       it('should NOT report a conflict if there is an attempt to import a rule with a rule_id that already exists and overwrite is set to true', async () => {
+@@ -421,22 +471,28 @@ export default ({ getService }: FtrProviderContext): void => {
+       });
+ 
+       it('should report a conflict if there is an attempt to import a rule with a rule_id that already exists, but still have some successes with other rules', async () => {
+-        const ruleToImport = getCustomQueryRuleParams({
++        const existingRule = getCustomQueryRuleParams({
+           rule_id: 'existing-rule',
++          name: 'Existing conflict',
++        });
++        const createdOne = getCustomQueryRuleParams({
++          rule_id: 'non-existing-rule-1',
++          name: 'Created one',
++        });
++        const createdTwo = getCustomQueryRuleParams({
++          rule_id: 'non-existing-rule-2',
++          name: 'Created two',
+         });
+ 
+-        await detectionsApi.createRule({ body: ruleToImport });
++        await detectionsApi.createRule({ body: existingRule });
+ 
+         const ndjson = combineToNdJson(
+           getCustomQueryRuleParams({
+             rule_id: 'existing-rule',
++            name: 'Should not overwrite',
+           }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'non-existing-rule-1',
+-          }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'non-existing-rule-2',
+-          })
++          createdOne,
++          createdTwo
+         );
+ 
+         const { body } = await detectionsApi
+@@ -458,30 +514,49 @@ export default ({ getService }: FtrProviderContext): void => {
+           success_count: 2,
+           rules_count: 3,
+         });
++
++        const { body: conflicted } = await detectionsApi
++          .readRule({ query: { rule_id: 'existing-rule' } })
++          .expect(200);
++        const { body: rule1 } = await detectionsApi
++          .readRule({ query: { rule_id: 'non-existing-rule-1' } })
++          .expect(200);
++        const { body: rule2 } = await detectionsApi
++          .readRule({ query: { rule_id: 'non-existing-rule-2' } })
++          .expect(200);
++
++        expect(conflicted).toMatchObject(existingRule);
++        expect(rule1).toMatchObject(createdOne);
++        expect(rule2).toMatchObject(createdTwo);
+       });
+ 
+       it('should report a mix of conflicts and a mix of successes', async () => {
+-        await detectionsApi.createRule({
+-          body: getCustomQueryRuleParams({
+-            rule_id: 'existing-rule-1',
+-          }),
++        const existingRule1 = getCustomQueryRuleParams({
++          rule_id: 'existing-rule-1',
++          name: 'Existing one',
+         });
+-        await detectionsApi.createRule({
+-          body: getCustomQueryRuleParams({
+-            rule_id: 'existing-rule-2',
+-          }),
++        const existingRule2 = getCustomQueryRuleParams({
++          rule_id: 'existing-rule-2',
++          name: 'Existing two',
++        });
++        const created = getCustomQueryRuleParams({
++          rule_id: 'non-existing-rule',
++          name: 'Created by import',
+         });
+ 
++        await detectionsApi.createRule({ body: existingRule1 });
++        await detectionsApi.createRule({ body: existingRule2 });
++
+         const ndjson = combineToNdJson(
+           getCustomQueryRuleParams({
+             rule_id: 'existing-rule-1',
++            name: 'Should not overwrite one',
+           }),
+           getCustomQueryRuleParams({
+             rule_id: 'existing-rule-2',
++            name: 'Should not overwrite two',
+           }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'non-existing-rule',
+-          })
++          created
+         );
+ 
+         const { body } = await detectionsApi
+@@ -510,17 +585,34 @@ export default ({ getService }: FtrProviderContext): void => {
+           success_count: 1,
+           rules_count: 3,
+         });
++
++        const { body: rule1 } = await detectionsApi
++          .readRule({ query: { rule_id: 'existing-rule-1' } })
++          .expect(200);
++        const { body: rule2 } = await detectionsApi
++          .readRule({ query: { rule_id: 'existing-rule-2' } })
++          .expect(200);
++        const { body: rule3 } = await detectionsApi
++          .readRule({ query: { rule_id: 'non-existing-rule' } })
++          .expect(200);
++
++        expect(rule1).toMatchObject(existingRule1);
++        expect(rule2).toMatchObject(existingRule2);
++        expect(rule3).toMatchObject(created);
+       });
+ 
+       it('should be able to correctly read back a mixed import of different rules even if some cause conflicts', async () => {
+         const existingRule1 = getCustomQueryRuleParams({
+           rule_id: 'existing-rule-1',
++          name: 'Existing one',
+         });
+         const existingRule2 = getCustomQueryRuleParams({
+           rule_id: 'existing-rule-2',
++          name: 'Existing two',
+         });
+         const ruleToImportSuccessfully = getCustomQueryRuleParams({
+           rule_id: 'non-existing-rule',
++          name: 'Created by import',
+         });
+ 
+         await detectionsApi.createRule({ body: existingRule1 });
+@@ -528,11 +620,33 @@ export default ({ getService }: FtrProviderContext): void => {
+ 
+         const ndjson = combineToNdJson(existingRule1, existingRule2, ruleToImportSuccessfully);
+ 
+-        await detectionsApi
++        const { body: importResponse } = await detectionsApi
+           .importRules({ query: {} })
+           .attach('file', Buffer.from(ndjson), 'rules.ndjson')
+           .expect(200);
+ 
++        expect(importResponse).toMatchObject({
++          success: false,
++          success_count: 1,
++          rules_count: 3,
++          errors: [
++            {
++              error: {
++                message: 'Rule with this rule_id already exists',
++                status_code: 409,
++              },
++              rule_id: 'existing-rule-1',
++            },
++            {
++              error: {
++                message: 'Rule with this rule_id already exists',
++                status_code: 409,
++              },
++              rule_id: 'existing-rule-2',
++            },
++          ],
++        });
++
+         const { body: rule1 } = await detectionsApi
+           .readRule({
+             query: { rule_id: 'existing-rule-1' },
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts
+new file mode 100644
+index 00000000000..f594052ad52
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts
+@@ -0,0 +1,123 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { DETECTION_ENGINE_RULES_IMPORT_URL } from '@kbn/security-solution-plugin/common/constants';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { combineToNdJson, getCustomQueryRuleParams } from '../../../utils';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules transport errors', () => {
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    it('reports a parse error for corrupt NDJSON', async () => {
++      const { body } = await supertest
++        .post(DETECTION_ENGINE_RULES_IMPORT_URL)
++        .set('kbn-xsrf', 'true')
++        .set('elastic-api-version', '2023-10-31')
++        .attach('file', Buffer.from('this is not a valid ndjson string!'), 'rules.ndjson')
++        .expect(200);
++
++      expect(body).toMatchObject({
++        success: false,
++        success_count: 0,
++        rules_count: 1,
++      });
++      expect(body.errors).toHaveLength(1);
++      expect(body.errors[0].error.status_code).toBe(400);
++      expect(body.errors[0].error.message).toContain('is not valid JSON');
++    });
++
++    it('imports an empty NDJSON file as zero rules', async () => {
++      const { body } = await supertest
++        .post(DETECTION_ENGINE_RULES_IMPORT_URL)
++        .set('kbn-xsrf', 'true')
++        .set('elastic-api-version', '2023-10-31')
++        .attach('file', Buffer.from(''), 'rules.ndjson')
++        .expect(200);
++
++      expect(body).toMatchObject({
++        success: true,
++        success_count: 0,
++        rules_count: 0,
++        errors: [],
++      });
++    });
++
++    it('rejects the request when the file field is missing', async () => {
++      const { body } = await supertest
++        .post(DETECTION_ENGINE_RULES_IMPORT_URL)
++        .set('kbn-xsrf', 'true')
++        .set('elastic-api-version', '2023-10-31')
++        .set('Content-Type', 'multipart/form-data; boundary=boundary')
++        .send('--boundary--')
++        .expect(500);
++
++      expect(body).toMatchObject({
++        status_code: 500,
++      });
++      expect(typeof body.message).toBe('string');
++    });
++
++    it('rejects a non-multipart application/json body with a 500', async () => {
++      const { body } = await supertest
++        .post(DETECTION_ENGINE_RULES_IMPORT_URL)
++        .set('kbn-xsrf', 'true')
++        .set('elastic-api-version', '2023-10-31')
++        .set('Content-Type', 'application/json')
++        .send({
++          rule_id: 'non-multipart-json',
++          name: 'Non multipart',
++          description: 'Not a multipart upload',
++          risk_score: 1,
++          severity: 'low',
++          type: 'query',
++          query: '*',
++        })
++        .expect(500);
++
++      expect(body).toMatchObject({
++        status_code: 500,
++      });
++      expect(typeof body.message).toBe('string');
++    });
++
++    it('still accepts a valid rule after a blank line in the NDJSON stream', async () => {
++      const ndjson = combineToNdJson(
++        getCustomQueryRuleParams({ rule_id: 'after-blank-line', enabled: false })
++      );
++
++      const { body } = await supertest
++        .post(DETECTION_ENGINE_RULES_IMPORT_URL)
++        .set('kbn-xsrf', 'true')
++        .set('elastic-api-version', '2023-10-31')
++        .attach('file', Buffer.from(`\n${ndjson}`), 'rules.ndjson')
++        .expect(200);
++
++      expect(body).toMatchObject({
++        success: true,
++        success_count: 1,
++        rules_count: 1,
++        errors: [],
++      });
++
++      const { body: imported } = await detectionsApi
++        .readRule({ query: { rule_id: 'after-blank-line' } })
++        .expect(200);
++
++      expect(imported.rule_id).toBe('after-blank-line');
++      expect(imported.enabled).toBe(false);
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_with_overwrite.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_with_overwrite.ts
+index 035e09685ee..3d699464751 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_with_overwrite.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_with_overwrite.ts
+@@ -9,11 +9,12 @@ import expect from 'expect';
+ 
+ import { DETECTION_ENGINE_RULES_IMPORT_URL } from '@kbn/security-solution-plugin/common/constants';
+ import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
+-import { combineToNdJson, getCustomQueryRuleParams, fetchRule } from '../../../utils';
++import { combineToNdJson, getCustomQueryRuleParams, fetchRule, importRules } from '../../../utils';
+ import type { FtrProviderContext } from '../../../../../ftr_provider_context';
+ 
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
+   const log = getService('log');
+ 
+   describe('@ess @serverless @skipInServerlessMKI import_rules with rule overwrite set to "true"', () => {
+@@ -187,5 +188,93 @@ export default ({ getService }: FtrProviderContext): void => {
+         })
+       );
+     });
++
++    it('reports partial success when overwriting a batch with one schema-invalid rule', async () => {
++      const first = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-ok-1',
++          name: 'Existing one',
++          enabled: false,
++        })
++      );
++      const second = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-ok-2',
++          name: 'Existing two',
++          enabled: false,
++        })
++      );
++      const failed = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-bad',
++          name: 'Existing bad',
++          enabled: false,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-ok-1',
++            name: 'Updated one',
++            enabled: false,
++          }),
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-ok-2',
++            name: 'Updated two',
++            enabled: false,
++          }),
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'overwrite-partial-bad',
++              name: 'Should not update',
++              enabled: false,
++            }),
++            risk_score: 101,
++          },
++        ],
++        overwrite: true,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: false,
++        success_count: 2,
++        rules_count: 3,
++        errors: [
++          {
++            error: {
++              message: 'risk_score: Too big: expected number to be <=100',
++              status_code: 400,
++            },
++          },
++        ],
++      });
++      // Schema validation failures currently omit rule_id on the error object.
++      expect(importResponse.errors[0].rule_id).toBeUndefined();
++
++      const { body: updatedFirst } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-ok-1' } })
++        .expect(200);
++      const { body: updatedSecond } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-ok-2' } })
++        .expect(200);
++      const { body: unchanged } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-bad' } })
++        .expect(200);
++
++      expect(updatedFirst.id).toBe(first.id);
++      expect(updatedFirst.name).toBe('Updated one');
++      expect(updatedSecond.id).toBe(second.id);
++      expect(updatedSecond.name).toBe('Updated two');
++      expect(unchanged.id).toBe(failed.id);
++      expect(unchanged.name).toBe('Existing bad');
++    });
+   });
+ };
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/index.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/index.ts
+index a379c845dd6..7e1e3c37917 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/index.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/index.ts
+@@ -12,5 +12,6 @@ export default function ({ loadTestFile }: FtrProviderContext) {
+     loadTestFile(require.resolve('./export_rules'));
+     loadTestFile(require.resolve('./import_rules'));
+     loadTestFile(require.resolve('./import_rules_with_overwrite'));
++    loadTestFile(require.resolve('./import_rules_transport_errors'));
+   });
+ }
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/configs/ess.large_payload.config.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/configs/ess.large_payload.config.ts
+new file mode 100644
+index 00000000000..0e3473844b4
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/configs/ess.large_payload.config.ts
+@@ -0,0 +1,35 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import type { FtrConfigProviderContext } from '@kbn/test';
++
++export default async function ({ readConfigFile }: FtrConfigProviderContext) {
++  const functionalConfig = await readConfigFile(
++    require.resolve('../../../configs/ess/rules_management.trial.config')
++  );
++
++  return {
++    ...functionalConfig.getAll(),
++    kbnTestServer: {
++      ...functionalConfig.get('kbnTestServer'),
++      serverArgs: [
++        ...functionalConfig.get('kbnTestServer.serverArgs'),
++        // Headroom over the default 10MB; large compact imports are a few MB.
++        '--xpack.securitySolution.maxRuleImportPayloadBytes=20971520',
++      ],
++    },
++    testFiles: [require.resolve('../import_rules_large_payload')],
++    mochaOpts: {
++      ...functionalConfig.get('mochaOpts'),
++      timeout: 60 * 60 * 1000, // 60 minutes
++    },
++    junit: {
++      reportName:
++        'Rules Management - Rule Import Large Payload Integration Tests - ESS Env - Trial License',
++    },
++  };
++}
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_connectors.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_connectors.ts
+index 3d3156f165b..7cf756342fc 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_connectors.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_connectors.ts
+@@ -8,12 +8,13 @@
+ import expect from 'expect';
+ import { DETECTION_ENGINE_RULES_IMPORT_URL } from '@kbn/security-solution-plugin/common/constants';
+ import { deleteAllRules } from '@kbn/detections-response-ftr-services';
+-import { combineToNdJson, getCustomQueryRuleParams } from '../../../utils';
++import { combineToNdJson, fetchRule, getCustomQueryRuleParams } from '../../../utils';
+ import { createConnector, deleteConnector, getConnector } from '../../../utils/connectors';
+ import type { FtrProviderContext } from '../../../../../ftr_provider_context';
+ 
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
+   const log = getService('log');
+ 
+   describe('@ess @skipInServerlessMKI import action connectors', () => {
+@@ -141,6 +142,10 @@ export default ({ getService }: FtrProviderContext): void => {
+           action_connectors_errors: [],
+           action_connectors_warnings: [],
+         });
++
++        const imported = await fetchRule(supertest, { ruleId: 'rule-1' });
++        expect(imported.name).toBe('Rule 1');
++        expect(imported.actions[0].id).toBe('my-test-email');
+       });
+ 
+       /**
+@@ -265,6 +270,8 @@ export default ({ getService }: FtrProviderContext): void => {
+           action_connectors_errors: [],
+           action_connectors_warnings: [],
+         });
++
++        await detectionsApi.readRule({ query: { rule_id: 'rule-1' } }).expect(404);
+       });
+     });
+ 
+@@ -382,6 +389,8 @@ export default ({ getService }: FtrProviderContext): void => {
+           action_connectors_errors: [],
+           action_connectors_warnings: [],
+         });
++
++        await detectionsApi.readRule({ query: { rule_id: 'rule-1' } }).expect(404);
+       });
+ 
+       it('DOES NOT return an error when rule actions reference a preconfigured connector', async () => {
+@@ -423,6 +432,10 @@ export default ({ getService }: FtrProviderContext): void => {
+           action_connectors_errors: [],
+           action_connectors_warnings: [],
+         });
++
++        const imported = await fetchRule(supertest, { ruleId: 'rule-1' });
++        expect(imported.name).toBe('Rule 1');
++        expect(imported.actions[0].id).toBe('my-test-email');
+       });
+     });
+   });
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules.ts
+index 86136faa1e0..117465a5b5f 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules.ts
+@@ -6,37 +6,17 @@
+  */
+ 
+ import expect from 'expect';
+-import { range } from 'lodash';
+-import { v4 as uuid } from 'uuid';
+-import { getCreateExceptionListMinimalSchemaMock } from '@kbn/lists-plugin/common/schemas/request/create_exception_list_schema.mock';
+ import { DETECTION_ENGINE_RULES_IMPORT_URL } from '@kbn/security-solution-plugin/common/constants';
+-import {
+-  getImportExceptionsListItemSchemaMock,
+-  getImportExceptionsListSchemaMock,
+-  getImportExceptionsListItemNewerVersionSchemaMock,
+-} from '@kbn/lists-plugin/common/schemas/request/import_exceptions_schema.mock';
+-import type {
+-  ReadExceptionListItemRequestQueryInput,
+-  ReadExceptionListRequestQueryInput,
+-} from '@kbn/securitysolution-exceptions-common/api';
+-import { createRule } from '@kbn/detections-response-ftr-services';
+-import { deleteAllRules } from '@kbn/detections-response-ftr-services';
+-import type TestAgent from 'supertest/lib/agent';
+-import { createSupertestErrorLogger } from '../../../../edr_workflows/utils';
++import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
+ import { PRECONFIGURED_EMAIL_ACTION_CONNECTOR_ID } from '../../../../../config/shared';
+ import {
+-  combineArrayToNdJson,
+   fetchRule,
+   getCustomQueryRuleParams,
+   getThresholdRuleForAlertTesting,
+   importRules,
+   importRulesWithSuccess,
+ } from '../../../utils';
+-import { deleteAllExceptions } from '../../../../lists_and_exception_lists/utils';
+ import type { FtrProviderContext } from '../../../../../ftr_provider_context';
+-import { getWebHookConnectorParams } from '../../../utils/connectors/get_web_hook_connector_params';
+-import { createConnector } from '../../../utils/connectors';
+-import { ROLE } from '../../../../../config/services/security_solution_edr_workflows_roles_users';
+ 
+ const RULE_TO_IMPORT_RULE_ID = 'imported-rule';
+ const RULE_TO_IMPORT_RULE_ID_2 = 'another-imported-rule';
+@@ -44,11 +24,8 @@ const RULE_TO_IMPORT_RULE_ID_2 = 'another-imported-rule';
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
+   const detectionsApi = getService('detectionsApi');
+-  const exceptionsApi = getService('exceptionsApi');
+   const log = getService('log');
+   const spacesServices = getService('spaces');
+-  const utils = getService('securitySolutionUtils');
+-  const rolesUsersProvider = getService('rolesUsersProvider');
+ 
+   describe('@ess @serverless @skipInServerlessMKI import custom rules', () => {
+     const spaceId = '4567-space';
+@@ -64,8 +41,40 @@ export default ({ getService }: FtrProviderContext): void => {
+     beforeEach(async () => {
+       await deleteAllRules(supertest, log);
+       await deleteAllRules(supertest, log, spaceId);
+-      await deleteAllExceptions(supertest, log);
+-      await deleteAllExceptions(supertest, log, spaceId);
++    });
++
++    it('returns the full import response shape on success', async () => {
++      const ruleId = 'import-response-shape-rule';
++      const importResponse = await importRules({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: 'Response shape',
++            enabled: false,
++          }),
++        ],
++        overwrite: false,
++      });
++
++      expect(importResponse).toEqual({
++        success: true,
++        success_count: 1,
++        rules_count: 1,
++        errors: [],
++        exceptions_success: true,
++        exceptions_success_count: 0,
++        exceptions_errors: [],
++        action_connectors_success: true,
++        action_connectors_success_count: 0,
++        action_connectors_errors: [],
++        action_connectors_warnings: [],
++      });
++
++      const { body: imported } = await detectionsApi
++        .readRule({ query: { rule_id: ruleId } })
++        .expect(200);
++      expect(imported.name).toBe('Response shape');
+     });
+ 
+     describe('validation', () => {
+@@ -289,1240 +298,64 @@ export default ({ getService }: FtrProviderContext): void => {
+           expect(importedRule2).toMatchObject(IMPORT_PAYLOAD[1]);
+         });
+       });
++    };
+ 
+-      describe('rules with action connectors', () => {
+-        it('import a rule with an action connector', async () => {
+-          const webHookConnectorParams = getWebHookConnectorParams();
+-          const connectorId = await createConnector(
+-            supertest,
+-            webHookConnectorParams,
+-            undefined,
+-            kibanaSpaceId
+-          );
+-          const ACTION = {
+-            group: 'default',
+-            id: connectorId,
+-            action_type_id: webHookConnectorParams.connector_type_id,
+-            params: {},
+-          };
+-          const IMPORT_PAYLOAD = [
+-            getCustomQueryRuleParams({
+-              rule_id: RULE_TO_IMPORT_RULE_ID,
+-              actions: [ACTION],
+-            }),
+-          ];
+-
+-          await importRulesWithSuccess({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          const { body: importedRule } = await detectionsApi.readRule(
+-            {
+-              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
+-            },
+-            kibanaSpaceId
+-          );
+-
+-          expect(importedRule.actions[0]).toMatchObject(ACTION);
+-        });
+-
+-        it('imports multiple rules with action connectors in bulk', async () => {
+-          const WEBHOOK_CONNECTOR_ID = uuid();
+-          const WEBHOOK_CONNECTOR = {
+-            id: WEBHOOK_CONNECTOR_ID,
+-            type: 'action',
+-            updated_at: '2023-01-25T14:35:52.852Z',
+-            created_at: '2023-01-25T14:35:52.852Z',
+-            version: 'WzUxNTksMV0=',
+-            attributes: {
+-              actionTypeId: '.webhook',
+-              name: 'webhook',
+-              isMissingSecrets: false,
+-              config: {},
+-              secrets: {},
+-            },
+-            references: [],
+-            migrationVersion: { action: '8.3.0' },
+-            coreMigrationVersion: '8.7.0',
+-          };
+-          const INDEX_CONNECTOR_ID = uuid();
+-          const INDEX_CONNECTOR = {
+-            id: INDEX_CONNECTOR_ID,
+-            type: 'action',
+-            updated_at: '2023-01-25T14:35:52.852Z',
+-            created_at: '2023-01-25T14:35:52.852Z',
+-            version: 'WzUxNTksMV0=',
+-            attributes: {
+-              actionTypeId: '.index',
+-              name: 'index',
+-              isMissingSecrets: false,
+-              config: {},
+-              secrets: {},
+-            },
+-            references: [],
+-            migrationVersion: { action: '8.3.0' },
+-            coreMigrationVersion: '8.7.0',
+-          };
+-          const CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            actions: [
+-              {
+-                group: 'default',
+-                id: WEBHOOK_CONNECTOR_ID,
+-                action_type_id: '.webhook',
+-                params: {},
+-              },
+-            ],
+-          });
+-          const CUSTOM_QUERY_RULE_WITH_INDEX_CONNECTOR = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID_2,
+-            actions: [
+-              {
+-                group: 'default',
+-                id: INDEX_CONNECTOR_ID,
+-                action_type_id: '.index',
+-                params: {},
+-              },
+-            ],
+-          });
+-
+-          const IMPORT_PAYLOAD = [
+-            CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR,
+-            CUSTOM_QUERY_RULE_WITH_INDEX_CONNECTOR,
+-            WEBHOOK_CONNECTOR,
+-            INDEX_CONNECTOR,
+-          ];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            success_count: 2,
+-            rules_count: 2,
+-            errors: [],
+-            action_connectors_success: true,
+-            action_connectors_success_count: 2,
+-            action_connectors_errors: [],
+-            action_connectors_warnings: [],
+-          });
+-        });
+-      });
+-
+-      const assertExceptionList = async ({
+-        query,
+-        expected,
+-      }: {
+-        query: ReadExceptionListRequestQueryInput;
+-        expected: Record<string, unknown>;
+-      }) => {
+-        const { body: exceptionList } = await exceptionsApi
+-          .readExceptionList(
+-            {
+-              query,
+-            },
+-            kibanaSpaceId
+-          )
+-          .expect(200);
+-
+-        expect(exceptionList).toMatchObject(expected);
+-      };
+-      const assertExceptionListItems = async ({
+-        query,
+-        expected,
+-      }: {
+-        query: ReadExceptionListItemRequestQueryInput;
+-        expected: Record<string, unknown>;
+-      }) => {
+-        const { body: exceptionListItem } = await exceptionsApi
+-          .readExceptionListItem(
+-            {
+-              query,
+-            },
+-            kibanaSpaceId
+-          )
+-          .expect(200);
+-
+-        expect(exceptionListItem).toMatchObject(expected);
+-      };
+-
+-      describe('rules with exceptions', () => {
+-        it('imports a rule with a single space exception', async () => {
+-          const CUSTOM_QUERY_RULE_WITH_EXCEPTION = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            exceptions_list: [
+-              {
+-                id: 'single',
+-                list_id: 'test_list_id',
+-                type: 'rule_default',
+-                namespace_type: 'single',
+-              },
+-            ],
+-          });
+-          const EXCEPTION_LIST = {
+-            ...getImportExceptionsListSchemaMock('test_list_id'),
+-            type: 'rule_default',
+-          };
+-          const EXCEPTION_LIST_ITEM = getImportExceptionsListItemNewerVersionSchemaMock(
+-            'test_item_id',
+-            'test_list_id'
+-          );
+-          const IMPORT_PAYLOAD = [
+-            CUSTOM_QUERY_RULE_WITH_EXCEPTION,
+-            EXCEPTION_LIST,
+-            EXCEPTION_LIST_ITEM,
+-          ];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            success_count: 1,
+-            rules_count: 1,
+-            errors: [],
+-            exceptions_errors: [],
+-            exceptions_success: true,
+-            exceptions_success_count: 1,
+-          });
+-
+-          const { body: importedRule } = await detectionsApi.readRule(
+-            {
+-              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
+-            },
+-            kibanaSpaceId
+-          );
+-
+-          expect(importedRule.exceptions_list).toEqual([
+-            {
+-              ...CUSTOM_QUERY_RULE_WITH_EXCEPTION.exceptions_list?.[0],
+-              id: expect.any(String),
+-            },
+-          ]);
+-
+-          await assertExceptionList({
+-            query: {
+-              id: importedRule.exceptions_list[0].id,
+-            },
+-            expected: EXCEPTION_LIST,
+-          });
+-          await assertExceptionListItems({
+-            query: {
+-              item_id: 'test_item_id',
+-              namespace_type: 'single',
+-            },
+-            expected: EXCEPTION_LIST_ITEM,
+-          });
+-        });
+-
+-        it('imports a rule with space agnostic exception', async () => {
+-          const CUSTOM_QUERY_RULE_WITH_EXCEPTION = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            exceptions_list: [
+-              {
+-                id: 'agnostic',
+-                list_id: 'test_list_agnostic_id',
+-                type: 'detection',
+-                namespace_type: 'agnostic',
+-              },
+-            ],
+-          });
+-          const SPACE_AGNOSTIC_EXCEPTION_LIST = {
+-            ...getImportExceptionsListSchemaMock('test_list_agnostic_id'),
+-            type: 'detection',
+-            namespace_type: 'agnostic',
+-          };
+-          const SPACE_AGNOSTIC_EXCEPTION_LIST_ITEM = {
+-            ...getImportExceptionsListItemNewerVersionSchemaMock(
+-              'test_item_id',
+-              'test_list_agnostic_id'
+-            ),
+-            namespace_type: 'agnostic',
+-          };
+-          const IMPORT_PAYLOAD = [
+-            CUSTOM_QUERY_RULE_WITH_EXCEPTION,
+-            SPACE_AGNOSTIC_EXCEPTION_LIST,
+-            SPACE_AGNOSTIC_EXCEPTION_LIST_ITEM,
+-          ];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            success_count: 1,
+-            rules_count: 1,
+-            errors: [],
+-            exceptions_errors: [],
+-            exceptions_success: true,
+-            exceptions_success_count: 1,
+-          });
+-
+-          const { body: importedRule } = await detectionsApi.readRule(
+-            {
+-              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
+-            },
+-            kibanaSpaceId
+-          );
+-
+-          expect(importedRule.exceptions_list).toEqual([
+-            {
+-              ...CUSTOM_QUERY_RULE_WITH_EXCEPTION.exceptions_list?.[0],
+-              id: expect.any(String),
+-            },
+-          ]);
+-
+-          await assertExceptionList({
+-            query: {
+-              id: importedRule.exceptions_list[0].id,
+-              namespace_type: 'agnostic',
+-            },
+-            expected: SPACE_AGNOSTIC_EXCEPTION_LIST,
+-          });
+-          await assertExceptionListItems({
+-            query: {
+-              item_id: 'test_item_id',
+-              namespace_type: 'agnostic',
+-            },
+-            expected: SPACE_AGNOSTIC_EXCEPTION_LIST_ITEM,
+-          });
+-        });
+-
+-        it('imports a rule with exception having comments', async () => {
+-          const CUSTOM_QUERY_RULE_WITH_EXCEPTION = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            exceptions_list: [
+-              {
+-                id: 'abc',
+-                list_id: 'i_exist',
+-                type: 'detection',
+-                namespace_type: 'single',
+-              },
+-            ],
+-          });
+-          const EXCEPTION_LIST = {
+-            ...getImportExceptionsListSchemaMock('i_exist'),
+-            id: 'abc',
+-            type: 'detection',
+-            namespace_type: 'single',
+-          };
+-          const EXCEPTION_LIST_ITEM = {
+-            comments: [
+-              {
+-                comment: 'This is an exception to the rule',
+-                created_at: '2022-02-04T02:27:40.938Z',
+-                created_by: 'elastic',
+-                id: '845fc456-91ff-4530-bcc1-5b7ebd2f75b5',
+-              },
+-              {
+-                comment: 'I decided to add a new comment',
+-              },
+-            ],
+-            description: 'some description',
+-            entries: [
+-              {
+-                entries: [
+-                  {
+-                    field: 'nested.field',
+-                    operator: 'included',
+-                    type: 'match',
+-                    value: 'some value',
+-                  },
+-                ],
+-                field: 'some.parentField',
+-                type: 'nested',
+-              },
+-              {
+-                field: 'some.not.nested.field',
+-                operator: 'included',
+-                type: 'match',
+-                value: 'some value',
+-              },
+-            ],
+-            item_id: 'item_id_1',
+-            list_id: 'i_exist',
+-            name: 'Query with a rule id',
+-            type: 'simple',
+-          };
+-
+-          const IMPORT_PAYLOAD = [
+-            CUSTOM_QUERY_RULE_WITH_EXCEPTION,
+-            EXCEPTION_LIST,
+-            EXCEPTION_LIST_ITEM,
+-          ];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            success_count: 1,
+-            rules_count: 1,
+-            errors: [],
+-            exceptions_errors: [],
+-            exceptions_success: true,
+-            exceptions_success_count: 1,
+-          });
++    describe('importing in default space', () => {
++      testImportingInSpace();
++    });
+ 
+-          const { body: importedRule } = await detectionsApi.readRule(
+-            {
+-              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
+-            },
+-            kibanaSpaceId
+-          );
++    describe('importing in non-default space', () => {
++      testImportingInSpace(spaceId);
+ 
+-          expect(importedRule.exceptions_list).toEqual([
+-            {
+-              ...CUSTOM_QUERY_RULE_WITH_EXCEPTION.exceptions_list?.[0],
+-              id: expect.any(String),
+-            },
+-          ]);
++      it('creates and overwrites a rule without affecting the default space', async () => {
++        const ruleId = 'space-isolated-rule';
+ 
+-          await assertExceptionList({
+-            query: {
+-              id: importedRule.exceptions_list[0].id,
+-            },
+-            expected: {
+-              ...EXCEPTION_LIST,
+-              id: importedRule.exceptions_list[0].id,
+-            },
+-          });
+-          await assertExceptionListItems({
+-            query: {
+-              item_id: 'item_id_1',
+-            },
+-            expected: {
+-              ...EXCEPTION_LIST_ITEM,
+-              comments: [
+-                {
+-                  ...EXCEPTION_LIST_ITEM.comments[0],
+-                  id: expect.any(String),
+-                  created_by: expect.any(String),
+-                  created_at: expect.any(String),
+-                },
+-                EXCEPTION_LIST_ITEM.comments[1],
+-              ],
+-            },
+-          });
+-        });
++        await createRule(
++          supertest,
++          log,
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: 'Default space rule',
++            enabled: false,
++          })
++        );
+ 
+-        it('imports 100 rules with exceptions in bulk', async () => {
+-          const RULES_TO_IMPORT = range(150).map((i) =>
++        await importRulesWithSuccess({
++          getService,
++          rules: [
+             getCustomQueryRuleParams({
+-              rule_id: `imported-rule-${i}`,
+-              exceptions_list: [
+-                {
+-                  id: `${i}`,
+-                  list_id: `exception-${i}`,
+-                  type: 'detection',
+-                  namespace_type: 'single',
+-                },
+-              ],
+-            })
+-          );
+-          const EXCEPTION_LISTS = range(150).map((i) => ({
+-            ...getImportExceptionsListSchemaMock(`exception-${i}`),
+-            id: `${i}`,
+-            type: 'detection',
+-            namespace_type: 'single',
+-          }));
+-          const EXCEPTION_LISTS_ITEMS = range(150).map((i) => ({
+-            description: 'some description',
+-            entries: [
+-              {
+-                field: 'some.not.nested.field',
+-                operator: 'included',
+-                type: 'match',
+-                value: 'some value',
+-              },
+-            ],
+-            item_id: `item_id_${i}`,
+-            list_id: `exception-${i}`,
+-            name: 'Query with a rule id',
+-            type: 'simple',
+-          }));
+-          const IMPORT_PAYLOAD = [...RULES_TO_IMPORT, ...EXCEPTION_LISTS, ...EXCEPTION_LISTS_ITEMS];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            success_count: 150,
+-            rules_count: 150,
+-            errors: [],
+-            exceptions_errors: [],
+-            exceptions_success: true,
+-            exceptions_success_count: 150,
+-          });
++              rule_id: ruleId,
++              name: 'Space create',
++              enabled: false,
++            }),
++          ],
++          overwrite: false,
++          spaceId,
+         });
+ 
+-        it('removes non-existent exception list from the imported rule', async () => {
+-          const { body: exceptionBody } = await exceptionsApi
+-            .createExceptionList(
+-              {
+-                body: {
+-                  ...getCreateExceptionListMinimalSchemaMock(),
+-                  list_id: 'i_exist',
+-                  namespace_type: 'single',
+-                  type: 'detection',
+-                },
+-              },
+-              kibanaSpaceId
+-            )
+-            .expect(200);
+-
+-          const IMPORT_PAYLOAD = [
++        await importRulesWithSuccess({
++          getService,
++          rules: [
+             getCustomQueryRuleParams({
+-              rule_id: RULE_TO_IMPORT_RULE_ID,
+-              exceptions_list: [
+-                {
+-                  id: exceptionBody.id,
+-                  list_id: 'i_exist',
+-                  type: 'detection',
+-                  namespace_type: 'single',
+-                },
+-                {
+-                  id: 'i_dont_exist',
+-                  list_id: '123',
+-                  type: 'detection',
+-                  namespace_type: 'single',
+-                },
+-              ],
++              rule_id: ruleId,
++              name: 'Space overwrite',
++              enabled: false,
+             }),
+-          ];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
++          ],
++          overwrite: true,
++          spaceId,
++        });
+ 
+-          expect(importResponse).toMatchObject({
+-            success: false,
+-            success_count: 1,
+-            rules_count: 1,
+-            errors: [
+-              {
+-                rule_id: RULE_TO_IMPORT_RULE_ID,
+-                error: {
+-                  message: `Rule with rule_id: "${RULE_TO_IMPORT_RULE_ID}" references a non existent exception list of list_id: "123". Reference has been removed.`,
+-                  status_code: 400,
+-                },
+-              },
+-            ],
+-            exceptions_errors: [],
+-            exceptions_success: true,
+-            exceptions_success_count: 0,
+-          });
++        const { body: defaultRule } = await detectionsApi
++          .readRule({ query: { rule_id: ruleId } })
++          .expect(200);
++        expect(defaultRule.name).toBe('Default space rule');
+ 
+-          const { body: importedRule } = await detectionsApi.readRule(
+-            {
+-              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
+-            },
+-            kibanaSpaceId
+-          );
+-
+-          expect(importedRule).toMatchObject({
+-            exceptions_list: [
+-              {
+-                id: exceptionBody.id,
+-                list_id: 'i_exist',
+-                namespace_type: 'single',
+-                type: 'detection',
+-              },
+-            ],
+-          });
+-        });
+-      });
+-
+-      describe('exceptions not related to rules', () => {
+-        it('imports an exception list with list items', async () => {
+-          // Custom rules import endpoint expects as minimum one rule in the import payload.
+-          // Though provided rule doesn't have to reference the exception list.
+-          const CUSTOM_QUERY_RULE = getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID });
+-          const EXCEPTION_LIST = getImportExceptionsListSchemaMock('test_list_id');
+-          const EXCEPTION_LIST_ITEM = getImportExceptionsListItemNewerVersionSchemaMock(
+-            'test_item_id',
+-            'test_list_id'
+-          );
+-          const IMPORT_PAYLOAD = [CUSTOM_QUERY_RULE, EXCEPTION_LIST, EXCEPTION_LIST_ITEM];
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            exceptions_success: true,
+-            exceptions_success_count: 1,
+-          });
+-
+-          await assertExceptionList({
+-            query: {
+-              list_id: 'test_list_id',
+-            },
+-            expected: EXCEPTION_LIST,
+-          });
+-          await assertExceptionListItems({
+-            query: {
+-              item_id: 'test_item_id',
+-            },
+-            expected: EXCEPTION_LIST_ITEM,
+-          });
+-        });
+-
+-        /*
+-          Following the release of version 8.7, this test can be considered as an evaluation of exporting
+-          an outdated List Item. A notable distinction lies in the absence of the "expire_time" property
+-          within the getImportExceptionsListItemSchemaMock, which allows for differentiation between older
+-          and newer versions. The rationale behind this approach is the lack of version tracking for both List and Rule,
+-          thereby enabling simulation of migration scenarios.
+-        */
+-        it('imports an outdated exception list with list items', async () => {
+-          // Custom rules import endpoint expects as minimum one rule in the import payload.
+-          // Though provided rule doesn't have to reference the exception list.
+-          const CUSTOM_QUERY_RULE = getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID });
+-          const EXCEPTION_LIST = getImportExceptionsListSchemaMock('test_list_id');
+-          const EXCEPTION_LIST_ITEM = getImportExceptionsListItemSchemaMock(
+-            'test_item_id',
+-            'test_list_id'
+-          );
+-          const IMPORT_PAYLOAD = [CUSTOM_QUERY_RULE, EXCEPTION_LIST, EXCEPTION_LIST_ITEM];
+-
+-          // import old exception version
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId: kibanaSpaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            exceptions_success: true,
+-            exceptions_success_count: 1,
+-          });
+-
+-          await assertExceptionList({
+-            query: {
+-              list_id: 'test_list_id',
+-            },
+-            expected: EXCEPTION_LIST,
+-          });
+-          await assertExceptionListItems({
+-            query: {
+-              item_id: 'test_item_id',
+-            },
+-            expected: EXCEPTION_LIST_ITEM,
+-          });
+-        });
+-      });
+-    };
+-
+-    describe('importing in default space', () => {
+-      testImportingInSpace();
+-    });
+-
+-    describe('importing in non-default space', () => {
+-      testImportingInSpace(spaceId);
+-
+-      describe('rules with action connectors (edge cases)', () => {
+-        it('overwrites a rule with connector after importing to the default space', async () => {
+-          const CONNECTOR_ID = uuid();
+-          const SLACK_CONNECTOR = {
+-            id: CONNECTOR_ID,
+-            type: 'action',
+-            updated_at: '2023-01-25T14:35:52.852Z',
+-            created_at: '2023-01-25T14:35:52.852Z',
+-            version: 'WzUxNTksMV0=',
+-            attributes: {
+-              actionTypeId: '.slack',
+-              name: 'slack',
+-              isMissingSecrets: false,
+-              config: {},
+-              secrets: {},
+-            },
+-            references: [],
+-            migrationVersion: { action: '8.3.0' },
+-            coreMigrationVersion: '8.7.0',
+-          };
+-          const RULE_WITH_ACTION = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            actions: [
+-              {
+-                group: 'default',
+-                id: CONNECTOR_ID,
+-                params: {
+-                  message: 'Rule {{context.rule.name}} generated {{state.signals_count}} alerts',
+-                },
+-                action_type_id: '.slack',
+-              },
+-            ],
+-          });
+-          const IMPORT_PAYLOAD = [RULE_WITH_ACTION, SLACK_CONNECTOR];
+-
+-          await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-          });
+-
+-          await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId,
+-          });
+-
+-          const overwriteImportResponseBody = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: true,
+-            spaceId,
+-          });
+-
+-          expect(overwriteImportResponseBody).toMatchObject({
+-            success: true,
+-            success_count: 1,
+-            rules_count: 1,
+-            errors: [],
+-            action_connectors_success: true,
+-            action_connectors_success_count: 1,
+-            action_connectors_warnings: [],
+-            action_connectors_errors: [],
+-          });
+-        });
+-
+-        it('imports a rule with connector when connector includes an originId', async () => {
+-          const CONNECTOR_ID = uuid();
+-          const SLACK_CONNECTOR = {
+-            id: CONNECTOR_ID,
+-            originId: 'some-origin-id',
+-            type: 'action',
+-            updated_at: '2023-01-25T14:35:52.852Z',
+-            created_at: '2023-01-25T14:35:52.852Z',
+-            version: 'WzUxNTksMV0=',
+-            attributes: {
+-              actionTypeId: '.slack',
+-              name: 'slack',
+-              isMissingSecrets: false,
+-              config: {},
+-              secrets: {},
+-            },
+-            references: [],
+-            migrationVersion: { action: '8.3.0' },
+-            coreMigrationVersion: '8.7.0',
+-          };
+-          const RULE_WITH_ACTION = getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            actions: [
+-              {
+-                group: 'default',
+-                id: CONNECTOR_ID,
+-                params: {
+-                  message: 'Rule {{context.rule.name}} generated {{state.signals_count}} alerts',
+-                },
+-                action_type_id: '.slack',
+-              },
+-            ],
+-          });
+-          const IMPORT_PAYLOAD = [RULE_WITH_ACTION, SLACK_CONNECTOR];
+-
+-          await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-          });
+-
+-          const importResponse = await importRules({
+-            getService,
+-            rules: IMPORT_PAYLOAD,
+-            overwrite: false,
+-            spaceId,
+-          });
+-
+-          expect(importResponse).toMatchObject({
+-            success: true,
+-            success_count: 1,
+-            rules_count: 1,
+-            errors: [],
+-            action_connectors_success: true,
+-            action_connectors_success_count: 1,
+-            action_connectors_warnings: [],
+-            action_connectors_errors: [],
+-          });
+-        });
+-      });
+-    });
+-
+-    describe('error handling', () => {
+-      it('reports a conflict if there is an attempt to import two rules with the same rule_id', async () => {
+-        const IMPORT_PAYLOAD = [
+-          getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID }),
+-          getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID }),
+-        ];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          errors: [
+-            {
+-              error: {
+-                message: `More than one rule with rule-id: "${RULE_TO_IMPORT_RULE_ID}" found`,
+-                status_code: 400,
+-              },
+-              rule_id: RULE_TO_IMPORT_RULE_ID,
+-            },
+-          ],
+-          success: false,
+-          success_count: 1,
+-          rules_count: 2,
+-        });
+-      });
+-
+-      it('reports a conflict if there is an attempt to import a rule with a rule_id that already exists', async () => {
+-        const existingRule = getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID });
+-
+-        await createRule(supertest, log, existingRule);
+-
+-        const IMPORT_PAYLOAD = [existingRule];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          errors: [
+-            {
+-              error: {
+-                message: 'Rule with this rule_id already exists',
+-                status_code: 409,
+-              },
+-              rule_id: RULE_TO_IMPORT_RULE_ID,
+-            },
+-          ],
+-          success: false,
+-          success_count: 0,
+-          rules_count: 1,
+-        });
+-      });
+-
+-      it('reports a conflict if there is an attempt to import a rule with a rule_id that already exists, but still have some successes with other rules', async () => {
+-        await createRule(
+-          supertest,
+-          log,
+-          getCustomQueryRuleParams({
+-            rule_id: 'existing-rule',
+-          })
+-        );
+-
+-        const IMPORT_PAYLOAD = [
+-          getCustomQueryRuleParams({
+-            rule_id: 'existing-rule',
+-          }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'non-existing-rule-1',
+-          }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'non-existing-rule-2',
+-          }),
+-        ];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          errors: [
+-            {
+-              error: {
+-                message: 'Rule with this rule_id already exists',
+-                status_code: 409,
+-              },
+-              rule_id: 'existing-rule',
+-            },
+-          ],
+-          success: false,
+-          success_count: 2,
+-          rules_count: 3,
+-        });
+-      });
+-
+-      it('reports a mix of conflicts and a mix of successes', async () => {
+-        await createRule(
+-          supertest,
+-          log,
+-          getCustomQueryRuleParams({
+-            rule_id: 'existing-rule-1',
+-          })
+-        );
+-        await createRule(
+-          supertest,
+-          log,
+-          getCustomQueryRuleParams({
+-            rule_id: 'existing-rule-2',
+-          })
+-        );
+-
+-        const IMPORT_PAYLOAD = [
+-          getCustomQueryRuleParams({
+-            rule_id: 'existing-rule-1',
+-          }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'existing-rule-2',
+-          }),
+-          getCustomQueryRuleParams({
+-            rule_id: 'non-existing-rule',
+-          }),
+-        ];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          errors: [
+-            {
+-              error: {
+-                message: 'Rule with this rule_id already exists',
+-                status_code: 409,
+-              },
+-              rule_id: 'existing-rule-1',
+-            },
+-            {
+-              error: {
+-                message: 'Rule with this rule_id already exists',
+-                status_code: 409,
+-              },
+-              rule_id: 'existing-rule-2',
+-            },
+-          ],
+-          success: false,
+-          success_count: 1,
+-          rules_count: 3,
+-        });
+-      });
+-
+-      it('reads back a mixed import of different rules even if some cause conflicts', async () => {
+-        const existingRule1 = getCustomQueryRuleParams({
+-          rule_id: 'existing-rule-1',
+-        });
+-        const existingRule2 = getCustomQueryRuleParams({
+-          rule_id: 'existing-rule-2',
+-        });
+-        const ruleToImportSuccessfully = getCustomQueryRuleParams({
+-          rule_id: 'non-existing-rule',
+-        });
+-
+-        await createRule(supertest, log, existingRule1);
+-        await createRule(supertest, log, existingRule2);
+-
+-        const IMPORT_PAYLOAD = [existingRule1, existingRule2, ruleToImportSuccessfully];
+-
+-        await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        const rule1 = await fetchRule(supertest, { ruleId: 'existing-rule-1' });
+-        const rule2 = await fetchRule(supertest, { ruleId: 'existing-rule-2' });
+-        const rule3 = await fetchRule(supertest, { ruleId: 'non-existing-rule' });
+-
+-        expect(rule1).toMatchObject(existingRule1);
+-        expect(rule2).toMatchObject(existingRule2);
+-        expect(rule3).toMatchObject(ruleToImportSuccessfully);
+-      });
+-
+-      it('reports a missing connector', async () => {
+-        const IMPORT_PAYLOAD = [
+-          getCustomQueryRuleParams({
+-            rule_id: RULE_TO_IMPORT_RULE_ID,
+-            actions: [
+-              {
+-                group: 'default',
+-                id: '123',
+-                action_type_id: '456',
+-                params: {},
+-              },
+-            ],
+-          }),
+-        ];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          success: false,
+-          success_count: 0,
+-          rules_count: 1,
+-          errors: [
+-            {
+-              rule_id: RULE_TO_IMPORT_RULE_ID,
+-              error: {
+-                status_code: 404,
+-                message: 'Rule actions reference the following missing action IDs: 123',
+-              },
+-            },
+-          ],
+-          action_connectors_success: true,
+-          action_connectors_success_count: 0,
+-          action_connectors_warnings: [],
+-          action_connectors_errors: [],
+-        });
+-      });
+-
+-      it('warns about a missing connector secret', async () => {
+-        const WEBHOOK_CONNECTOR_ID = uuid();
+-        const WEBHOOK_CONNECTOR = {
+-          id: WEBHOOK_CONNECTOR_ID,
+-          type: 'action',
+-          updated_at: '2023-01-25T14:35:52.852Z',
+-          created_at: '2023-01-25T14:35:52.852Z',
+-          version: 'WzUxNTksMV0=',
+-          attributes: {
+-            actionTypeId: '.webhook',
+-            name: 'webhook',
+-            isMissingSecrets: true,
+-            config: {},
+-            secrets: {},
+-          },
+-          references: [],
+-          migrationVersion: { action: '8.3.0' },
+-          coreMigrationVersion: '8.7.0',
+-        };
+-        const CUSTOM_QUERY_RULE = getCustomQueryRuleParams({
+-          rule_id: RULE_TO_IMPORT_RULE_ID,
+-          actions: [
+-            {
+-              group: 'default',
+-              id: WEBHOOK_CONNECTOR_ID,
+-              action_type_id: '.webhook',
+-              params: {},
+-            },
+-          ],
+-        });
+-
+-        const IMPORT_PAYLOAD = [CUSTOM_QUERY_RULE, WEBHOOK_CONNECTOR];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          success: true,
+-          success_count: 1,
+-          rules_count: 1,
+-          errors: [],
+-          action_connectors_success: true,
+-          action_connectors_success_count: 1,
+-          action_connectors_warnings: [
+-            {
+-              actionPath: '/app/management/insightsAndAlerting/triggersActionsConnectors',
+-              buttonLabel: 'Go to connectors',
+-              message: '1 connector has sensitive information that require updates.',
+-              type: 'action_required',
+-            },
+-          ],
+-          action_connectors_errors: [],
+-        });
+-      });
+-
+-      it('imports a mix of rules with actions and connectors while some connectors are missing', async () => {
+-        const WEBHOOK_CONNECTOR_ID = uuid();
+-        const WEBHOOK_CONNECTOR = {
+-          id: WEBHOOK_CONNECTOR_ID,
+-          type: 'action',
+-          updated_at: '2023-01-25T14:35:52.852Z',
+-          created_at: '2023-01-25T14:35:52.852Z',
+-          version: 'WzUxNTksMV0=',
+-          attributes: {
+-            actionTypeId: '.webhook',
+-            name: 'webhook',
+-            isMissingSecrets: false,
+-            config: {},
+-            secrets: {},
+-          },
+-          references: [],
+-          migrationVersion: { action: '8.3.0' },
+-          coreMigrationVersion: '8.7.0',
+-        };
+-        const CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR = getCustomQueryRuleParams({
+-          rule_id: RULE_TO_IMPORT_RULE_ID,
+-          actions: [
+-            {
+-              group: 'default',
+-              id: WEBHOOK_CONNECTOR_ID,
+-              action_type_id: '.webhook',
+-              params: {},
+-            },
+-          ],
+-        });
+-        const NON_EXISTING_CONNECTOR = uuid();
+-        const CUSTOM_QUERY_RULE_2 = getCustomQueryRuleParams({
+-          rule_id: RULE_TO_IMPORT_RULE_ID_2,
+-          actions: [
+-            {
+-              group: 'default',
+-              id: NON_EXISTING_CONNECTOR, // <-- This does not exist
+-              action_type_id: '.index',
+-              params: {},
+-            },
+-          ],
+-        });
+-
+-        const IMPORT_PAYLOAD = [
+-          CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR,
+-          CUSTOM_QUERY_RULE_2,
+-          WEBHOOK_CONNECTOR,
+-        ];
+-
+-        const importResponse = await importRules({
+-          getService,
+-          rules: IMPORT_PAYLOAD,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          success: false,
+-          success_count: 1,
+-          rules_count: 2,
+-          errors: [
+-            {
+-              rule_id: RULE_TO_IMPORT_RULE_ID_2,
+-              error: {
+-                status_code: 404,
+-                message: `Rule actions reference the following missing action IDs: ${NON_EXISTING_CONNECTOR}`,
+-              },
+-            },
+-          ],
+-          action_connectors_success: true,
+-          action_connectors_success_count: 1,
+-          action_connectors_errors: [],
+-          action_connectors_warnings: [],
+-        });
+-      });
+-    });
+-
+-    describe('importing with endpoint response actions', () => {
+-      let superTestResponseActionsNoAuthz: TestAgent;
+-      let rulesToImport: unknown[];
+-
+-      before(async () => {
+-        superTestResponseActionsNoAuthz = await utils.createSuperTestWithCustomRole({
+-          name: ROLE.endpoint_response_actions_no_access,
+-          privileges: rolesUsersProvider.loader.getPreDefinedRole(
+-            ROLE.endpoint_response_actions_no_access
+-          ),
+-        });
+-      });
+-
+-      beforeEach(async () => {
+-        rulesToImport = [
+-          getCustomQueryRuleParams({
+-            rule_id: uuid(),
+-            response_actions: [
+-              {
+-                action_type_id: '.endpoint',
+-                params: {
+-                  command: 'suspend-process',
+-                  config: { field: 'some-field', overwrite: false },
+-                },
+-              },
+-            ],
+-          }),
+-        ];
+-      });
+-
+-      afterEach(async () => {
+-        await deleteAllRules(supertest, log);
+-      });
+-
+-      it('should import rules with response actions when user has authz', async () => {
+-        const importResponse = await importRules({
+-          getService,
+-          rules: rulesToImport,
+-          overwrite: false,
+-        });
+-
+-        expect(importResponse).toMatchObject({
+-          success: true,
+-          success_count: 1,
+-          rules_count: 1,
+-          errors: [],
+-        });
+-      });
+-
+-      it('should NOT import rules with response actions when user does NOT have authz', async () => {
+-        // @ts-expect-error due to array of `unknown` items
+-        const ruleId = rulesToImport[0].rule_id;
+-        const fileBuffer = Buffer.from(combineArrayToNdJson(rulesToImport));
+-
+-        const { body } = await superTestResponseActionsNoAuthz
+-          .post('/api/detection_engine/rules/_import')
+-          .set('kbn-xsrf', 'true')
+-          .set('elastic-api-version', '2023-10-31')
+-          .on('error', createSupertestErrorLogger(log).ignoreCodes([403]))
+-          .attach('file', fileBuffer, { filename: 'rules.ndjson' })
++        const { body: spaceRule } = await detectionsApi
++          .readRule({ query: { rule_id: ruleId } }, spaceId)
+           .expect(200);
+-
+-        expect(body).toMatchObject({
+-          success: false,
+-          success_count: 0,
+-          errors: [
+-            {
+-              error: {
+-                message: 'User is not authorized to create/update suspend-process response action',
+-                status_code: 403,
+-              },
+-              id: '',
+-              rule_id: ruleId,
+-            },
+-          ],
+-        });
++        expect(spaceRule.name).toBe('Space overwrite');
++        expect(spaceRule.id).not.toBe(defaultRule.id);
+       });
+     });
+ 
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts
+new file mode 100644
+index 00000000000..6c2b75b3888
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts
+@@ -0,0 +1,109 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { range } from 'lodash';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { getCustomQueryRuleParams, importRules, importRulesWithSuccess } from '../../../utils';
++
++/**
++ * Sized above current import chunking on main (50) and any bulk rewrite batch
++ * size still under discussion, so create + overwrite both span multiple chunks.
++ */
++const RULE_COUNT = 501;
++const EXISTING_COUNT = 251;
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules at batch boundary', () => {
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    it('imports a mixed create and overwrite batch spanning multiple chunks', async () => {
++      const allIds = range(RULE_COUNT).map((i) => `batch-rule-${i}`);
++      const existingIds = allIds.slice(0, EXISTING_COUNT);
++
++      await importRulesWithSuccess({
++        getService,
++        rules: existingIds.map((ruleId) =>
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: `Existing ${ruleId}`,
++            enabled: false,
++          })
++        ),
++        overwrite: false,
++      });
++
++      const { body: beforeOverwrite } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: RULE_COUNT,
++          },
++        })
++        .expect(200);
++
++      const priorIds = new Map<string, string>(
++        beforeOverwrite.data.map((rule: { rule_id: string; id: string }) => [rule.rule_id, rule.id])
++      );
++
++      const rules = allIds.map((ruleId) =>
++        getCustomQueryRuleParams({
++          rule_id: ruleId,
++          name: `Imported ${ruleId}`,
++          enabled: false,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules,
++        overwrite: true,
++      });
++
++      expect(importResponse).toMatchObject({
++        rules_count: RULE_COUNT,
++        success: true,
++        success_count: RULE_COUNT,
++        errors: [],
++      });
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: RULE_COUNT,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(RULE_COUNT);
++      expect(body.data).toHaveLength(RULE_COUNT);
++
++      const foundIds = body.data.map((rule: { rule_id: string }) => rule.rule_id).sort();
++      expect(foundIds).toEqual([...allIds].sort());
++
++      // Spot-check overwrite targets keep SO id; a pure create gets the imported name.
++      const sampleRuleIds = ['batch-rule-0', 'batch-rule-250', 'batch-rule-500'];
++      for (const ruleId of sampleRuleIds) {
++        const found = body.data.find(
++          (rule: { rule_id: string; id: string; name: string }) => rule.rule_id === ruleId
++        );
++        expect(found?.name).toBe(`Imported ${ruleId}`);
++        if (priorIds.has(ruleId)) {
++          expect(found?.id).toBe(priorIds.get(ruleId));
++        }
++      }
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_by_type.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_by_type.ts
+new file mode 100644
+index 00000000000..589577a059c
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_by_type.ts
+@@ -0,0 +1,134 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import {
++  getCustomQueryRuleParams,
++  getEqlRuleParams,
++  getEsqlRuleParams,
++  getMLRuleParams,
++  getNewTermsRuleParams,
++  getThreatMatchRuleParams,
++  getThresholdRuleParams,
++  importRulesWithSuccess,
++} from '../../../utils';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules by type', () => {
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    const cases = [
++      {
++        type: 'query',
++        rule: getCustomQueryRuleParams({
++          rule_id: 'import-type-query',
++          enabled: false,
++        }),
++        expected: { query: '*:*' },
++      },
++      {
++        type: 'threshold',
++        rule: getThresholdRuleParams({
++          rule_id: 'import-type-threshold',
++          enabled: false,
++        }),
++        expected: {
++          threshold: {
++            field: [],
++            value: 1,
++          },
++        },
++      },
++      {
++        type: 'eql',
++        rule: getEqlRuleParams({
++          rule_id: 'import-type-eql',
++          enabled: false,
++        }),
++        expected: {
++          language: 'eql',
++          query: 'any where true',
++        },
++      },
++      {
++        type: 'threat_match',
++        rule: getThreatMatchRuleParams({
++          rule_id: 'import-type-threat-match',
++          enabled: false,
++        }),
++        expected: {
++          threat_query: '*:*',
++          threat_index: ['logs_ti*'],
++        },
++      },
++      {
++        type: 'new_terms',
++        rule: getNewTermsRuleParams({
++          rule_id: 'import-type-new-terms',
++          enabled: false,
++        }),
++        expected: {
++          new_terms_fields: ['user.name'],
++          history_window_start: 'now-7d',
++        },
++      },
++      {
++        type: 'esql',
++        rule: getEsqlRuleParams({
++          rule_id: 'import-type-esql',
++          enabled: false,
++        }),
++        expected: {
++          language: 'esql',
++          query: 'from logs-* | limit 0',
++        },
++      },
++      {
++        type: 'machine_learning',
++        rule: getMLRuleParams({
++          rule_id: 'import-type-ml',
++          enabled: false,
++        }),
++        expected: {
++          machine_learning_job_id: ['some_job_id'],
++          anomaly_threshold: 44,
++        },
++      },
++    ] as const;
++
++    for (const { type, rule, expected } of cases) {
++      it(`imports a ${type} rule and reads it back`, async () => {
++        await importRulesWithSuccess({
++          getService,
++          rules: [rule],
++          overwrite: false,
++        });
++
++        const { body } = await detectionsApi
++          .readRule({
++            query: { rule_id: rule.rule_id },
++          })
++          .expect(200);
++
++        expect(body).toMatchObject({
++          type,
++          rule_id: rule.rule_id,
++          enabled: false,
++          ...expected,
++        });
++      });
++    }
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_concurrent.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_concurrent.ts
+new file mode 100644
+index 00000000000..4e533c60da5
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_concurrent.ts
+@@ -0,0 +1,193 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { getCustomQueryRuleParams, importRules } from '../../../utils';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess @serverless @skipInServerlessMKI concurrent rule imports', () => {
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    it('imports two overlapping requests with distinct rule_ids', async () => {
++      const [first, second] = await Promise.all([
++        importRules({
++          getService,
++          rules: [
++            getCustomQueryRuleParams({
++              rule_id: 'concurrent-distinct-1',
++              name: 'Concurrent distinct 1',
++              enabled: false,
++            }),
++          ],
++          overwrite: false,
++        }),
++        importRules({
++          getService,
++          rules: [
++            getCustomQueryRuleParams({
++              rule_id: 'concurrent-distinct-2',
++              name: 'Concurrent distinct 2',
++              enabled: false,
++            }),
++          ],
++          overwrite: false,
++        }),
++      ]);
++
++      expect(first).toMatchObject({
++        success: true,
++        success_count: 1,
++        errors: [],
++      });
++      expect(second).toMatchObject({
++        success: true,
++        success_count: 1,
++        errors: [],
++      });
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: 10,
++            filter: 'alert.attributes.params.ruleId: concurrent-distinct-*',
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(2);
++
++      const { body: firstRule } = await detectionsApi
++        .readRule({ query: { rule_id: 'concurrent-distinct-1' } })
++        .expect(200);
++      const { body: secondRule } = await detectionsApi
++        .readRule({ query: { rule_id: 'concurrent-distinct-2' } })
++        .expect(200);
++
++      expect(firstRule.name).toBe('Concurrent distinct 1');
++      expect(secondRule.name).toBe('Concurrent distinct 2');
++    });
++
++    it('handles overlapping imports that share a rule_id without overwrite', async () => {
++      const sharedId = 'concurrent-shared-rule';
++      const rule = getCustomQueryRuleParams({
++        rule_id: sharedId,
++        name: 'Concurrent shared',
++        enabled: false,
++      });
++
++      const [first, second] = await Promise.all([
++        importRules({ getService, rules: [rule], overwrite: false }),
++        importRules({ getService, rules: [rule], overwrite: false }),
++      ]);
++
++      const responses = [first, second];
++      const totalSuccess = responses.reduce((sum, response) => sum + response.success_count, 0);
++
++      // Legacy import has a TOCTOU race on rule_id uniqueness: both requests
++      // may succeed and leave two rules with the same rule_id. Also valid is
++      // one create + one 409 conflict. Never expect a hard 500.
++      expect(totalSuccess).toBeGreaterThanOrEqual(1);
++      expect(totalSuccess).toBeLessThanOrEqual(2);
++
++      for (const response of responses) {
++        expect(response.rules_count).toBe(1);
++        if (response.success_count === 0) {
++          expect(response.errors.length).toBeGreaterThan(0);
++          expect(response.errors[0].rule_id).toBe(sharedId);
++          expect(response.errors[0].error.status_code).toBe(409);
++          expect(response.errors[0].error.message).toBe('Rule with this rule_id already exists');
++        }
++      }
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: 10,
++            filter: `alert.attributes.params.ruleId: "${sharedId}"`,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBeGreaterThanOrEqual(1);
++      expect(body.total).toBeLessThanOrEqual(2);
++      expect(body.data.every((item: { rule_id: string }) => item.rule_id === sharedId)).toBe(true);
++    });
++
++    it('handles overlapping overwrite imports that share a rule_id', async () => {
++      const sharedId = 'concurrent-overwrite-rule';
++      const names = ['Overwrite A', 'Overwrite B'] as const;
++
++      const original = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: sharedId,
++          name: 'Original',
++          enabled: false,
++        })
++      );
++
++      const [first, second] = await Promise.all(
++        names.map((name) =>
++          importRules({
++            getService,
++            rules: [
++              getCustomQueryRuleParams({
++                rule_id: sharedId,
++                name,
++                enabled: false,
++              }),
++            ],
++            overwrite: true,
++          })
++        )
++      );
++
++      // Soft contract: each request stays HTTP 200-shaped (importRules asserts
++      // status), reports one rule, and never fails both. Do not assert which
++      // writer wins or that both succeed — last-write-wins is racy by design.
++      const responses = [first, second];
++      for (const response of responses) {
++        expect(response.rules_count).toBe(1);
++        expect(response.success_count).toBeGreaterThanOrEqual(0);
++        expect(response.success_count).toBeLessThanOrEqual(1);
++        if (response.success_count === 0) {
++          expect(response.errors.length).toBeGreaterThan(0);
++        }
++      }
++
++      const totalSuccess = responses.reduce((sum, response) => sum + response.success_count, 0);
++      expect(totalSuccess).toBeGreaterThanOrEqual(1);
++      expect(totalSuccess).toBeLessThanOrEqual(2);
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: 10,
++            filter: `alert.attributes.params.ruleId: "${sharedId}"`,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(1);
++      expect(body.data[0].rule_id).toBe(sharedId);
++      expect(body.data[0].id).toBe(original.id);
++      expect(names).toContain(body.data[0].name);
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_conflicts.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_conflicts.ts
+new file mode 100644
+index 00000000000..3374aeae98b
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_conflicts.ts
+@@ -0,0 +1,295 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
++import { fetchRule, getCustomQueryRuleParams, importRules } from '../../../utils';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++
++const RULE_TO_IMPORT_RULE_ID = 'imported-rule';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules conflicts', () => {
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    it('reports a conflict if there is an attempt to import two rules with the same rule_id', async () => {
++      const IMPORT_PAYLOAD = [
++        getCustomQueryRuleParams({
++          rule_id: RULE_TO_IMPORT_RULE_ID,
++          name: 'First in file',
++        }),
++        getCustomQueryRuleParams({
++          rule_id: RULE_TO_IMPORT_RULE_ID,
++          name: 'Last in file',
++        }),
++      ];
++
++      const importResponse = await importRules({
++        getService,
++        rules: IMPORT_PAYLOAD,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        errors: [
++          {
++            error: {
++              message: `More than one rule with rule-id: "${RULE_TO_IMPORT_RULE_ID}" found`,
++              status_code: 400,
++            },
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++          },
++        ],
++        success: false,
++        success_count: 1,
++        rules_count: 2,
++      });
++
++      // In-file duplicate still creates exactly one rule; last entry wins.
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: 10,
++            filter: `alert.attributes.params.ruleId: "${RULE_TO_IMPORT_RULE_ID}"`,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(1);
++      expect(body.data[0].name).toBe('Last in file');
++    });
++
++    it('reports a conflict if there is an attempt to import a rule with a rule_id that already exists', async () => {
++      const existingRule = getCustomQueryRuleParams({
++        rule_id: RULE_TO_IMPORT_RULE_ID,
++        name: 'Already exists',
++      });
++
++      await createRule(supertest, log, existingRule);
++
++      const IMPORT_PAYLOAD = [
++        getCustomQueryRuleParams({
++          rule_id: RULE_TO_IMPORT_RULE_ID,
++          name: 'Should not overwrite',
++        }),
++      ];
++
++      const importResponse = await importRules({
++        getService,
++        rules: IMPORT_PAYLOAD,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        errors: [
++          {
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++          },
++        ],
++        success: false,
++        success_count: 0,
++        rules_count: 1,
++      });
++
++      const persisted = await fetchRule(supertest, { ruleId: RULE_TO_IMPORT_RULE_ID });
++      expect(persisted).toMatchObject(existingRule);
++    });
++
++    it('reports a conflict if there is an attempt to import a rule with a rule_id that already exists, but still have some successes with other rules', async () => {
++      const existingRule = getCustomQueryRuleParams({
++        rule_id: 'existing-rule',
++        name: 'Existing conflict',
++      });
++      const createdOne = getCustomQueryRuleParams({
++        rule_id: 'non-existing-rule-1',
++        name: 'Created one',
++      });
++      const createdTwo = getCustomQueryRuleParams({
++        rule_id: 'non-existing-rule-2',
++        name: 'Created two',
++      });
++
++      await createRule(supertest, log, existingRule);
++
++      const IMPORT_PAYLOAD = [
++        getCustomQueryRuleParams({
++          rule_id: 'existing-rule',
++          name: 'Should not overwrite',
++        }),
++        createdOne,
++        createdTwo,
++      ];
++
++      const importResponse = await importRules({
++        getService,
++        rules: IMPORT_PAYLOAD,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        errors: [
++          {
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++            rule_id: 'existing-rule',
++          },
++        ],
++        success: false,
++        success_count: 2,
++        rules_count: 3,
++      });
++
++      expect(await fetchRule(supertest, { ruleId: 'existing-rule' })).toMatchObject(existingRule);
++      expect(await fetchRule(supertest, { ruleId: 'non-existing-rule-1' })).toMatchObject(
++        createdOne
++      );
++      expect(await fetchRule(supertest, { ruleId: 'non-existing-rule-2' })).toMatchObject(
++        createdTwo
++      );
++    });
++
++    it('reports a mix of conflicts and a mix of successes', async () => {
++      const existingRule1 = getCustomQueryRuleParams({
++        rule_id: 'existing-rule-1',
++        name: 'Existing one',
++      });
++      const existingRule2 = getCustomQueryRuleParams({
++        rule_id: 'existing-rule-2',
++        name: 'Existing two',
++      });
++      const created = getCustomQueryRuleParams({
++        rule_id: 'non-existing-rule',
++        name: 'Created by import',
++      });
++
++      await createRule(supertest, log, existingRule1);
++      await createRule(supertest, log, existingRule2);
++
++      const IMPORT_PAYLOAD = [
++        getCustomQueryRuleParams({
++          rule_id: 'existing-rule-1',
++          name: 'Should not overwrite one',
++        }),
++        getCustomQueryRuleParams({
++          rule_id: 'existing-rule-2',
++          name: 'Should not overwrite two',
++        }),
++        created,
++      ];
++
++      const importResponse = await importRules({
++        getService,
++        rules: IMPORT_PAYLOAD,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        errors: [
++          {
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++            rule_id: 'existing-rule-1',
++          },
++          {
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++            rule_id: 'existing-rule-2',
++          },
++        ],
++        success: false,
++        success_count: 1,
++        rules_count: 3,
++      });
++
++      expect(await fetchRule(supertest, { ruleId: 'existing-rule-1' })).toMatchObject(
++        existingRule1
++      );
++      expect(await fetchRule(supertest, { ruleId: 'existing-rule-2' })).toMatchObject(
++        existingRule2
++      );
++      expect(await fetchRule(supertest, { ruleId: 'non-existing-rule' })).toMatchObject(created);
++    });
++
++    it('reads back a mixed import of different rules even if some cause conflicts', async () => {
++      const existingRule1 = getCustomQueryRuleParams({
++        rule_id: 'existing-rule-1',
++        name: 'Existing one',
++        enabled: false,
++      });
++      const existingRule2 = getCustomQueryRuleParams({
++        rule_id: 'existing-rule-2',
++        name: 'Existing two',
++        enabled: false,
++      });
++      const ruleToImportSuccessfully = getCustomQueryRuleParams({
++        rule_id: 'non-existing-rule',
++        name: 'Created by import',
++        enabled: false,
++      });
++
++      await createRule(supertest, log, existingRule1);
++      await createRule(supertest, log, existingRule2);
++
++      const IMPORT_PAYLOAD = [existingRule1, existingRule2, ruleToImportSuccessfully];
++
++      const importResponse = await importRules({
++        getService,
++        rules: IMPORT_PAYLOAD,
++        overwrite: false,
++      });
++
++      // Assert errors and persisted state together so a rewrite cannot swallow
++      // per-item conflicts while still creating the successful rule.
++      expect(importResponse).toMatchObject({
++        success: false,
++        success_count: 1,
++        rules_count: 3,
++        errors: [
++          {
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++            rule_id: 'existing-rule-1',
++          },
++          {
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++            rule_id: 'existing-rule-2',
++          },
++        ],
++      });
++
++      const rule1 = await fetchRule(supertest, { ruleId: 'existing-rule-1' });
++      const rule2 = await fetchRule(supertest, { ruleId: 'existing-rule-2' });
++      const rule3 = await fetchRule(supertest, { ruleId: 'non-existing-rule' });
++
++      expect(rule1).toMatchObject(existingRule1);
++      expect(rule2).toMatchObject(existingRule2);
++      expect(rule3).toMatchObject(ruleToImportSuccessfully);
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_ess.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_ess.ts
+index 55acf1b1808..c0ce7632985 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_ess.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_ess.ts
+@@ -25,6 +25,7 @@ import { getWebHookConnectorParams } from '../../../utils/connectors/get_web_hoo
+ 
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
+   const log = getService('log');
+   const es = getService('es');
+   const supertestWithoutAuth = getService('supertestWithoutAuth');
+@@ -74,20 +75,50 @@ export default ({ getService }: FtrProviderContext): void => {
+       const sidecarActionsPostResults = await getLegacyActionSO(es);
+ 
+       expect(sidecarActionsPostResults.hits.hits.length).toBe(0);
++
++      const overwritten = await fetchRule(supertest, { ruleId: 'rule-1' });
++      expect(overwritten.id).toBe(createdRule.id);
++      expect(overwritten.name).toBe('some other name');
+     });
+ 
+     describe('importing rules with different roles', () => {
+       before(async () => {
+         await createUserAndRole(getService, ROLES.hunter_no_actions);
+         await createUserAndRole(getService, ROLES.hunter);
++        await createUserAndRole(getService, ROLES.t1_analyst);
+       });
+       after(async () => {
+         await deleteUserAndRole(getService, ROLES.hunter_no_actions);
+         await deleteUserAndRole(getService, ROLES.hunter);
++        await deleteUserAndRole(getService, ROLES.t1_analyst);
++      });
++
++      it('returns 403 when the user lacks rules write privilege', async () => {
++        const ndjson = combineToNdJson(
++          getCustomQueryRuleParams({
++            rule_id: 'rbac-import-denied',
++            enabled: false,
++          })
++        );
++
++        await supertestWithoutAuth
++          .post(DETECTION_ENGINE_RULES_IMPORT_URL)
++          .auth(ROLES.t1_analyst, 'changeme')
++          .set('kbn-xsrf', 'true')
++          .set('elastic-api-version', '2023-10-31')
++          .attach('file', Buffer.from(ndjson), 'rules.ndjson')
++          .expect(403);
++
++        await detectionsApi.readRule({ query: { rule_id: 'rbac-import-denied' } }).expect(404);
+       });
+ 
+       it('should successfully import rules without actions when user has no actions privileges', async () => {
+-        const ndjson = combineToNdJson(getCustomQueryRuleParams());
++        const rule = getCustomQueryRuleParams({
++          rule_id: 'hunter-no-actions-rule',
++          name: 'Hunter no actions rule',
++          enabled: false,
++        });
++        const ndjson = combineToNdJson(rule);
+ 
+         const { body } = await supertestWithoutAuth
+           .post(DETECTION_ENGINE_RULES_IMPORT_URL)
+@@ -107,6 +138,11 @@ export default ({ getService }: FtrProviderContext): void => {
+           action_connectors_errors: [],
+           action_connectors_warnings: [],
+         });
++
++        const { body: imported } = await detectionsApi
++          .readRule({ query: { rule_id: 'hunter-no-actions-rule' } })
++          .expect(200);
++        expect(imported.name).toBe('Hunter no actions rule');
+       });
+ 
+       it('should NOT import rules with actions when user has "read" actions privileges', async () => {
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_identity.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_identity.ts
+new file mode 100644
+index 00000000000..121cf1ab316
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_identity.ts
+@@ -0,0 +1,462 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { v4 as uuidv4 } from 'uuid';
++import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import {
++  binaryToString,
++  createPrebuiltRuleAssetSavedObjects,
++  createRuleAssetSavedObject,
++  deleteAllPrebuiltRuleAssets,
++  getCustomQueryRuleParams,
++  importRules,
++  importRulesWithSuccess,
++  installPrebuiltRules,
++  parseNdJson,
++} from '../../../utils';
++
++/**
++ * Locks today's `_import` identity contract: matching is by `rule_id`, payload
++ * `id` is ignored on create, and overwrite keeps the existing SO id.
++ * See https://github.com/elastic/kibana/issues/279741
++ */
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++  const es = getService('es');
++  const spacesServices = getService('spaces');
++
++  const spaceId = 'identity-test-space';
++
++  describe('@ess @serverless @skipInServerlessMKI import rules identity (id vs rule_id)', () => {
++    before(async () => {
++      await spacesServices.delete(spaceId);
++      await spacesServices.create({
++        id: spaceId,
++        name: spaceId,
++      });
++    });
++
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++      await deleteAllRules(supertest, log, spaceId);
++      await deleteAllPrebuiltRuleAssets(es, log);
++    });
++
++    it('ignores payload id on create and assigns a new saved object id', async () => {
++      const payloadId = uuidv4();
++      const ruleId = 'identity-create-rule';
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: 'Identity create',
++              enabled: false,
++            }),
++            id: payloadId,
++          },
++        ],
++        overwrite: false,
++      });
++
++      await detectionsApi.readRule({ query: { id: payloadId } }).expect(404);
++
++      const { body } = await detectionsApi
++        .readRule({
++          query: { rule_id: ruleId },
++        })
++        .expect(200);
++
++      expect(body.rule_id).toBe(ruleId);
++      expect(body.id).not.toBe(payloadId);
++    });
++
++    it('keeps the existing saved object id when overwriting by matching rule_id', async () => {
++      const ruleId = 'identity-overwrite-rule';
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: ruleId,
++          name: 'Existing identity rule',
++          enabled: false,
++        })
++      );
++
++      const payloadId = uuidv4();
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: 'Overwritten identity rule',
++              enabled: false,
++            }),
++            id: payloadId,
++          },
++        ],
++        overwrite: true,
++      });
++
++      const { body } = await detectionsApi
++        .readRule({
++          query: { rule_id: ruleId },
++        })
++        .expect(200);
++
++      expect(body.id).toBe(existing.id);
++      expect(body.id).not.toBe(payloadId);
++      expect(body.name).toBe('Overwritten identity rule');
++    });
++
++    it('does not match on payload id when rule_id differs, leaving two rules', async () => {
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'identity-existing-rule-id',
++          name: 'Existing rule B',
++          enabled: false,
++        })
++      );
++
++      // Import claims the existing SO id but a different rule_id. Today matching
++      // is only by rule_id, so this creates a second rule with a new SO id.
++      const importResponse = await importRules({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'identity-imported-rule-id',
++              name: 'Imported rule C',
++              enabled: false,
++            }),
++            id: existing.id,
++          },
++        ],
++        overwrite: true,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: true,
++        success_count: 1,
++        rules_count: 1,
++        errors: [],
++      });
++
++      const { body: original } = await detectionsApi
++        .readRule({
++          query: { id: existing.id },
++        })
++        .expect(200);
++
++      expect(original.rule_id).toBe('identity-existing-rule-id');
++      expect(original.name).toBe('Existing rule B');
++
++      const { body: created } = await detectionsApi
++        .readRule({
++          query: { rule_id: 'identity-imported-rule-id' },
++        })
++        .expect(200);
++
++      expect(created.id).not.toBe(existing.id);
++      expect(created.name).toBe('Imported rule C');
++
++      const { body: all } = await detectionsApi
++        .findRules({
++          query: { page: 1, per_page: 10 },
++        })
++        .expect(200);
++
++      expect(all.total).toBe(2);
++    });
++
++    it('creates two rules when one NDJSON reuses the same payload id with different rule_ids', async () => {
++      const sharedId = uuidv4();
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'identity-shared-id-1',
++              name: 'Shared id first',
++              enabled: false,
++            }),
++            id: sharedId,
++          },
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'identity-shared-id-2',
++              name: 'Shared id second',
++              enabled: false,
++            }),
++            id: sharedId,
++          },
++        ],
++        overwrite: false,
++      });
++
++      const { body: first } = await detectionsApi
++        .readRule({ query: { rule_id: 'identity-shared-id-1' } })
++        .expect(200);
++      const { body: second } = await detectionsApi
++        .readRule({ query: { rule_id: 'identity-shared-id-2' } })
++        .expect(200);
++
++      expect(first.id).not.toBe(sharedId);
++      expect(second.id).not.toBe(sharedId);
++      expect(first.id).not.toBe(second.id);
++
++      const { body: all } = await detectionsApi
++        .findRules({ query: { page: 1, per_page: 10 } })
++        .expect(200);
++      expect(all.total).toBe(2);
++    });
++
++    it('does not reassign saved object ownership when overwrite matches a different rule_id', async () => {
++      const ruleA = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'identity-swap-a',
++          name: 'Rule A',
++          enabled: false,
++        })
++      );
++      const ruleB = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'identity-swap-b',
++          name: 'Rule B',
++          enabled: false,
++        })
++      );
++
++      // Claims A's SO id but matches B by rule_id → updates B, leaves A alone.
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'identity-swap-b',
++              name: 'Rule B overwritten',
++              enabled: false,
++            }),
++            id: ruleA.id,
++          },
++        ],
++        overwrite: true,
++      });
++
++      const { body: stillA } = await detectionsApi
++        .readRule({ query: { id: ruleA.id } })
++        .expect(200);
++      expect(stillA.rule_id).toBe('identity-swap-a');
++      expect(stillA.name).toBe('Rule A');
++
++      const { body: updatedB } = await detectionsApi
++        .readRule({ query: { id: ruleB.id } })
++        .expect(200);
++      expect(updatedB.rule_id).toBe('identity-swap-b');
++      expect(updatedB.name).toBe('Rule B overwritten');
++      expect(updatedB.id).not.toBe(ruleA.id);
++    });
++
++    it('conflicts on rule_id even when the payload id differs from the existing saved object id', async () => {
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'identity-conflict-rule',
++          name: 'Existing conflict rule',
++          enabled: false,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'identity-conflict-rule',
++              name: 'Should not import',
++              enabled: false,
++            }),
++            id: uuidv4(),
++          },
++        ],
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: false,
++        success_count: 0,
++        rules_count: 1,
++        errors: [
++          {
++            rule_id: 'identity-conflict-rule',
++            error: {
++              message: 'Rule with this rule_id already exists',
++              status_code: 409,
++            },
++          },
++        ],
++      });
++
++      const { body } = await detectionsApi.readRule({ query: { id: existing.id } }).expect(200);
++      expect(body.name).toBe('Existing conflict rule');
++    });
++
++    it('export then overwrite re-import keeps the saved object id; after delete, create ignores the exported id', async () => {
++      const ruleId = 'identity-roundtrip-rule';
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: ruleId,
++          name: 'Roundtrip original',
++          enabled: false,
++        })
++      );
++
++      const { body: exportBody } = await detectionsApi
++        .exportRules({ query: {}, body: null })
++        .expect(200)
++        .parse(binaryToString);
++
++      const exportedRules = parseNdJson(exportBody).filter(
++        (line): line is Record<string, unknown> =>
++          typeof line === 'object' && line !== null && 'rule_id' in line
++      );
++      expect(exportedRules).toHaveLength(1);
++      expect(exportedRules[0].id).toBe(existing.id);
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [{ ...exportedRules[0], name: 'Roundtrip overwritten' }],
++        overwrite: true,
++      });
++
++      const { body: afterOverwrite } = await detectionsApi
++        .readRule({ query: { rule_id: ruleId } })
++        .expect(200);
++      expect(afterOverwrite.id).toBe(existing.id);
++      expect(afterOverwrite.name).toBe('Roundtrip overwritten');
++
++      await deleteAllRules(supertest, log);
++
++      await importRulesWithSuccess({
++        getService,
++        rules: exportedRules,
++        overwrite: false,
++      });
++
++      const { body: afterCreate } = await detectionsApi
++        .readRule({ query: { rule_id: ruleId } })
++        .expect(200);
++      expect(afterCreate.id).not.toBe(existing.id);
++      await detectionsApi.readRule({ query: { id: existing.id } }).expect(404);
++    });
++
++    it('overwrites a prebuilt rule by rule_id and keeps its saved object id despite payload id', async () => {
++      const ruleId = 'identity-prebuilt-rule';
++      await createPrebuiltRuleAssetSavedObjects(es, [
++        createRuleAssetSavedObject({
++          rule_id: ruleId,
++          version: 1,
++          name: 'Prebuilt identity original',
++        }),
++      ]);
++      await installPrebuiltRules(es, supertest);
++
++      const { body: installed } = await detectionsApi
++        .readRule({ query: { rule_id: ruleId } })
++        .expect(200);
++
++      const payloadId = uuidv4();
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: 'Prebuilt identity overwritten',
++              enabled: false,
++              version: 1,
++            }),
++            id: payloadId,
++          },
++        ],
++        overwrite: true,
++      });
++
++      const { body } = await detectionsApi.readRule({ query: { rule_id: ruleId } }).expect(200);
++
++      expect(body.id).toBe(installed.id);
++      expect(body.id).not.toBe(payloadId);
++      expect(body.name).toBe('Prebuilt identity overwritten');
++      // Overwrite by rule_id must keep the prebuilt classification family.
++      expect(body.immutable).toBe(true);
++      expect(body.rule_source).toMatchObject({
++        type: 'external',
++        is_customized: true,
++      });
++    });
++
++    it('ignores a default-space saved object id when creating in another space', async () => {
++      const defaultRule = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'identity-default-space-rule',
++          name: 'Default space rule',
++          enabled: false,
++        })
++      );
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'identity-other-space-rule',
++              name: 'Other space rule',
++              enabled: false,
++            }),
++            id: defaultRule.id,
++          },
++        ],
++        overwrite: false,
++        spaceId,
++      });
++
++      const { body: stillDefault } = await detectionsApi
++        .readRule({ query: { id: defaultRule.id } })
++        .expect(200);
++      expect(stillDefault.rule_id).toBe('identity-default-space-rule');
++
++      await detectionsApi.readRule({ query: { id: defaultRule.id } }, spaceId).expect(404);
++
++      const { body: created } = await detectionsApi
++        .readRule({ query: { rule_id: 'identity-other-space-rule' } }, spaceId)
++        .expect(200);
++
++      expect(created.id).not.toBe(defaultRule.id);
++      expect(created.name).toBe('Other space rule');
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_large_payload.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_large_payload.ts
+new file mode 100644
+index 00000000000..4c7632e8c05
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_large_payload.ts
+@@ -0,0 +1,138 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { range } from 'lodash';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { getCustomQueryRuleParams, importRules } from '../../../utils';
++
++/**
++ * Scale regression guards. Dedicated long-timeout config. Legacy path may be
++ * slow/flaky — intentional. Disabled count stays under the exclusive 10000 cap
++ * (`createRulesLimitStream` rejects at `>= 10000`).
++ */
++const DISABLED_RULE_COUNT = 8000;
++const ENABLED_RULE_COUNT = 2000;
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess import rules large payload', function () {
++    this.timeout(60 * 60 * 1000);
++
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    it(`imports ${DISABLED_RULE_COUNT} disabled custom rules`, async () => {
++      const rules = range(DISABLED_RULE_COUNT).map((i) =>
++        getCustomQueryRuleParams({
++          rule_id: `large-payload-rule-${i}`,
++          name: `Large payload rule ${i}`,
++          enabled: false,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: true,
++        success_count: DISABLED_RULE_COUNT,
++        rules_count: DISABLED_RULE_COUNT,
++        errors: [],
++      });
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: 1,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(DISABLED_RULE_COUNT);
++
++      const { body: first } = await detectionsApi
++        .readRule({ query: { rule_id: 'large-payload-rule-0' } })
++        .expect(200);
++      const { body: last } = await detectionsApi
++        .readRule({ query: { rule_id: `large-payload-rule-${DISABLED_RULE_COUNT - 1}` } })
++        .expect(200);
++
++      expect(first).toMatchObject({
++        name: 'Large payload rule 0',
++        enabled: false,
++      });
++      expect(last).toMatchObject({
++        name: `Large payload rule ${DISABLED_RULE_COUNT - 1}`,
++        enabled: false,
++      });
++    });
++
++    it(`imports ${ENABLED_RULE_COUNT} enabled custom rules`, async () => {
++      const rules = range(ENABLED_RULE_COUNT).map((i) =>
++        getCustomQueryRuleParams({
++          rule_id: `large-payload-enabled-rule-${i}`,
++          name: `Large payload enabled rule ${i}`,
++          enabled: true,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: true,
++        success_count: ENABLED_RULE_COUNT,
++        rules_count: ENABLED_RULE_COUNT,
++        errors: [],
++      });
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: 10,
++            filter: 'alert.attributes.enabled: true',
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(ENABLED_RULE_COUNT);
++      expect(body.data.every((rule: { enabled: boolean }) => rule.enabled)).toBe(true);
++
++      const { body: first } = await detectionsApi
++        .readRule({ query: { rule_id: 'large-payload-enabled-rule-0' } })
++        .expect(200);
++      const { body: last } = await detectionsApi
++        .readRule({
++          query: { rule_id: `large-payload-enabled-rule-${ENABLED_RULE_COUNT - 1}` },
++        })
++        .expect(200);
++
++      expect(first).toMatchObject({
++        name: 'Large payload enabled rule 0',
++        enabled: true,
++      });
++      expect(last).toMatchObject({
++        name: `Large payload enabled rule ${ENABLED_RULE_COUNT - 1}`,
++        enabled: true,
++      });
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts
+new file mode 100644
+index 00000000000..e1eeeeb6b29
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts
+@@ -0,0 +1,107 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { range } from 'lodash';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { getCustomQueryRuleParams, importRules, importRulesWithSuccess } from '../../../utils';
++
++/**
++ * Pure overwrite across chunks. Sized above main import chunking (50) and
++ * planned rewrite batches (300–500). See bulk-update readiness in the import
++ * FTR coverage report / https://github.com/elastic/kibana/issues/275204
++ */
++const RULE_COUNT = 568;
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules overwrite at batch boundary', () => {
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++    });
++
++    it('overwrites an existing-only batch spanning multiple chunks', async () => {
++      const allIds = range(RULE_COUNT).map((i) => `overwrite-batch-rule-${i}`);
++
++      await importRulesWithSuccess({
++        getService,
++        rules: allIds.map((ruleId) =>
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: `Existing ${ruleId}`,
++            enabled: false,
++          })
++        ),
++        overwrite: false,
++      });
++
++      const { body: beforeOverwrite } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: RULE_COUNT,
++          },
++        })
++        .expect(200);
++
++      const priorByRuleId = new Map<string, { id: string; revision: number }>(
++        beforeOverwrite.data.map((rule: { rule_id: string; id: string; revision: number }) => [
++          rule.rule_id,
++          { id: rule.id, revision: rule.revision },
++        ])
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules: allIds.map((ruleId) =>
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: `Overwritten ${ruleId}`,
++            enabled: false,
++          })
++        ),
++        overwrite: true,
++      });
++
++      expect(importResponse).toMatchObject({
++        rules_count: RULE_COUNT,
++        success: true,
++        success_count: RULE_COUNT,
++        errors: [],
++      });
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: RULE_COUNT,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(RULE_COUNT);
++      expect(body.data).toHaveLength(RULE_COUNT);
++
++      const sampleIndexes = [0, 50, 300, 500, RULE_COUNT - 1];
++      for (const i of sampleIndexes) {
++        const ruleId = `overwrite-batch-rule-${i}`;
++        const found = body.data.find(
++          (rule: { rule_id: string; id: string; name: string; revision: number }) =>
++            rule.rule_id === ruleId
++        );
++        const prior = priorByRuleId.get(ruleId);
++        expect(found?.name).toBe(`Overwritten ${ruleId}`);
++        expect(found?.id).toBe(prior?.id);
++        expect(found?.revision).toBe((prior?.revision ?? 0) + 1);
++      }
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_response_actions.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_response_actions.ts
+new file mode 100644
+index 00000000000..ea7f767b07a
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_response_actions.ts
+@@ -0,0 +1,104 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { v4 as uuid } from 'uuid';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import type TestAgent from 'supertest/lib/agent';
++import { createSupertestErrorLogger } from '../../../../edr_workflows/utils';
++import { combineArrayToNdJson, getCustomQueryRuleParams, importRules } from '../../../utils';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { ROLE } from '../../../../../config/services/security_solution_edr_workflows_roles_users';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++  const utils = getService('securitySolutionUtils');
++  const rolesUsersProvider = getService('rolesUsersProvider');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules with endpoint response actions', () => {
++    let superTestResponseActionsNoAuthz: TestAgent;
++    let rulesToImport: unknown[];
++    let ruleId: string;
++
++    before(async () => {
++      superTestResponseActionsNoAuthz = await utils.createSuperTestWithCustomRole({
++        name: ROLE.endpoint_response_actions_no_access,
++        privileges: rolesUsersProvider.loader.getPreDefinedRole(
++          ROLE.endpoint_response_actions_no_access
++        ),
++      });
++    });
++
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++      ruleId = uuid();
++      rulesToImport = [
++        getCustomQueryRuleParams({
++          rule_id: ruleId,
++          response_actions: [
++            {
++              action_type_id: '.endpoint',
++              params: {
++                command: 'suspend-process',
++                config: { field: 'some-field', overwrite: false },
++              },
++            },
++          ],
++        }),
++      ];
++    });
++
++    it('should import rules with response actions when user has authz', async () => {
++      const importResponse = await importRules({
++        getService,
++        rules: rulesToImport,
++        overwrite: false,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: true,
++        success_count: 1,
++        rules_count: 1,
++        errors: [],
++      });
++
++      const { body } = await detectionsApi.readRule({ query: { rule_id: ruleId } }).expect(200);
++      expect(body.response_actions[0].params.command).toBe('suspend-process');
++    });
++
++    it('should NOT import rules with response actions when user does NOT have authz', async () => {
++      const fileBuffer = Buffer.from(combineArrayToNdJson(rulesToImport));
++
++      const { body } = await superTestResponseActionsNoAuthz
++        .post('/api/detection_engine/rules/_import')
++        .set('kbn-xsrf', 'true')
++        .set('elastic-api-version', '2023-10-31')
++        .on('error', createSupertestErrorLogger(log).ignoreCodes([403]))
++        .attach('file', fileBuffer, { filename: 'rules.ndjson' })
++        .expect(200);
++
++      expect(body).toMatchObject({
++        success: false,
++        success_count: 0,
++        errors: [
++          {
++            error: {
++              message: 'User is not authorized to create/update suspend-process response action',
++              status_code: 403,
++            },
++            id: '',
++            rule_id: ruleId,
++          },
++        ],
++      });
++
++      await detectionsApi.readRule({ query: { rule_id: ruleId } }).expect(404);
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_actions.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_actions.ts
+new file mode 100644
+index 00000000000..c7b9ccc2da1
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_actions.ts
+@@ -0,0 +1,519 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { v4 as uuid } from 'uuid';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import { getCustomQueryRuleParams, importRules, importRulesWithSuccess } from '../../../utils';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++import { getWebHookConnectorParams } from '../../../utils/connectors/get_web_hook_connector_params';
++import { createConnector } from '../../../utils/connectors';
++
++const RULE_TO_IMPORT_RULE_ID = 'imported-rule';
++const RULE_TO_IMPORT_RULE_ID_2 = 'another-imported-rule';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const log = getService('log');
++  const spacesServices = getService('spaces');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules with actions', () => {
++    const spaceId = '4567-space';
++
++    before(async () => {
++      await spacesServices.delete(spaceId);
++      await spacesServices.create({
++        id: spaceId,
++        name: spaceId,
++      });
++    });
++
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++      await deleteAllRules(supertest, log, spaceId);
++    });
++
++    const testImportingInSpace = (kibanaSpaceId?: string) => {
++      describe('rules with action connectors', () => {
++        it('import a rule with an action connector', async () => {
++          const webHookConnectorParams = getWebHookConnectorParams();
++          const connectorId = await createConnector(
++            supertest,
++            webHookConnectorParams,
++            undefined,
++            kibanaSpaceId
++          );
++          const ACTION = {
++            group: 'default',
++            id: connectorId,
++            action_type_id: webHookConnectorParams.connector_type_id,
++            params: {},
++          };
++          const IMPORT_PAYLOAD = [
++            getCustomQueryRuleParams({
++              rule_id: RULE_TO_IMPORT_RULE_ID,
++              actions: [ACTION],
++            }),
++          ];
++
++          await importRulesWithSuccess({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          const { body: importedRule } = await detectionsApi.readRule(
++            {
++              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
++            },
++            kibanaSpaceId
++          );
++
++          expect(importedRule.actions[0]).toMatchObject(ACTION);
++        });
++
++        it('imports multiple rules with action connectors in bulk', async () => {
++          const WEBHOOK_CONNECTOR_ID = uuid();
++          const WEBHOOK_CONNECTOR = {
++            id: WEBHOOK_CONNECTOR_ID,
++            type: 'action',
++            updated_at: '2023-01-25T14:35:52.852Z',
++            created_at: '2023-01-25T14:35:52.852Z',
++            version: 'WzUxNTksMV0=',
++            attributes: {
++              actionTypeId: '.webhook',
++              name: 'webhook',
++              isMissingSecrets: false,
++              config: {},
++              secrets: {},
++            },
++            references: [],
++            migrationVersion: { action: '8.3.0' },
++            coreMigrationVersion: '8.7.0',
++          };
++          const INDEX_CONNECTOR_ID = uuid();
++          const INDEX_CONNECTOR = {
++            id: INDEX_CONNECTOR_ID,
++            type: 'action',
++            updated_at: '2023-01-25T14:35:52.852Z',
++            created_at: '2023-01-25T14:35:52.852Z',
++            version: 'WzUxNTksMV0=',
++            attributes: {
++              actionTypeId: '.index',
++              name: 'index',
++              isMissingSecrets: false,
++              config: {},
++              secrets: {},
++            },
++            references: [],
++            migrationVersion: { action: '8.3.0' },
++            coreMigrationVersion: '8.7.0',
++          };
++          const CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            actions: [
++              {
++                group: 'default',
++                id: WEBHOOK_CONNECTOR_ID,
++                action_type_id: '.webhook',
++                params: {},
++              },
++            ],
++          });
++          const CUSTOM_QUERY_RULE_WITH_INDEX_CONNECTOR = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID_2,
++            actions: [
++              {
++                group: 'default',
++                id: INDEX_CONNECTOR_ID,
++                action_type_id: '.index',
++                params: {},
++              },
++            ],
++          });
++
++          const IMPORT_PAYLOAD = [
++            CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR,
++            CUSTOM_QUERY_RULE_WITH_INDEX_CONNECTOR,
++            WEBHOOK_CONNECTOR,
++            INDEX_CONNECTOR,
++          ];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            success_count: 2,
++            rules_count: 2,
++            errors: [],
++            action_connectors_success: true,
++            action_connectors_success_count: 2,
++            action_connectors_errors: [],
++            action_connectors_warnings: [],
++          });
++
++          const { body: webhookRule } = await detectionsApi
++            .readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID } }, kibanaSpaceId)
++            .expect(200);
++          const { body: indexRule } = await detectionsApi
++            .readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID_2 } }, kibanaSpaceId)
++            .expect(200);
++
++          expect(webhookRule.actions[0].id).toBe(WEBHOOK_CONNECTOR_ID);
++          expect(indexRule.actions[0].id).toBe(INDEX_CONNECTOR_ID);
++        });
++      });
++    };
++
++    describe('importing in default space', () => {
++      testImportingInSpace();
++    });
++
++    describe('importing in non-default space', () => {
++      testImportingInSpace(spaceId);
++
++      describe('rules with action connectors (edge cases)', () => {
++        it('overwrites a rule with connector after importing to the default space', async () => {
++          const CONNECTOR_ID = uuid();
++          const SLACK_CONNECTOR = {
++            id: CONNECTOR_ID,
++            type: 'action',
++            updated_at: '2023-01-25T14:35:52.852Z',
++            created_at: '2023-01-25T14:35:52.852Z',
++            version: 'WzUxNTksMV0=',
++            attributes: {
++              actionTypeId: '.slack',
++              name: 'slack',
++              isMissingSecrets: false,
++              config: {},
++              secrets: {},
++            },
++            references: [],
++            migrationVersion: { action: '8.3.0' },
++            coreMigrationVersion: '8.7.0',
++          };
++          const RULE_WITH_ACTION = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            actions: [
++              {
++                group: 'default',
++                id: CONNECTOR_ID,
++                params: {
++                  message: 'Rule {{context.rule.name}} generated {{state.signals_count}} alerts',
++                },
++                action_type_id: '.slack',
++              },
++            ],
++          });
++          const IMPORT_PAYLOAD = [RULE_WITH_ACTION, SLACK_CONNECTOR];
++
++          await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++          });
++
++          await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId,
++          });
++
++          const overwriteImportResponseBody = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: true,
++            spaceId,
++          });
++
++          expect(overwriteImportResponseBody).toMatchObject({
++            success: true,
++            success_count: 1,
++            rules_count: 1,
++            errors: [],
++            action_connectors_success: true,
++            action_connectors_success_count: 1,
++            action_connectors_warnings: [],
++            action_connectors_errors: [],
++          });
++
++          const { body: overwritten } = await detectionsApi
++            .readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID } }, spaceId)
++            .expect(200);
++
++          // Cross-space import remaps connector SO ids; lock action presence/type.
++          expect(overwritten.actions).toHaveLength(1);
++          expect(overwritten.actions[0].action_type_id).toBe('.slack');
++          expect(typeof overwritten.actions[0].id).toBe('string');
++        });
++
++        it('imports a rule with connector when connector includes an originId', async () => {
++          const CONNECTOR_ID = uuid();
++          const SLACK_CONNECTOR = {
++            id: CONNECTOR_ID,
++            originId: 'some-origin-id',
++            type: 'action',
++            updated_at: '2023-01-25T14:35:52.852Z',
++            created_at: '2023-01-25T14:35:52.852Z',
++            version: 'WzUxNTksMV0=',
++            attributes: {
++              actionTypeId: '.slack',
++              name: 'slack',
++              isMissingSecrets: false,
++              config: {},
++              secrets: {},
++            },
++            references: [],
++            migrationVersion: { action: '8.3.0' },
++            coreMigrationVersion: '8.7.0',
++          };
++          const RULE_WITH_ACTION = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            actions: [
++              {
++                group: 'default',
++                id: CONNECTOR_ID,
++                params: {
++                  message: 'Rule {{context.rule.name}} generated {{state.signals_count}} alerts',
++                },
++                action_type_id: '.slack',
++              },
++            ],
++          });
++          const IMPORT_PAYLOAD = [RULE_WITH_ACTION, SLACK_CONNECTOR];
++
++          await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++          });
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            success_count: 1,
++            rules_count: 1,
++            errors: [],
++            action_connectors_success: true,
++            action_connectors_success_count: 1,
++            action_connectors_warnings: [],
++            action_connectors_errors: [],
++          });
++
++          const { body: imported } = await detectionsApi
++            .readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID } }, spaceId)
++            .expect(200);
++
++          // originId remaps the connector id in the destination space.
++          expect(imported.actions).toHaveLength(1);
++          expect(imported.actions[0].action_type_id).toBe('.slack');
++          expect(typeof imported.actions[0].id).toBe('string');
++          expect(imported.actions[0].id).not.toBe(CONNECTOR_ID);
++        });
++      });
++    });
++
++    describe('error handling', () => {
++      it('reports a missing connector', async () => {
++        const IMPORT_PAYLOAD = [
++          getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            actions: [
++              {
++                group: 'default',
++                id: '123',
++                action_type_id: '456',
++                params: {},
++              },
++            ],
++          }),
++        ];
++
++        const importResponse = await importRules({
++          getService,
++          rules: IMPORT_PAYLOAD,
++          overwrite: false,
++        });
++
++        expect(importResponse).toMatchObject({
++          success: false,
++          success_count: 0,
++          rules_count: 1,
++          errors: [
++            {
++              rule_id: RULE_TO_IMPORT_RULE_ID,
++              error: {
++                status_code: 404,
++                message: 'Rule actions reference the following missing action IDs: 123',
++              },
++            },
++          ],
++          action_connectors_success: true,
++          action_connectors_success_count: 0,
++          action_connectors_warnings: [],
++          action_connectors_errors: [],
++        });
++
++        await detectionsApi.readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID } }).expect(404);
++      });
++
++      it('warns about a missing connector secret', async () => {
++        const WEBHOOK_CONNECTOR_ID = uuid();
++        const WEBHOOK_CONNECTOR = {
++          id: WEBHOOK_CONNECTOR_ID,
++          type: 'action',
++          updated_at: '2023-01-25T14:35:52.852Z',
++          created_at: '2023-01-25T14:35:52.852Z',
++          version: 'WzUxNTksMV0=',
++          attributes: {
++            actionTypeId: '.webhook',
++            name: 'webhook',
++            isMissingSecrets: true,
++            config: {},
++            secrets: {},
++          },
++          references: [],
++          migrationVersion: { action: '8.3.0' },
++          coreMigrationVersion: '8.7.0',
++        };
++        const CUSTOM_QUERY_RULE = getCustomQueryRuleParams({
++          rule_id: RULE_TO_IMPORT_RULE_ID,
++          actions: [
++            {
++              group: 'default',
++              id: WEBHOOK_CONNECTOR_ID,
++              action_type_id: '.webhook',
++              params: {},
++            },
++          ],
++        });
++
++        const IMPORT_PAYLOAD = [CUSTOM_QUERY_RULE, WEBHOOK_CONNECTOR];
++
++        const importResponse = await importRules({
++          getService,
++          rules: IMPORT_PAYLOAD,
++          overwrite: false,
++        });
++
++        expect(importResponse).toMatchObject({
++          success: true,
++          success_count: 1,
++          rules_count: 1,
++          errors: [],
++          action_connectors_success: true,
++          action_connectors_success_count: 1,
++          action_connectors_warnings: [
++            {
++              actionPath: '/app/management/insightsAndAlerting/triggersActionsConnectors',
++              buttonLabel: 'Go to connectors',
++              message: '1 connector has sensitive information that require updates.',
++              type: 'action_required',
++            },
++          ],
++          action_connectors_errors: [],
++        });
++      });
++
++      it('imports a mix of rules with actions and connectors while some connectors are missing', async () => {
++        const WEBHOOK_CONNECTOR_ID = uuid();
++        const WEBHOOK_CONNECTOR = {
++          id: WEBHOOK_CONNECTOR_ID,
++          type: 'action',
++          updated_at: '2023-01-25T14:35:52.852Z',
++          created_at: '2023-01-25T14:35:52.852Z',
++          version: 'WzUxNTksMV0=',
++          attributes: {
++            actionTypeId: '.webhook',
++            name: 'webhook',
++            isMissingSecrets: false,
++            config: {},
++            secrets: {},
++          },
++          references: [],
++          migrationVersion: { action: '8.3.0' },
++          coreMigrationVersion: '8.7.0',
++        };
++        const CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR = getCustomQueryRuleParams({
++          rule_id: RULE_TO_IMPORT_RULE_ID,
++          actions: [
++            {
++              group: 'default',
++              id: WEBHOOK_CONNECTOR_ID,
++              action_type_id: '.webhook',
++              params: {},
++            },
++          ],
++        });
++        const NON_EXISTING_CONNECTOR = uuid();
++        const CUSTOM_QUERY_RULE_2 = getCustomQueryRuleParams({
++          rule_id: RULE_TO_IMPORT_RULE_ID_2,
++          actions: [
++            {
++              group: 'default',
++              id: NON_EXISTING_CONNECTOR, // <-- This does not exist
++              action_type_id: '.index',
++              params: {},
++            },
++          ],
++        });
++
++        const IMPORT_PAYLOAD = [
++          CUSTOM_QUERY_RULE_WITH_WEBHOOK_CONNECTOR,
++          CUSTOM_QUERY_RULE_2,
++          WEBHOOK_CONNECTOR,
++        ];
++
++        const importResponse = await importRules({
++          getService,
++          rules: IMPORT_PAYLOAD,
++          overwrite: false,
++        });
++
++        expect(importResponse).toMatchObject({
++          success: false,
++          success_count: 1,
++          rules_count: 2,
++          errors: [
++            {
++              rule_id: RULE_TO_IMPORT_RULE_ID_2,
++              error: {
++                status_code: 404,
++                message: `Rule actions reference the following missing action IDs: ${NON_EXISTING_CONNECTOR}`,
++              },
++            },
++          ],
++          action_connectors_success: true,
++          action_connectors_success_count: 1,
++          action_connectors_errors: [],
++          action_connectors_warnings: [],
++        });
++
++        const { body: successRule } = await detectionsApi
++          .readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID } })
++          .expect(200);
++        expect(successRule.actions[0].id).toBe(WEBHOOK_CONNECTOR_ID);
++
++        await detectionsApi.readRule({ query: { rule_id: RULE_TO_IMPORT_RULE_ID_2 } }).expect(404);
++      });
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_exceptions.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_exceptions.ts
+new file mode 100644
+index 00000000000..e99d4591903
+--- /dev/null
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_exceptions.ts
+@@ -0,0 +1,592 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import expect from 'expect';
++import { range } from 'lodash';
++import { getCreateExceptionListMinimalSchemaMock } from '@kbn/lists-plugin/common/schemas/request/create_exception_list_schema.mock';
++import {
++  getImportExceptionsListItemSchemaMock,
++  getImportExceptionsListSchemaMock,
++  getImportExceptionsListItemNewerVersionSchemaMock,
++} from '@kbn/lists-plugin/common/schemas/request/import_exceptions_schema.mock';
++import type {
++  ReadExceptionListItemRequestQueryInput,
++  ReadExceptionListRequestQueryInput,
++} from '@kbn/securitysolution-exceptions-common/api';
++import { deleteAllRules } from '@kbn/detections-response-ftr-services';
++import { getCustomQueryRuleParams, importRules } from '../../../utils';
++import { deleteAllExceptions } from '../../../../lists_and_exception_lists/utils';
++import type { FtrProviderContext } from '../../../../../ftr_provider_context';
++
++const RULE_TO_IMPORT_RULE_ID = 'imported-rule';
++
++export default ({ getService }: FtrProviderContext): void => {
++  const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
++  const exceptionsApi = getService('exceptionsApi');
++  const log = getService('log');
++  const spacesServices = getService('spaces');
++
++  describe('@ess @serverless @skipInServerlessMKI import rules with exceptions', () => {
++    const spaceId = '4567-space';
++
++    before(async () => {
++      await spacesServices.delete(spaceId);
++      await spacesServices.create({
++        id: spaceId,
++        name: spaceId,
++      });
++    });
++
++    beforeEach(async () => {
++      await deleteAllRules(supertest, log);
++      await deleteAllRules(supertest, log, spaceId);
++      await deleteAllExceptions(supertest, log);
++      await deleteAllExceptions(supertest, log, spaceId);
++    });
++
++    const testImportingInSpace = (kibanaSpaceId?: string) => {
++      const assertExceptionList = async ({
++        query,
++        expected,
++      }: {
++        query: ReadExceptionListRequestQueryInput;
++        expected: Record<string, unknown>;
++      }) => {
++        const { body: exceptionList } = await exceptionsApi
++          .readExceptionList(
++            {
++              query,
++            },
++            kibanaSpaceId
++          )
++          .expect(200);
++
++        expect(exceptionList).toMatchObject(expected);
++      };
++      const assertExceptionListItems = async ({
++        query,
++        expected,
++      }: {
++        query: ReadExceptionListItemRequestQueryInput;
++        expected: Record<string, unknown>;
++      }) => {
++        const { body: exceptionListItem } = await exceptionsApi
++          .readExceptionListItem(
++            {
++              query,
++            },
++            kibanaSpaceId
++          )
++          .expect(200);
++
++        expect(exceptionListItem).toMatchObject(expected);
++      };
++
++      describe('rules with exceptions', () => {
++        it('imports a rule with a single space exception', async () => {
++          const CUSTOM_QUERY_RULE_WITH_EXCEPTION = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            exceptions_list: [
++              {
++                id: 'single',
++                list_id: 'test_list_id',
++                type: 'rule_default',
++                namespace_type: 'single',
++              },
++            ],
++          });
++          const EXCEPTION_LIST = {
++            ...getImportExceptionsListSchemaMock('test_list_id'),
++            type: 'rule_default',
++          };
++          const EXCEPTION_LIST_ITEM = getImportExceptionsListItemNewerVersionSchemaMock(
++            'test_item_id',
++            'test_list_id'
++          );
++          const IMPORT_PAYLOAD = [
++            CUSTOM_QUERY_RULE_WITH_EXCEPTION,
++            EXCEPTION_LIST,
++            EXCEPTION_LIST_ITEM,
++          ];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            success_count: 1,
++            rules_count: 1,
++            errors: [],
++            exceptions_errors: [],
++            exceptions_success: true,
++            exceptions_success_count: 1,
++          });
++
++          const { body: importedRule } = await detectionsApi.readRule(
++            {
++              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
++            },
++            kibanaSpaceId
++          );
++
++          expect(importedRule.exceptions_list).toEqual([
++            {
++              ...CUSTOM_QUERY_RULE_WITH_EXCEPTION.exceptions_list?.[0],
++              id: expect.any(String),
++            },
++          ]);
++
++          await assertExceptionList({
++            query: {
++              id: importedRule.exceptions_list[0].id,
++            },
++            expected: EXCEPTION_LIST,
++          });
++          await assertExceptionListItems({
++            query: {
++              item_id: 'test_item_id',
++              namespace_type: 'single',
++            },
++            expected: EXCEPTION_LIST_ITEM,
++          });
++        });
++
++        it('imports a rule with space agnostic exception', async () => {
++          const CUSTOM_QUERY_RULE_WITH_EXCEPTION = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            exceptions_list: [
++              {
++                id: 'agnostic',
++                list_id: 'test_list_agnostic_id',
++                type: 'detection',
++                namespace_type: 'agnostic',
++              },
++            ],
++          });
++          const SPACE_AGNOSTIC_EXCEPTION_LIST = {
++            ...getImportExceptionsListSchemaMock('test_list_agnostic_id'),
++            type: 'detection',
++            namespace_type: 'agnostic',
++          };
++          const SPACE_AGNOSTIC_EXCEPTION_LIST_ITEM = {
++            ...getImportExceptionsListItemNewerVersionSchemaMock(
++              'test_item_id',
++              'test_list_agnostic_id'
++            ),
++            namespace_type: 'agnostic',
++          };
++          const IMPORT_PAYLOAD = [
++            CUSTOM_QUERY_RULE_WITH_EXCEPTION,
++            SPACE_AGNOSTIC_EXCEPTION_LIST,
++            SPACE_AGNOSTIC_EXCEPTION_LIST_ITEM,
++          ];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            success_count: 1,
++            rules_count: 1,
++            errors: [],
++            exceptions_errors: [],
++            exceptions_success: true,
++            exceptions_success_count: 1,
++          });
++
++          const { body: importedRule } = await detectionsApi.readRule(
++            {
++              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
++            },
++            kibanaSpaceId
++          );
++
++          expect(importedRule.exceptions_list).toEqual([
++            {
++              ...CUSTOM_QUERY_RULE_WITH_EXCEPTION.exceptions_list?.[0],
++              id: expect.any(String),
++            },
++          ]);
++
++          await assertExceptionList({
++            query: {
++              id: importedRule.exceptions_list[0].id,
++              namespace_type: 'agnostic',
++            },
++            expected: SPACE_AGNOSTIC_EXCEPTION_LIST,
++          });
++          await assertExceptionListItems({
++            query: {
++              item_id: 'test_item_id',
++              namespace_type: 'agnostic',
++            },
++            expected: SPACE_AGNOSTIC_EXCEPTION_LIST_ITEM,
++          });
++        });
++
++        it('imports a rule with exception having comments', async () => {
++          const CUSTOM_QUERY_RULE_WITH_EXCEPTION = getCustomQueryRuleParams({
++            rule_id: RULE_TO_IMPORT_RULE_ID,
++            exceptions_list: [
++              {
++                id: 'abc',
++                list_id: 'i_exist',
++                type: 'detection',
++                namespace_type: 'single',
++              },
++            ],
++          });
++          const EXCEPTION_LIST = {
++            ...getImportExceptionsListSchemaMock('i_exist'),
++            id: 'abc',
++            type: 'detection',
++            namespace_type: 'single',
++          };
++          const EXCEPTION_LIST_ITEM = {
++            comments: [
++              {
++                comment: 'This is an exception to the rule',
++                created_at: '2022-02-04T02:27:40.938Z',
++                created_by: 'elastic',
++                id: '845fc456-91ff-4530-bcc1-5b7ebd2f75b5',
++              },
++              {
++                comment: 'I decided to add a new comment',
++              },
++            ],
++            description: 'some description',
++            entries: [
++              {
++                entries: [
++                  {
++                    field: 'nested.field',
++                    operator: 'included',
++                    type: 'match',
++                    value: 'some value',
++                  },
++                ],
++                field: 'some.parentField',
++                type: 'nested',
++              },
++              {
++                field: 'some.not.nested.field',
++                operator: 'included',
++                type: 'match',
++                value: 'some value',
++              },
++            ],
++            item_id: 'item_id_1',
++            list_id: 'i_exist',
++            name: 'Query with a rule id',
++            type: 'simple',
++          };
++
++          const IMPORT_PAYLOAD = [
++            CUSTOM_QUERY_RULE_WITH_EXCEPTION,
++            EXCEPTION_LIST,
++            EXCEPTION_LIST_ITEM,
++          ];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            success_count: 1,
++            rules_count: 1,
++            errors: [],
++            exceptions_errors: [],
++            exceptions_success: true,
++            exceptions_success_count: 1,
++          });
++
++          const { body: importedRule } = await detectionsApi.readRule(
++            {
++              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
++            },
++            kibanaSpaceId
++          );
++
++          expect(importedRule.exceptions_list).toEqual([
++            {
++              ...CUSTOM_QUERY_RULE_WITH_EXCEPTION.exceptions_list?.[0],
++              id: expect.any(String),
++            },
++          ]);
++
++          await assertExceptionList({
++            query: {
++              id: importedRule.exceptions_list[0].id,
++            },
++            expected: {
++              ...EXCEPTION_LIST,
++              id: importedRule.exceptions_list[0].id,
++            },
++          });
++          await assertExceptionListItems({
++            query: {
++              item_id: 'item_id_1',
++            },
++            expected: {
++              ...EXCEPTION_LIST_ITEM,
++              comments: [
++                {
++                  ...EXCEPTION_LIST_ITEM.comments[0],
++                  id: expect.any(String),
++                  created_by: expect.any(String),
++                  created_at: expect.any(String),
++                },
++                EXCEPTION_LIST_ITEM.comments[1],
++              ],
++            },
++          });
++        });
++
++        it('imports 100 rules with exceptions in bulk', async () => {
++          const RULES_TO_IMPORT = range(150).map((i) =>
++            getCustomQueryRuleParams({
++              rule_id: `imported-rule-${i}`,
++              exceptions_list: [
++                {
++                  id: `${i}`,
++                  list_id: `exception-${i}`,
++                  type: 'detection',
++                  namespace_type: 'single',
++                },
++              ],
++            })
++          );
++          const EXCEPTION_LISTS = range(150).map((i) => ({
++            ...getImportExceptionsListSchemaMock(`exception-${i}`),
++            id: `${i}`,
++            type: 'detection',
++            namespace_type: 'single',
++          }));
++          const EXCEPTION_LISTS_ITEMS = range(150).map((i) => ({
++            description: 'some description',
++            entries: [
++              {
++                field: 'some.not.nested.field',
++                operator: 'included',
++                type: 'match',
++                value: 'some value',
++              },
++            ],
++            item_id: `item_id_${i}`,
++            list_id: `exception-${i}`,
++            name: 'Query with a rule id',
++            type: 'simple',
++          }));
++          const IMPORT_PAYLOAD = [...RULES_TO_IMPORT, ...EXCEPTION_LISTS, ...EXCEPTION_LISTS_ITEMS];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            success_count: 150,
++            rules_count: 150,
++            errors: [],
++            exceptions_errors: [],
++            exceptions_success: true,
++            exceptions_success_count: 150,
++          });
++        });
++
++        it('removes non-existent exception list from the imported rule', async () => {
++          const { body: exceptionBody } = await exceptionsApi
++            .createExceptionList(
++              {
++                body: {
++                  ...getCreateExceptionListMinimalSchemaMock(),
++                  list_id: 'i_exist',
++                  namespace_type: 'single',
++                  type: 'detection',
++                },
++              },
++              kibanaSpaceId
++            )
++            .expect(200);
++
++          const IMPORT_PAYLOAD = [
++            getCustomQueryRuleParams({
++              rule_id: RULE_TO_IMPORT_RULE_ID,
++              exceptions_list: [
++                {
++                  id: exceptionBody.id,
++                  list_id: 'i_exist',
++                  type: 'detection',
++                  namespace_type: 'single',
++                },
++                {
++                  id: 'i_dont_exist',
++                  list_id: '123',
++                  type: 'detection',
++                  namespace_type: 'single',
++                },
++              ],
++            }),
++          ];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: false,
++            success_count: 1,
++            rules_count: 1,
++            errors: [
++              {
++                rule_id: RULE_TO_IMPORT_RULE_ID,
++                error: {
++                  message: `Rule with rule_id: "${RULE_TO_IMPORT_RULE_ID}" references a non existent exception list of list_id: "123". Reference has been removed.`,
++                  status_code: 400,
++                },
++              },
++            ],
++            exceptions_errors: [],
++            exceptions_success: true,
++            exceptions_success_count: 0,
++          });
++
++          const { body: importedRule } = await detectionsApi.readRule(
++            {
++              query: { rule_id: RULE_TO_IMPORT_RULE_ID },
++            },
++            kibanaSpaceId
++          );
++
++          expect(importedRule).toMatchObject({
++            exceptions_list: [
++              {
++                id: exceptionBody.id,
++                list_id: 'i_exist',
++                namespace_type: 'single',
++                type: 'detection',
++              },
++            ],
++          });
++        });
++      });
++
++      describe('exceptions not related to rules', () => {
++        it('imports an exception list with list items', async () => {
++          // Custom rules import endpoint expects as minimum one rule in the import payload.
++          // Though provided rule doesn't have to reference the exception list.
++          const CUSTOM_QUERY_RULE = getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID });
++          const EXCEPTION_LIST = getImportExceptionsListSchemaMock('test_list_id');
++          const EXCEPTION_LIST_ITEM = getImportExceptionsListItemNewerVersionSchemaMock(
++            'test_item_id',
++            'test_list_id'
++          );
++          const IMPORT_PAYLOAD = [CUSTOM_QUERY_RULE, EXCEPTION_LIST, EXCEPTION_LIST_ITEM];
++
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            exceptions_success: true,
++            exceptions_success_count: 1,
++          });
++
++          await assertExceptionList({
++            query: {
++              list_id: 'test_list_id',
++            },
++            expected: EXCEPTION_LIST,
++          });
++          await assertExceptionListItems({
++            query: {
++              item_id: 'test_item_id',
++            },
++            expected: EXCEPTION_LIST_ITEM,
++          });
++        });
++
++        /*
++          Following the release of version 8.7, this test can be considered as an evaluation of exporting
++          an outdated List Item. A notable distinction lies in the absence of the "expire_time" property
++          within the getImportExceptionsListItemSchemaMock, which allows for differentiation between older
++          and newer versions. The rationale behind this approach is the lack of version tracking for both List and Rule,
++          thereby enabling simulation of migration scenarios.
++        */
++        it('imports an outdated exception list with list items', async () => {
++          // Custom rules import endpoint expects as minimum one rule in the import payload.
++          // Though provided rule doesn't have to reference the exception list.
++          const CUSTOM_QUERY_RULE = getCustomQueryRuleParams({ rule_id: RULE_TO_IMPORT_RULE_ID });
++          const EXCEPTION_LIST = getImportExceptionsListSchemaMock('test_list_id');
++          const EXCEPTION_LIST_ITEM = getImportExceptionsListItemSchemaMock(
++            'test_item_id',
++            'test_list_id'
++          );
++          const IMPORT_PAYLOAD = [CUSTOM_QUERY_RULE, EXCEPTION_LIST, EXCEPTION_LIST_ITEM];
++
++          // import old exception version
++          const importResponse = await importRules({
++            getService,
++            rules: IMPORT_PAYLOAD,
++            overwrite: false,
++            spaceId: kibanaSpaceId,
++          });
++
++          expect(importResponse).toMatchObject({
++            success: true,
++            exceptions_success: true,
++            exceptions_success_count: 1,
++          });
++
++          await assertExceptionList({
++            query: {
++              list_id: 'test_list_id',
++            },
++            expected: EXCEPTION_LIST,
++          });
++          await assertExceptionListItems({
++            query: {
++              item_id: 'test_item_id',
++            },
++            expected: EXCEPTION_LIST_ITEM,
++          });
++        });
++      });
++    };
++
++    describe('importing in default space', () => {
++      testImportingInSpace();
++    });
++
++    describe('importing in non-default space', () => {
++      testImportingInSpace(spaceId);
++    });
++  });
++};
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts
+index 035e09685ee..1b8131bb562 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts
+@@ -9,11 +9,17 @@ import expect from 'expect';
+ 
+ import { DETECTION_ENGINE_RULES_IMPORT_URL } from '@kbn/security-solution-plugin/common/constants';
+ import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
+-import { combineToNdJson, getCustomQueryRuleParams, fetchRule } from '../../../utils';
++import {
++  combineToNdJson,
++  getCustomQueryRuleParams,
++  fetchRule,
++  importRulesWithSuccess,
++} from '../../../utils';
+ import type { FtrProviderContext } from '../../../../../ftr_provider_context';
+ 
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
++  const detectionsApi = getService('detectionsApi');
+   const log = getService('log');
+ 
+   describe('@ess @serverless @skipInServerlessMKI import_rules with rule overwrite set to "true"', () => {
+@@ -77,7 +83,7 @@ export default ({ getService }: FtrProviderContext): void => {
+     });
+ 
+     it('overwrites an existing rule', async () => {
+-      await createRule(
++      const existing = await createRule(
+         supertest,
+         log,
+         getCustomQueryRuleParams({
+@@ -109,6 +115,7 @@ export default ({ getService }: FtrProviderContext): void => {
+ 
+       const importedRule = await fetchRule(supertest, { ruleId: 'existing-rule' });
+ 
++      expect(importedRule.id).toBe(existing.id);
+       expect(importedRule.name).toBe('Imported rule');
+     });
+ 
+@@ -187,5 +194,69 @@ export default ({ getService }: FtrProviderContext): void => {
+         })
+       );
+     });
++
++    it('enables a disabled rule when overwriting with enabled true', async () => {
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-enable-rule',
++          name: 'Disabled before overwrite',
++          enabled: false,
++        })
++      );
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-enable-rule',
++            name: 'Enabled after overwrite',
++            enabled: true,
++          }),
++        ],
++        overwrite: true,
++      });
++
++      const { body } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-enable-rule' } })
++        .expect(200);
++
++      expect(body.id).toBe(existing.id);
++      expect(body.enabled).toBe(true);
++      expect(body.name).toBe('Enabled after overwrite');
++    });
++
++    it('disables an enabled rule when overwriting with enabled false', async () => {
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-disable-rule',
++          name: 'Enabled before overwrite',
++          enabled: true,
++        })
++      );
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-disable-rule',
++            name: 'Disabled after overwrite',
++            enabled: false,
++          }),
++        ],
++        overwrite: true,
++      });
++
++      const { body } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-disable-rule' } })
++        .expect(200);
++
++      expect(body.id).toBe(existing.id);
++      expect(body.enabled).toBe(false);
++      expect(body.name).toBe('Disabled after overwrite');
++    });
+   });
+ };
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/index.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/index.ts
+index 3be22500534..8b03e7428de 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/index.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/index.ts
+@@ -13,8 +13,17 @@ export default function ({ loadTestFile }: FtrProviderContext) {
+     loadTestFile(require.resolve('./export_rules_ess'));
+     loadTestFile(require.resolve('./import_export_rules'));
+     loadTestFile(require.resolve('./import_rules'));
++    loadTestFile(require.resolve('./import_rules_with_exceptions'));
++    loadTestFile(require.resolve('./import_rules_with_actions'));
+     loadTestFile(require.resolve('./import_rules_with_overwrite'));
++    loadTestFile(require.resolve('./import_rules_conflicts'));
++    loadTestFile(require.resolve('./import_rules_response_actions'));
+     loadTestFile(require.resolve('./import_rules_ess'));
+     loadTestFile(require.resolve('./import_connectors'));
++    loadTestFile(require.resolve('./import_rules_at_batch_boundary'));
++    loadTestFile(require.resolve('./import_rules_overwrite_at_batch_boundary'));
++    loadTestFile(require.resolve('./import_rules_concurrent'));
++    loadTestFile(require.resolve('./import_rules_by_type'));
++    loadTestFile(require.resolve('./import_rules_identity'));
+   });
+ }
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/change_tracking.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/change_tracking.ts
+index 8a588686985..1074eb2ca13 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/change_tracking.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_management/trial_license_complete_tier/change_tracking.ts
+@@ -6,6 +6,7 @@
+  */
+ 
+ import expect from 'expect';
++import { range } from 'lodash';
+ import { ModeEnum } from '@kbn/security-solution-plugin/common/api/detection_engine';
+ import { BulkActionTypeEnum } from '@kbn/security-solution-plugin/common/api/detection_engine/rule_management';
+ import {
+@@ -21,6 +22,7 @@ import {
+   createRuleAssetSavedObject,
+   deleteAllPrebuiltRuleAssets,
+   getCustomQueryRuleParams,
++  importRulesWithSuccess,
+   installPrebuiltRules,
+   performUpgradePrebuiltRules,
+ } from '../../../utils';
+@@ -295,10 +297,69 @@ export default ({ getService }: FtrProviderContext): void => {
+ 
+       it('records rule_import when importing a new rule', async () => {
+         const ruleId = 'import-action-test-rule';
+-        const ndjson = combineToNdJson(getCustomQueryRuleParams({ rule_id: ruleId }));
++        const ndjson = combineToNdJson(
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: 'Imported custom rule',
++            enabled: false,
++          })
++        );
+ 
+         await detectionsApi
+-          .importRules({ query: { overwrite: true } })
++          .importRules({ query: { overwrite: false } })
++          .attach('file', Buffer.from(ndjson), 'rules.ndjson')
++          .expect(200);
++
++        const { body: rule } = await detectionsApi.readRule({ query: { rule_id: ruleId } });
++
++        await refreshHistory();
++
++        const { body } = await detectionsApi
++          .ruleChangesHistory({ params: { ruleId: rule.id }, query: {} })
++          .expect(200);
++
++        expect(body.items).toHaveLength(1);
++
++        const [item] = body.items;
++        expect(item.action).toBe('rule_import');
++        expect(item.user).toEqual({ name: 'elastic' });
++        expect(item.old_values).toBeNull();
++        expect(item.metadata?.bulk_count).toBe(1);
++        expect(item.rule).toMatchObject({
++          id: rule.id,
++          rule_id: ruleId,
++          name: 'Imported custom rule',
++          revision: 0,
++          enabled: false,
++          immutable: false,
++          rule_source: { type: 'internal' },
++        });
++        // Fresh create/import stamps created_at === updated_at on the snapshot.
++        expect(item.rule.created_at).toBe(item.rule.updated_at);
++      });
++
++      it('records rule_import when importing a prebuilt rule', async () => {
++        const ruleId = 'import-prebuilt-action-test-rule';
++        const asset = createRuleAssetSavedObject({
++          rule_id: ruleId,
++          version: 1,
++          name: 'Prebuilt import history rule',
++        });
++        await createHistoricalPrebuiltRuleAssetSavedObjects(es, [asset]);
++
++        const ndjson = combineToNdJson({
++          ...asset['security-rule'],
++          immutable: true,
++          rule_source: {
++            type: 'external',
++            is_customized: false,
++            customized_fields: [],
++            has_base_version: true,
++          },
++        });
++
++        await detectionsApi
++          .importRules({ query: { overwrite: false } })
+           .attach('file', Buffer.from(ndjson), 'rules.ndjson')
+           .expect(200);
+ 
+@@ -311,17 +372,46 @@ export default ({ getService }: FtrProviderContext): void => {
+           .expect(200);
+ 
+         expect(body.items).toHaveLength(1);
+-        expect(body.items[0].action).toBe('rule_import');
++
++        const [item] = body.items;
++        expect(item.action).toBe('rule_import');
++        expect(item.user).toEqual({ name: 'elastic' });
++        expect(item.old_values).toBeNull();
++        expect(item.metadata?.bulk_count).toBe(1);
++        expect(item.rule).toMatchObject({
++          id: rule.id,
++          rule_id: ruleId,
++          name: 'Prebuilt import history rule',
++          revision: 0,
++          immutable: true,
++          rule_source: {
++            type: 'external',
++            is_customized: false,
++            customized_fields: [],
++            has_base_version: true,
++          },
++        });
++        expect(item.rule.created_at).toBe(item.rule.updated_at);
+       });
+ 
+       it('records rule_import when overwriting an existing rule', async () => {
+         const ruleId = 'overwrite-action-test-rule';
+         const { body: rule } = await detectionsApi
+-          .createRule({ body: getCustomQueryRuleParams({ rule_id: ruleId }) })
++          .createRule({
++            body: getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: 'Before import overwrite',
++              enabled: false,
++            }),
++          })
+           .expect(200);
+ 
+         const ndjson = combineToNdJson(
+-          getCustomQueryRuleParams({ rule_id: ruleId, name: 'overwritten name' })
++          getCustomQueryRuleParams({
++            rule_id: ruleId,
++            name: 'overwritten name',
++            enabled: false,
++          })
+         );
+ 
+         await detectionsApi
+@@ -336,7 +426,34 @@ export default ({ getService }: FtrProviderContext): void => {
+           .expect(200);
+ 
+         // Most recent event (index 0) is the import overwrite; index 1 is the original create.
+-        expect(body.items[0].action).toBe('rule_import');
++        expect(body.total).toBe(2);
++        expect(body.items).toHaveLength(2);
++
++        const [imported, created] = body.items;
++        expect(imported.action).toBe('rule_import');
++        expect(imported.user).toEqual({ name: 'elastic' });
++        expect(imported.metadata?.bulk_count).toBe(1);
++        expect(imported.rule).toMatchObject({
++          id: rule.id,
++          rule_id: ruleId,
++          name: 'overwritten name',
++          revision: 1,
++          enabled: false,
++        });
++        expect(imported.old_values).toMatchObject({
++          name: 'Before import overwrite',
++          revision: 0,
++        });
++        expect(imported.rule.created_at).not.toBe(imported.rule.updated_at);
++
++        expect(created.action).toBe('rule_create');
++        expect(created.old_values).toBeNull();
++        expect(created.rule).toMatchObject({
++          id: rule.id,
++          rule_id: ruleId,
++          name: 'Before import overwrite',
++          revision: 0,
++        });
+       });
+ 
+       it('records rule_install when installing a prebuilt rule', async () => {
+@@ -537,7 +654,98 @@ export default ({ getService }: FtrProviderContext): void => {
+           .ruleChangesHistory({ params: { ruleId: rule.id }, query: {} })
+           .expect(200);
+ 
+-        expect(body.items[0].metadata?.bulk_count).toBe(3);
++        const [item] = body.items;
++        expect(item.action).toBe('rule_import');
++        expect(item.old_values).toBeNull();
++        expect(item.metadata?.bulk_count).toBe(3);
++        expect(item.rule).toMatchObject({
++          id: rule.id,
++          rule_id: 'bulk-import-count-1',
++          revision: 0,
++        });
++      });
++
++      it('records bulkCount as the full import size for rules across chunk boundaries', async () => {
++        // Above main import chunking (50) and planned rewrite batches (300–500).
++        const ruleCount = 568;
++
++        await importRulesWithSuccess({
++          getService,
++          rules: range(ruleCount).map((i) =>
++            getCustomQueryRuleParams({
++              rule_id: `bulk-import-chunk-${i}`,
++              name: `Bulk chunk ${i}`,
++              enabled: false,
++            })
++          ),
++          overwrite: false,
++        });
++
++        await refreshHistory();
++
++        // First chunk, past main's 50-chunk, past planned 300/500 batches, and the final remainder.
++        const sampleIndexes = [0, 50, 300, 500, ruleCount - 1];
++
++        for (const i of sampleIndexes) {
++          const { body: rule } = await detectionsApi
++            .readRule({ query: { rule_id: `bulk-import-chunk-${i}` } })
++            .expect(200);
++
++          const { body } = await detectionsApi
++            .ruleChangesHistory({ params: { ruleId: rule.id }, query: {} })
++            .expect(200);
++
++          expect(body.items[0].action).toBe('rule_import');
++          expect(body.items[0].metadata?.bulk_count).toBe(ruleCount);
++        }
++      });
++
++      it('records bulkCount as the full import size when overwriting across chunk boundaries', async () => {
++        // Above main import chunking (50) and planned rewrite batches (300–500).
++        const ruleCount = 568;
++
++        await importRulesWithSuccess({
++          getService,
++          rules: range(ruleCount).map((i) =>
++            getCustomQueryRuleParams({
++              rule_id: `bulk-overwrite-chunk-${i}`,
++              name: `Before overwrite ${i}`,
++              enabled: false,
++            })
++          ),
++          overwrite: false,
++        });
++
++        await clearHistory();
++
++        await importRulesWithSuccess({
++          getService,
++          rules: range(ruleCount).map((i) =>
++            getCustomQueryRuleParams({
++              rule_id: `bulk-overwrite-chunk-${i}`,
++              name: `After overwrite ${i}`,
++              enabled: false,
++            })
++          ),
++          overwrite: true,
++        });
++
++        await refreshHistory();
++
++        const sampleIndexes = [0, 50, 300, 500, ruleCount - 1];
++
++        for (const i of sampleIndexes) {
++          const { body: rule } = await detectionsApi
++            .readRule({ query: { rule_id: `bulk-overwrite-chunk-${i}` } })
++            .expect(200);
++
++          const { body } = await detectionsApi
++            .ruleChangesHistory({ params: { ruleId: rule.id }, query: {} })
++            .expect(200);
++
++          expect(body.items[0].action).toBe('rule_import');
++          expect(body.items[0].metadata?.bulk_count).toBe(ruleCount);
++        }
+       });
+ 
+       it('records bulkCount equal to the number of installed prebuilt rules', async () => {
