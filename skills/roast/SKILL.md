@@ -73,7 +73,7 @@ Go claim by claim through the document. For each meaningful assertion, go verify
 
 Don't manufacture problems. If a claim is correct, say it's correct and move on.
 
-If a claim is _almost_ correct and the difference is not consequential, don't waste people's time and move on.
+If a claim is _almost_ correct and the difference is not consequential or misleading: don't waste people's time and move on.
 
 The goal is an accurate picture, and to find useful divergence. Not a takedown.
 
