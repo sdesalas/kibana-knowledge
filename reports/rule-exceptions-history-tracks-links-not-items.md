@@ -1,7 +1,7 @@
 # Rule exceptions: History tracks folder links, not the exceptions themselves
 
-**Date:** 2026-07-24  
-**Related issue:** [elastic/kibana#272918](https://github.com/elastic/kibana/issues/272918) — *Rule exception activity is not accurately tracked in the rule's change history*  
+**Date:** 2026-07-24
+**Related issue:** [elastic/kibana#272918](https://github.com/elastic/kibana/issues/272918) — *Rule exception activity is not accurately tracked in the rule's change history*
 **Also referenced:** bulk exception deletion ([#276458](https://github.com/elastic/kibana/issues/276458))
 
 This is an investigation into the strange rule-exception behavior in change history: some actions show up, most don’t, and deleting exceptions can look like nothing happened.
@@ -22,7 +22,7 @@ Separately: if you **link a shared exception list** to the rule, History *does* 
 
 So History feels broken for the common path: folder **links** show up; the actual exception **entries** never do. That is the bug reported in [#272918](https://github.com/elastic/kibana/issues/272918).
 
-### Two different things: folder vs entry
+### Mental Model. Two different things: folder vs entry
 
 | Name in the product/code | Plain language | What it is |
 |---|---|---|
@@ -198,8 +198,8 @@ A bulk “delete exception entries” API that only deletes entries would keep t
 
 If “delete” should mean “these exceptions are gone from this rule” the way a user means it, product needs an explicit choice:
 
-1. **Delete entries only** (today’s behavior), or  
-2. **Delete entries and, when the private folder is empty, unlink/delete that folder** (so at least “last delete” shows in History), or  
+1. **Delete entries only** (today’s behavior), or
+2. **Delete entries and, when the private folder is empty, unlink/delete that folder** (so at least “last delete” shows in History), or
 3. **Track exception entry changes somewhere else** (list history / new audit events), so users are not relying on rule History alone.
 
 Option (2) matches the “we should unlink on delete” direction in the issue comment. It still would not put full exception content into the rule History diff.
