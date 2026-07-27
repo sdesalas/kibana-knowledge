@@ -101,7 +101,6 @@ description work for them.
 | Item | Why secondary |
 |---|---|
 | Emit `DETECTION_RULE_IMPORT_EVENT` from bulk `importRules` | Real telemetry gap, but not what reviewers are waiting on for the rewrite itself |
-| Delete unused `rule_source_importer/` tree | Logic already inlined; leftover dead code |
 | Resolve outdated GitHub review threads | Hygiene — banderror still needs to re-review either way |
 | changeTracking "other parameters?" thread | Route already passes `action` + `bulkCount`; waiting on reviewer clarification |
 
