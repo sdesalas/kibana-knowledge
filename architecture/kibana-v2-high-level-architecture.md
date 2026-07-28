@@ -13,7 +13,9 @@ Primary source: `x-pack/platform/plugins/shared/alerting_v2/` — the plugin's o
 
 ## The mental model
 
-Everything revolves around two append-only data streams: `.rule-events` (what rule execution produced) and `.alert-actions` (what users and the dispatcher did about it). Nothing is updated in place — state is derived by reading history.
+**Rule definitions are still stored as Saved Objects** (`alerting_rule` SO type in `.kibana_alerting_cases` - instead of `alert` for V1).
+
+Everything else revolves around two append-only data streams: `.rule-events` (what rule execution produced) and `.alert-actions` (what users and the dispatcher did about it). Nothing in those streams is updated in place — state is derived by reading history.
 
 The server is organized as five cooperating planes:
 
