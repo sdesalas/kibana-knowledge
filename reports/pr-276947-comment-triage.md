@@ -2,12 +2,12 @@
 
 **PR:** [elastic/kibana#276947](https://github.com/elastic/kibana/pull/276947) — *[Alerting V2] Rule versioning using change history datastream*  
 **Author:** @adcoelho  
-**Branch checked:** `alerting-v2-rule-versioning` @ `0e75b2bd`  
-**Date:** 2026-07-30  
+**Branch checked:** `alerting-v2-rule-versioning` @ `1758357668` (“Fix types”)  
+**Date:** 2026-07-31  
 
-**Method:** All 61 review threads fetched via GraphQL. Each claim verified against current code — GitHub’s resolved/unresolved flag was **not** trusted.
+**Method:** All 63 review threads fetched via GraphQL. Each claim verified against current code — GitHub’s resolved/unresolved flag was **not** trusted.
 
-**Counts (by verification, not GH flags):** ~35 clearly addressed · ~10 not addressed · ~8 unsure / trap / deferred
+**Counts (by verification, not GH flags):** ~40 clearly addressed · ~7 not addressed · ~8 unsure / trap / deferred
 
 ---
 
@@ -19,13 +19,20 @@ Sorted by number of related review threads (most discussed first).
 
 ### 1. Scout / test coverage for change history (9 threads)
 
-**Status: Addressed in spirit; placement mismatch**
+**Status: Mostly addressed; a few gaps left**
 
 > **@sdesalas** ([T48](https://github.com/elastic/kibana/pull/276947#discussion_r3665151799)):
 >
 > We should find a way to check change histories have been added correctly here. Also in the update/upsert rule integration tests. Making sure to check not just the action but the payload shape as well.
 
-Antonio claimed additions on create/update specs ([dcbd1e8](https://github.com/elastic/kibana/pull/276947/commits/dcbd1e8a52b9066379ba6edfe4b1376c59b80c21)). Actual coverage lives in a dedicated `rule_history.spec.ts` (+ helper service). Create/update route specs themselves have **no** `ruleChangesHistory` assertions.
+Antonio claimed additions on create/update specs ([dcbd1e8](https://github.com/elastic/kibana/pull/276947/commits/dcbd1e8a52b9066379ba6edfe4b1376c59b80c21)). Actual coverage lives in a dedicated `rule_history.spec.ts` (+ helper service) and asserts action, sequence, module/dataset/objectType, and snapshot shape for create / update / upsert / enable / disable / delete.
+
+Create/update/upsert **route** specs now assert `metadata.version` bumps, but still have **no** `ruleChangesHistory` document assertions (placement mismatch vs T48).
+
+**Gaps still worth adding:**
+
+- Delete → recreate (same id) sequence continuity — none today; ties to [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) / [T63](https://github.com/elastic/kibana/pull/276947#discussion_r3683011892).
+- Bulk enable of an already-enabled rule emitting history — blocked until [T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059); current unit/Scout tests encode the skip behavior.
 
 Also: unit tests for the service ([T3](https://github.com/elastic/kibana/pull/276947#discussion_r3543390267)) — done. SO fixture population ([T4](https://github.com/elastic/kibana/pull/276947#discussion_r3550676521) / [T13](https://github.com/elastic/kibana/pull/276947#discussion_r3569240016) / [T20](https://github.com/elastic/kibana/pull/276947#discussion_r3594114175) / [T38](https://github.com/elastic/kibana/pull/276947#discussion_r3636984133)) — done. Scout helper duplication into `@kbn/scout` ([T52](https://github.com/elastic/kibana/pull/276947#discussion_r3672726512)) — not done, nit.
 
@@ -55,8 +62,7 @@ Human review landed on the same area — field placement and schema file version
 
 ### 3. Where does the monotonic counter live? (SO vs change-history index) (6 threads)
 
-**Status: Addressed (design consensus — keep on SO as `metadata.version`)**  
-**GH note:** [T6](https://github.com/elastic/kibana/pull/276947#discussion_r3550935029) still shows unresolved even though Christos later agreed.
+**Status: Addressed (design consensus — keep on SO as `metadata.version`)**
 
 Raised by @cnasikas (initially against storing on SO), @maximpn (wanted the number exposed), later settled with @darnautov onto `metadata.version`.
 
@@ -70,22 +76,24 @@ Antonio argued SO + OCC is the only way to guarantee unique sequence; Christos l
 >
 > Ok, we discussed with @darnautov, and to also address Mike's concerns, we think that it would be clearer if we do `metadata.version` for the integer and have the top-level version for the SO OCC. Also, should this be non-optional, now that we backfill the SOs with data?
 
+Maxim’s earlier multi-instance race concern on the same thread was **withdrawn** ([Jul 30](https://github.com/elastic/kibana/pull/276947#discussion_r3681460183)): SO OCC fencing makes the duplicate-sequence scenario invalid. [T6](https://github.com/elastic/kibana/pull/276947#discussion_r3550935029) is now resolved on GH.
+
 **Related threads:** [T6](https://github.com/elastic/kibana/pull/276947#discussion_r3550935029), [T7](https://github.com/elastic/kibana/pull/276947#discussion_r3551261619), [T21](https://github.com/elastic/kibana/pull/276947#discussion_r3595652383), [T35](https://github.com/elastic/kibana/pull/276947#discussion_r3623363300), [T37](https://github.com/elastic/kibana/pull/276947#discussion_r3636984115), [T39](https://github.com/elastic/kibana/pull/276947#discussion_r3637179604)
 
 ---
 
 ### 4. Misc naming / hygiene (open nits) (6 threads)
 
-**Status: Mixed**
+**Status: Mostly cleaned up**
 
 | Item | Status |
 |------|--------|
 | [T15](https://github.com/elastic/kibana/pull/276947#discussion_r3583335407) “Changes” plural naming | Addressed |
-| [T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822) avoid cast — **resolved on GH but cast still in code** | Not addressed |
+| [T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822) avoid cast | Nit; cast still in `buildLogChangeHistoryData` — leave |
 | [T25](https://github.com/elastic/kibana/pull/276947#discussion_r3621923173) nested logger? — explained correctly, GH still open | Addressed (explanation) |
-| [T60](https://github.com/elastic/kibana/pull/276947#discussion_r3681310489) rename `RULE_CHANGES_HISTORY_MAPPINGS` (confused with ES mappings) | Not addressed |
-| [T61](https://github.com/elastic/kibana/pull/276947#discussion_r3681376772) what does `serverFields` mean? | Not addressed (unanswered) |
-| [T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724) docstring | Not addressed |
+| [T60](https://github.com/elastic/kibana/pull/276947#discussion_r3681310489) rename `RULE_CHANGES_HISTORY_MAPPINGS` | **Addressed** → `RULE_LIFECYCLE_TO_CHANGES_HISTORY_MAP` |
+| [T61](https://github.com/elastic/kibana/pull/276947#discussion_r3681376772) what does `serverFields` mean? | Answered; Maxim suggested `internalFields` as **out of scope** for this PR |
+| [T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724) docstring | **Addressed** — schema now says “Monotonically increasing…” |
 
 ### 5. Enable/disable self-heal vs no-op (single vs bulk) (5 threads)
 
@@ -105,7 +113,7 @@ Raised by AI (multiple times), @cnasikas, @sdesalas, @adcoelho.
 >
 > My take here would be to update the bulk logic to mirror single enable (allowing the update). Currently in V1, bulk enabling an already enabled rule will still update the SO.
 
-**Code today:** single `enableRule`/`disableRule` self-heal is back. `executeBulkEnable` still `continue`s on already-enabled rules — Steven’s ask not done.
+**Code today:** single `enableRule`/`disableRule` self-heal is back. `executeBulkEnable` still `continue`s on already-enabled rules — Steven’s ask not done. Unit test still encodes skip: *“counts already-enabled rules as affected without updating them”*.
 
 **Related threads:** [T1](https://github.com/elastic/kibana/pull/276947#discussion_r3543316512) (author note, later reverted), [T5](https://github.com/elastic/kibana/pull/276947#discussion_r3550850123), [T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059), [T42](https://github.com/elastic/kibana/pull/276947#discussion_r3637550266), [T45](https://github.com/elastic/kibana/pull/276947#discussion_r3657535521)
 
@@ -138,7 +146,7 @@ Raised by @maximpn, @sdesalas, AI (×3).
 
 ### 7. V1↔V2 history continuity (`module` / `dataset` / `objectType`) (5 threads)
 
-**Status: Addressed via design decision (intentional break; parked on #797)**  
+**Status: Addressed via design decision (intentional break; parked on [rna-program#797](https://github.com/elastic/rna-program/issues/797))**  
 Constants unchanged: `alerting-v2` / `rules` / `alerting_rule`.
 
 > **@sdesalas** ([T56](https://github.com/elastic/kibana/pull/276947#discussion_r3673550150)):
@@ -157,7 +165,7 @@ Constants unchanged: `alerting-v2` / `rules` / `alerting_rule`.
 >
 > If we pile them all together … customers will not be able to separate the rules they care about…
 
-Christos: no solution split at storage level in V2 yet. Steven later accepted V1 history can stay on the old SO until deleted (migration model).
+Christos: no solution split at storage level in V2 yet. Steven later accepted V1 history can stay on the old SO until deleted (migration model). Ticketed on [rna-program#797](https://github.com/elastic/rna-program/issues/797).
 
 **Related threads:** [T11](https://github.com/elastic/kibana/pull/276947#discussion_r3551320646) (module rename to `alerting-v2` — done), [T54](https://github.com/elastic/kibana/pull/276947#discussion_r3673526512) (context), [T55](https://github.com/elastic/kibana/pull/276947#discussion_r3673539683), [T56](https://github.com/elastic/kibana/pull/276947#discussion_r3673550150), [T57](https://github.com/elastic/kibana/pull/276947#discussion_r3673587328)
 
@@ -165,9 +173,9 @@ Christos: no solution split at storage level in V2 yet. Steven later accepted V1
 
 ### 8. Naming: `version` vs V1 `revision` / `version` (3 threads)
 
-**Status: Not addressed (open question from Maxim today)**
+**Status: Accepted for this PR — keep `metadata.version`; revisit later**
 
-V1 has two numbers with different semantics. V2 collapsed “any SO change” into a single `metadata.version`. Maxim wants an explicit decision.
+V1 has two numbers with different semantics. V2 collapsed “any SO change” into a single `metadata.version`. Maxim asked for an explicit decision; conversation continued Jul 31:
 
 > **@maximpn** ([T59](https://github.com/elastic/kibana/pull/276947#discussion_r3681296701)):
 >
@@ -183,22 +191,23 @@ V1 has two numbers with different semantics. V2 collapsed “any SO change” in
 > - Stick to Alerting v1 `revision` and `version` naming and behavior…
 > - Make naming much more verbose. Something like `user_version` and `author_version`…
 
-Also a docstring nit on the same field:
+> **@adcoelho** ([reply](https://github.com/elastic/kibana/pull/276947#discussion_r3689044756)): offline decision with Mike, Dima, @cnasikas — see [T21](https://github.com/elastic/kibana/pull/276947#discussion_r3595652383).
 
-> **@maximpn** ([T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724)):
->
-> nit: `'Monotonically increasing integer number representing a rule configuration version…'`
+> **@sdesalas** ([reply](https://github.com/elastic/kibana/pull/276947#discussion_r3689255530)): prefer `sequence` / `metadata.sequence` — avoids collision with OCC and matches change-history `object.sequence`.
+
+> **@cnasikas** ([reply](https://github.com/elastic/kibana/pull/276947#discussion_r3689445112)): experimental phase — stick with `metadata.version` for consistency with `rule.version` on events; open to revise after this PR.
+
+Docstring nit on the same field ([T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724)) is done.
 
 **Related threads:** [T21](https://github.com/elastic/kibana/pull/276947#discussion_r3595652383) (chose `metadata.version`), [T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724), [T59](https://github.com/elastic/kibana/pull/276947#discussion_r3681296701)
 
 ---
 
-### 9. Decouple RulesClient from change-history; emit domain model (3 threads)
+### 9. Decouple RulesClient from change-history; emit domain model (4 threads)
 
-**Status: Addressed**  
-**GH note:** [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868) still unresolved.
+**Status: Addressed** (including tighter snapshot typing)
 
-Raised by @cnasikas, @maximpn.
+Raised by @cnasikas, @maximpn, later @sdesalas on typing.
 
 > **@cnasikas** ([T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868)):
 >
@@ -210,17 +219,23 @@ Raised by @cnasikas, @maximpn.
 >
 > Saved Object have migrations support but changes history is append only. Consequently lower in the abstraction logic data structure snapshot is captured more effort will be required to provide backwards compatibility.
 
-Also [T12](https://github.com/elastic/kibana/pull/276947#discussion_r3551338280) (publisher should be agnostic). Current code: RulesClient has zero change-history imports; subscriber logs `RuleResponse`.
+Also [T12](https://github.com/elastic/kibana/pull/276947#discussion_r3551338280) (publisher should be agnostic).
 
-**Related threads:** [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868), [T12](https://github.com/elastic/kibana/pull/276947#discussion_r3551338280), [T14](https://github.com/elastic/kibana/pull/276947#discussion_r3583319395)
+> **@sdesalas** ([T62](https://github.com/elastic/kibana/pull/276947#discussion_r3681845394)):
+>
+> We should type the `snapshot` correctly… `RuleChangesHistorySnapshot = Omit<RuleResponse, 'version'>`… make `sequence` required… transform in the subscriber/service, not RulesClient.
+
+**Code today:** RulesClient has zero change-history imports; subscriber logs domain `RuleResponse`. Snapshot typing landed in `1ba05180b3` / `1758357668`: `RuleChangesHistorySnapshot = Omit<RuleResponse, 'version'>`, `sequence: number` required, subscriber `toRuleChangesHistorySnapshot()` strips OCC. [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868) / [T62](https://github.com/elastic/kibana/pull/276947#discussion_r3681845394) resolved on GH.
+
+**Related threads:** [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868), [T12](https://github.com/elastic/kibana/pull/276947#discussion_r3551338280), [T14](https://github.com/elastic/kibana/pull/276947#discussion_r3583319395), [T62](https://github.com/elastic/kibana/pull/276947#discussion_r3681845394)
 
 ---
 
-### 10. Seed / override create `version` on delete→recreate (2 threads)
+### 10. Seed / override create `version` on delete→recreate (3 threads)
 
 **Status: Not addressed (deferred to [rna-program#797](https://github.com/elastic/rna-program/issues/797))**
 
-Raised by @maximpn, AI reviewer, @sdesalas (with detection-rules upgrade path context).
+Raised by @maximpn, AI reviewer (twice), @sdesalas (with detection-rules upgrade / restore path context).
 
 > **@maximpn** ([T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809)):
 >
@@ -236,9 +251,11 @@ Raised by @maximpn, AI reviewer, @sdesalas (with detection-rules upgrade path co
 >
 > Want to recreate with an `id`? You're in charge of versioning if you want to do something fancy… Kick that can up the road to the consumer (so long as this information is also available to them on read).
 
-Later you noted V2 may not need delete→recreate at all (no rule types). Still: `CreateRuleParams` has no seed field; create always starts at `1`.
+Later note: delete→recreate remains an active path because of **rule restore**. Ticketed on [rna-program#797](https://github.com/elastic/rna-program/issues/797).
 
-**Related threads:** [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809), [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261)
+Claude re-raised the same gap ([T63](https://github.com/elastic/kibana/pull/276947#discussion_r3683011892), Jul 30) — still open, still no seed field; create always starts at `1`.
+
+**Related threads:** [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809), [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261), [T63](https://github.com/elastic/kibana/pull/276947#discussion_r3683011892)
 
 ---
 
@@ -260,7 +277,7 @@ Earlier Maxim had asked about unused scoped methods ([T17](https://github.com/el
 
 ### 12. Consumer overrides: action / metadata / refresh / await (1 thread)
 
-**Status: Not addressed (deferred to #797 by agreement)**
+**Status: Not addressed (deferred to [rna-program#797](https://github.com/elastic/rna-program/issues/797) by agreement)**
 
 Raised by @sdesalas; @cnasikas prefers dedicated RulesClient methods over passthrough options.
 
@@ -272,7 +289,7 @@ Raised by @sdesalas; @cnasikas prefers dedicated RulesClient methods over passth
 >
 > We also need callers to provide change history `metadata` such as the `metadata.bulkCount` or the `metadata.originalRuleSoId`… And to be able to override `refresh` (ie `refresh: 'wait_for'`) - and await the call (which is not being done here due to fire-and-forget bus)…
 
-Christos: start simple; prefer `duplicateRule` / `installRule` methods later. Steven: still prefers passing `action` for security flexibility. Ticketed on #797.
+Christos: start simple; prefer `duplicateRule` / `installRule` methods later. Steven: still prefers passing `action` for security flexibility. Ticketed on [rna-program#797](https://github.com/elastic/rna-program/issues/797).
 
 **Related threads:** [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272)
 
@@ -287,9 +304,9 @@ Christos: start simple; prefer `duplicateRule` / `installRule` methods later. St
 | [T3](https://github.com/elastic/kibana/pull/276947#discussion_r3543390267) | AI | Unit-test change-history service | `rule_changes_history_service.test.ts` |
 | [T4](https://github.com/elastic/kibana/pull/276947#discussion_r3550676521) / [T13](https://github.com/elastic/kibana/pull/276947#discussion_r3569240016) / [T20](https://github.com/elastic/kibana/pull/276947#discussion_r3594114175) / [T38](https://github.com/elastic/kibana/pull/276947#discussion_r3636984133) | AI | Populate SO migration fixture | Real docs + `metadata.version: 1` in `10.3.0.json` |
 | [T5](https://github.com/elastic/kibana/pull/276947#discussion_r3550850123) / [T42](https://github.com/elastic/kibana/pull/276947#discussion_r3637550266) | AI | Restore enable/disable self-heal (single) | Not short-circuited; schedules/removes tasks |
-| [T6](https://github.com/elastic/kibana/pull/276947#discussion_r3550935029) | cnasikas | (initial) don’t store counter on SO | Consensus reversed → keep on SO; **GH still unresolved** |
+| [T6](https://github.com/elastic/kibana/pull/276947#discussion_r3550935029) | cnasikas | (initial) don’t store counter on SO | Consensus reversed → keep on SO; Maxim race concern withdrawn |
 | [T7](https://github.com/elastic/kibana/pull/276947#discussion_r3551261619) | cnasikas | Fetch version from history service | Deferred by author of comment; SO is SoT |
-| [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868) | cnasikas | Decouple RulesClient | No change-history imports; **GH still unresolved** |
+| [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868) | cnasikas | Decouple RulesClient | No change-history imports |
 | [T9](https://github.com/elastic/kibana/pull/276947#discussion_r3551292106) | cnasikas | Use `userProfile.getCurrent` shape | Subscriber does |
 | [T10](https://github.com/elastic/kibana/pull/276947#discussion_r3551303135) / [T24](https://github.com/elastic/kibana/pull/276947#discussion_r3621660096) | cnasikas | DI + `createChangeHistoryClient` | Both exist |
 | [T11](https://github.com/elastic/kibana/pull/276947#discussion_r3551320646) | cnasikas | Module `alerting-v2` | Constants match |
@@ -306,7 +323,11 @@ Christos: start simple; prefer `duplicateRule` / `installRule` methods later. St
 | [T40](https://github.com/elastic/kibana/pull/276947#discussion_r3637179622) | AI | tsconfig comma | Fixed |
 | [T45](https://github.com/elastic/kibana/pull/276947#discussion_r3657535521) | sdesalas | Empty PATCH check | Accepted after explanation |
 | [T48](https://github.com/elastic/kibana/pull/276947#discussion_r3665151799)–[T50](https://github.com/elastic/kibana/pull/276947#discussion_r3665161685) | sdesalas | Scout history assertions | In `rule_history.spec.ts` (see unsure) |
-| [T55](https://github.com/elastic/kibana/pull/276947#discussion_r3673539683)–[T57](https://github.com/elastic/kibana/pull/276947#discussion_r3673587328) | sdesalas | Continuity constants | Closed as intentional / #797 |
+| [T55](https://github.com/elastic/kibana/pull/276947#discussion_r3673539683)–[T57](https://github.com/elastic/kibana/pull/276947#discussion_r3673587328) | sdesalas | Continuity constants | Closed as intentional / [rna-program#797](https://github.com/elastic/rna-program/issues/797) |
+| [T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724) | maximpn | Docstring nit | Schema text updated |
+| [T59](https://github.com/elastic/kibana/pull/276947#discussion_r3681296701) | maximpn | `version` vs V1 naming | Keep `metadata.version` for this PR (Christos) |
+| [T60](https://github.com/elastic/kibana/pull/276947#discussion_r3681310489) | maximpn | Rename mappings constant | → `RULE_LIFECYCLE_TO_CHANGES_HISTORY_MAP` |
+| [T62](https://github.com/elastic/kibana/pull/276947#discussion_r3681845394) | sdesalas | Type snapshot + required sequence | `RuleChangesHistorySnapshot` + OCC strip in subscriber |
 
 ---
 
@@ -314,15 +335,12 @@ Christos: start simple; prefer `duplicateRule` / `installRule` methods later. St
 
 | Thread | Who | Ask | Why still open |
 |--------|-----|-----|----------------|
-| [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809) / [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) | maximpn / AI (+ sdesalas) | Seed create `version` | Always starts at `1`; no param; deferred #797 |
+| [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809) / [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) / [T63](https://github.com/elastic/kibana/pull/276947#discussion_r3683011892) | maximpn / AI (+ sdesalas) | Seed create `version` / reused-id sequence | Always starts at `1`; no param; deferred [rna-program#797](https://github.com/elastic/rna-program/issues/797) |
 | [T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059) | cnasikas (+ sdesalas) | Bulk enable/disable mirror single self-heal | Bulk still skips already-enabled/disabled |
-| [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) | sdesalas | Override action / metadata / refresh / await | Deferred #797 by agreement — **not in diff** |
+| [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) | sdesalas | Override action / metadata / refresh / await | Deferred [rna-program#797](https://github.com/elastic/rna-program/issues/797) by agreement — **not in diff** |
 | [T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805) | sdesalas | Drop / rethink `RuleChangesHistoryScope` | No reply; type still hardcoded |
-| [T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724) | maximpn | Docstring nit | Schema still says “Strictly increasing…” |
-| [T59](https://github.com/elastic/kibana/pull/276947#discussion_r3681296701) | maximpn | `version` vs V1 naming | Needs a written decision |
-| [T60](https://github.com/elastic/kibana/pull/276947#discussion_r3681310489) | maximpn | Rename mappings constant | Still `RULE_CHANGES_HISTORY_MAPPINGS` |
-| [T61](https://github.com/elastic/kibana/pull/276947#discussion_r3681376772) | maximpn | What is `serverFields`? | Unanswered |
-| [T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822) | cnasikas | Avoid cast | **Resolved on GH; cast still present** |
+| [T61](https://github.com/elastic/kibana/pull/276947#discussion_r3681376772) | maximpn | Rename `serverFields` → `internalFields` | Answered; Maxim marked out of scope |
+| [T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822) | cnasikas | Avoid cast | Nit; cast still present |
 | [T52](https://github.com/elastic/kibana/pull/276947#discussion_r3672726512) | AI | Share Scout system-indices helper | Local third copy remains (nit) |
 
 ---
@@ -332,8 +350,8 @@ Christos: start simple; prefer `duplicateRule` / `installRule` methods later. St
 | Thread | Why uncertain |
 |--------|----------------|
 | [T43](https://github.com/elastic/kibana/pull/276947#discussion_r3639230460) / [T44](https://github.com/elastic/kibana/pull/276947#discussion_r3639230480) / [T51](https://github.com/elastic/kibana/pull/276947#discussion_r3672423103) | **Stale AI.** Claim delete uses `rule.updatedAt` for `@timestamp`. Code no longer passes timestamp. Safe to resolve; don’t “fix” by stamping delete snapshots. |
-| [T48](https://github.com/elastic/kibana/pull/276947#discussion_r3665151799)–[T50](https://github.com/elastic/kibana/pull/276947#discussion_r3665161685) | Coverage exists in `rule_history.spec.ts`, **not** inline in create/update specs as requested. Intent met; claim location wrong. |
-| [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809) / [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) / [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) / [T55](https://github.com/elastic/kibana/pull/276947#discussion_r3673539683)–[T57](https://github.com/elastic/kibana/pull/276947#discussion_r3673587328) | Conversation closed or ticketed ≠ implemented. Treat as accepted deferral, not “done.” |
+| [T48](https://github.com/elastic/kibana/pull/276947#discussion_r3665151799)–[T50](https://github.com/elastic/kibana/pull/276947#discussion_r3665161685) | Coverage exists in `rule_history.spec.ts`, **not** inline in create/update specs as requested. Intent met; claim location wrong. Route specs only assert `metadata.version`. |
+| [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809) / [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) / [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) / [T55](https://github.com/elastic/kibana/pull/276947#discussion_r3673539683)–[T57](https://github.com/elastic/kibana/pull/276947#discussion_r3673587328) | Conversation closed or ticketed on [rna-program#797](https://github.com/elastic/rna-program/issues/797) ≠ implemented. Treat as accepted deferral, not “done.” |
 | [T1](https://github.com/elastic/kibana/pull/276947#discussion_r3543316512) / [T2](https://github.com/elastic/kibana/pull/276947#discussion_r3543334606) | Author self-notes. [T1](https://github.com/elastic/kibana/pull/276947#discussion_r3543316512)’s short-circuit was later reverted. |
 | [T28](https://github.com/elastic/kibana/pull/276947#discussion_r3622927788) / [T32](https://github.com/elastic/kibana/pull/276947#discussion_r3623245204) / [T54](https://github.com/elastic/kibana/pull/276947#discussion_r3673526512) | Informational / answered; no code ask. |
 
@@ -341,12 +359,13 @@ Christos: start simple; prefer `duplicateRule` / `installRule` methods later. St
 
 ## Priority punch list (human attention)
 
-1. **[T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059)** — bulk enable/disable still skip; your ask to match single self-heal is open.
-2. **[T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805)** — `RuleChangesHistoryScope` comment: no reply, no code change.
-3. **[T58](https://github.com/elastic/kibana/pull/276947#discussion_r3681177724)–[T61](https://github.com/elastic/kibana/pull/276947#discussion_r3681376772)** — Maxim’s comments from today (especially [T59](https://github.com/elastic/kibana/pull/276947#discussion_r3681296701) naming).
-4. **[T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809) / [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) + [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272)** — deferred to #797; fine if intentional, don’t mark done.
-5. **[T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822)** — marked resolved, cast still present (nit).
-6. **Do not chase [T43](https://github.com/elastic/kibana/pull/276947#discussion_r3639230460) / [T44](https://github.com/elastic/kibana/pull/276947#discussion_r3639230480) / [T51](https://github.com/elastic/kibana/pull/276947#discussion_r3672423103)** — outdated; timestamp already defaults to `new Date()`.
+1. **Tests / assertions still missing**
+   - Delete → recreate (same id): assert sequence does **not** reset / timeline stays ordered — covers [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) / [T63](https://github.com/elastic/kibana/pull/276947#discussion_r3683011892). None today.
+   - After [T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059): bulk enable of an already-enabled rule should bump `metadata.version` and emit a history entry (unit + Scout). Current tests encode the skip.
+   - Optional: add `ruleChangesHistory` doc assertions into create/update/upsert route specs ([T48](https://github.com/elastic/kibana/pull/276947#discussion_r3665151799)) — dedicated `rule_history.spec.ts` already covers shape.
+2. **[T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059)** — bulk enable/disable still skip; your ask to match single self-heal is open.
+3. **[T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805)** — `RuleChangesHistoryScope` comment: no reply, no code change.
+4. **Deferred to [rna-program#797](https://github.com/elastic/rna-program/issues/797)** — [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809) / [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261) seed version + [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) overrides; fine if intentional, don’t mark done.
 
 ---
 
@@ -354,9 +373,11 @@ Christos: start simple; prefer `duplicateRule` / `installRule` methods later. St
 
 | Thread | GH flag | Reality |
 |--------|---------|---------|
-| [T6](https://github.com/elastic/kibana/pull/276947#discussion_r3550935029), [T8](https://github.com/elastic/kibana/pull/276947#discussion_r3551285868), [T25](https://github.com/elastic/kibana/pull/276947#discussion_r3621923173) | Unresolved | Addressed in code / consensus |
-| [T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822) | Resolved | Cast still in code |
+| [T25](https://github.com/elastic/kibana/pull/276947#discussion_r3621923173) | Unresolved | Addressed (explanation) |
+| [T27](https://github.com/elastic/kibana/pull/276947#discussion_r3622900822) | Resolved | Cast still in code (nit) |
 | [T43](https://github.com/elastic/kibana/pull/276947#discussion_r3639230460), [T44](https://github.com/elastic/kibana/pull/276947#discussion_r3639230480), [T51](https://github.com/elastic/kibana/pull/276947#discussion_r3672423103) | Unresolved | Stale; timestamp path already fixed |
-| [T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059), [T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805) | Unresolved | Correctly open |
-| [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809), [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261), [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) | Unresolved / deferred | Correctly not implemented |
+| [T34](https://github.com/elastic/kibana/pull/276947#discussion_r3623322059), [T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805), [T63](https://github.com/elastic/kibana/pull/276947#discussion_r3683011892) | Unresolved | Correctly open |
+| [T18](https://github.com/elastic/kibana/pull/276947#discussion_r3585246809), [T41](https://github.com/elastic/kibana/pull/276947#discussion_r3637550261), [T47](https://github.com/elastic/kibana/pull/276947#discussion_r3659296272) | Unresolved / deferred | Correctly not implemented ([rna-program#797](https://github.com/elastic/rna-program/issues/797)) |
 | [T48](https://github.com/elastic/kibana/pull/276947#discussion_r3665151799)–[T50](https://github.com/elastic/kibana/pull/276947#discussion_r3665161685) | Resolved | Coverage exists, wrong file location vs claim |
+| [T59](https://github.com/elastic/kibana/pull/276947#discussion_r3681296701) | Unresolved | Decision accepted for this PR; no rename this PR |
+| [T61](https://github.com/elastic/kibana/pull/276947#discussion_r3681376772) | Unresolved | Answered; rename out of scope |
