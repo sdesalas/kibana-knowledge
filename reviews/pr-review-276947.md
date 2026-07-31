@@ -261,15 +261,16 @@ Intent (issue + PR description) and diff line up, with the SO counter as the mai
     - **Secrets:** V1 hashes `apiKey` (`object.fields.hashed: ["apiKey"]`, truncated value still in snapshot); V2 hashes nothing — no rule apiKey on the domain snapshot (matches API-keys report / activity #15).
     - **Snapshot shape:** V1 is the classic rule SO/API blob (`alertTypeId`, `params`, `revision`, …); V2 is `RuleResponse`-shaped (`kind`, `metadata.*`, `query`, …) with OCC stripped.
 
+20. **Approved the PR** ([issuecomment-5143301441](https://github.com/elastic/kibana/pull/276947#issuecomment-5143301441)). Linked [review activities](https://github.com/sdesalas/kibana-knowledge/blob/main/reviews/pr-review-276947.md#review-activities) + [comment triage](https://github.com/sdesalas/kibana-knowledge/blob/main/reports/pr-276947-comment-triage.md); listed follow-ups (see below); noted V2 pub-sub wiring complexity as architecture feedback, not a PR blocker. Dropped bump+emit hardening from the public list.
+
 ### Follow-up TODO (slipped from this PR)
 
-Items Steven wants tracked after #276947.
+Posted in [approval comment](https://github.com/elastic/kibana/pull/276947#issuecomment-5143301441). First three tracked under [rna-program#797](https://github.com/elastic/rna-program/issues/797). Also see [@banderror change-history gaps](https://github.com/elastic/rna-program/blob/13bc2919b303b58cb4ef39bc443c738ac91525fa/docs-security/detection-engine-v2/architecture/rule-changes-history.md#what-are-the-gaps) / [GA blockers](https://github.com/elastic/rna-program/blob/13bc2919b303b58cb4ef39bc443c738ac91525fa/docs-security/detection-engine-v2/architecture/gaps.md#rule-changes-history).
 
-1. **Create-time sequence seed / delete→recreate ordering** — restore (and same-id recreate) must continue `object.sequence`, not restart at 1. Documented under [rna-program#797](https://github.com/elastic/rna-program/issues/797).
-2. **Caller overrides: `action` / `metadata` / `refresh` + await** — V1-style `changeTracking` so Security can log install/duplicate/import/restore, pass metadata, and wait for history visibility. Documented under [rna-program#797](https://github.com/elastic/rna-program/issues/797).
-3. **Solution segregation in change history** — distinguish security / observability / stack (e.g. `event.module`), not one hard-coded `alerting-v2` stream. Documented under [rna-program#797](https://github.com/elastic/rna-program/issues/797).
-4. **`getHistory` (or equivalent) read path** — RulesClient/HTTP read with authz + snapshot rehydration. Future PR (not blocking #797 write-time gaps).
-5. **Bulk history write fan-out** — batch N rule changes into one `logBulk` (and avoid N× `userProfile.getCurrent`). Future performance-optimization PR. PR nudge: [r3690146438](https://github.com/elastic/kibana/pull/276947#discussion_r3690146438).
-6. **Naming: `metadata.version` vs `sequence`** — discuss with RnA / ResponseOps first (architecture call), then any rename. Thread: [r3689255530](https://github.com/elastic/kibana/pull/276947#discussion_r3689255530).
-7. **`RuleChangesHistoryScope` cleanup** — drop/shrink half-dead scope type (only `objectType` used). Nit / cleanup. [T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805).
-8. **Make forgetting bump+emit hard for future mutators** — today each `RulesClient` path must manually `getNextVersion` + emit (open question / activity #7b). Want a better guarantee; approach TBD (no preferred design yet).
+1. **Caller changeTracking overrides** — missing V1-style (`action` / `metadata` / `refresh` + await) when calling RulesClient methods. [rna-program#797](https://github.com/elastic/rna-program/issues/797).
+2. **Solution segregation in change history** — currently unable to distinguish security / observability / stack rules (e.g. `event.module`). [rna-program#797](https://github.com/elastic/rna-program/issues/797).
+3. **Create-time sequence / delete→recreate ordering** — rule restore (and same-id recreate) must continue `object.sequence`, not restart at 1. [rna-program#797](https://github.com/elastic/rna-program/issues/797).
+4. **Naming: `metadata.version` → `sequence`** — discuss with ResponseOps first ([thread](https://github.com/elastic/kibana/pull/276947#discussion_r3689255530)); rename feels worth it.
+5. **`getHistory` (or equivalent) read path** — this PR is only half the picture; missing ability to read histories. Future follow-up PR.
+6. **True "bulk" history writes** — bulk methods call ES inside `logRuleChanges` N× for an N-rule batch. [Raised](https://github.com/elastic/kibana/pull/276947#discussion_r3690146438); future performance PR.
+7. **`RuleChangesHistoryScope` cleanup** — orphaned / half-dead scope type. Nit but should be removed. [T53](https://github.com/elastic/kibana/pull/276947#discussion_r3673436805).
