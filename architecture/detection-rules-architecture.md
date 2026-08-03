@@ -27,6 +27,7 @@ Elasticsearch**.
 6. [Detection Rules Client](#6-detection-rules-client-idetectionrulesclient)
 7. [Plugin Lifecycle](#7-plugin-lifecycle)
 8. [Security Rule Type Wrapper](#8-the-security-rule-type-wrapper--what-it-adds-on-top-of-an-executor)
+   - [8.1 Late starts, catch-up, and gaps](#81-late-starts-catch-up-and-gaps-short)
 9. [Rule Management UI](#9-rule-management-ui--screens-and-flows)
 10. [Bulk Actions](#10-bulk-actions)
 11. [Rule Exceptions](#11-rule-exceptions)
@@ -214,15 +215,23 @@ Compares three versions of a rule:
 This is what allows the upgrade flow to *preserve* user customisations
 when the upgrade doesn't conflict with them. See §11.6.
 
-### N. Backfill and "gap"
+### N. Backfill, catch-up, and "gap"
 
-A **gap** is a time interval the rule should have run for but didn't (Kibana
-restart, Task Manager backlog, paused rule, etc.). Gaps are detected at
-execution time and can be persisted to the Event Log
-(`storeGapsInEventLogEnabled`). A **backfill** is an *ad-hoc* run for a chosen
-historical range — implemented as an `ad_hoc_run_params` Saved Object plus a
-Task Manager task. The bulk action `fill_gaps` schedules backfills for
-detected gaps.
+Three related but different ideas:
+
+| Term | Meaning |
+|------|---------|
+| **Scheduling delay** | Task Manager started the rule late. Shown in the execution log. Does *not* by itself mean data was missed. |
+| **Catch-up** | On a late run, the wrapper may add up to **4** extra interval-sized search windows (stepped back) so recent missed periods are still queried. |
+| **Gap** (`remainingGap`) | Time still uncovered *after* catch-up. Only this becomes Gap duration / Gaps table / Event Log gap fields. |
+| **Backfill** | An *ad-hoc* historical re-run (`ad_hoc_run_params` SO + TM task). Bulk action `fill_gaps` schedules these for detected gaps. |
+
+Gaps are detected at execution time (`getRuleRangeTuples`) and can be
+persisted to the Event Log (`storeGapsInEventLogEnabled`).
+
+**Common gotcha:** a ~9-minute scheduling delay with a 5m interval + 1m
+lookback often produces **no Gap** — catch-up covers the drift. See
+[rule_gaps_and_catchup.md](./rule_gaps_and_catchup.md) and §8.1.
 
 ### O. The Event Log
 
@@ -1204,7 +1213,7 @@ Pre-execution:
 - `checkPrivilegesFromEsClient` — index privileges check
 - `hasTimestampFields` — primary + secondary timestamp validation, runtime mappings for overrides
 - `checkForFrozenIndices` (non-serverless only)
-- `getRuleRangeTuples` — gap detection + tuple generation from `schedule.interval` + last execution
+- `getRuleRangeTuples` — gap detection + catch-up tuple generation from `schedule.interval` + last execution (see §8.1)
 - Load exception lists (`getExceptions`) and build exception filter (`buildExceptionFilter`)
 - APM instrumentation
 
@@ -1218,6 +1227,29 @@ Post-execution:
 - `sendGapDetectedTelemetryEvent` / `sendAlertSuppressionTelemetryEvent`
 - Persists gap range to Event Log when `storeGapsInEventLogEnabled`
 - Aggregates warnings/errors into final status
+
+### 8.1 Late starts, catch-up, and gaps (short)
+
+When a scheduled run starts late, the wrapper does **not** only search the
+normal `from`→`to` window. It computes drift since `previousStartedAt`, may
+add catch-up search windows (capped by `MAX_RULE_GAP_RATIO = 4`), and only
+records a **Gap** for whatever remains uncovered.
+
+```
+gap          = (startedAt − previousStartedAt) − (to − from)
+catchup      = min(ceil(gap / interval), 4)     # 0 when gap ≤ 0
+remainingGap = max(gap − catchup × interval, 0) # what the UI/Event Log call "Gap"
+```
+
+- **Scheduling delay ≠ Gap.** Delay is TM lateness; Gap is leftover unqueried
+  time after catch-up.
+- Catch-up tuples keep the same lookback overlap as normal runs (needed for
+  EQL / threshold-style rules).
+- `fill_gaps` backfills are separate: they re-run chosen historical ranges
+  via ad-hoc tasks, they are not the in-run catch-up path.
+
+Deep dive (formulas, worked example, support FAQ):
+[rule_gaps_and_catchup.md](./rule_gaps_and_catchup.md).
 
 The wrapper also defines `securityRuleTypeFieldMap` (see §12) and the
 **alerts-as-data registration** for every detection rule type:
@@ -2185,6 +2217,7 @@ Key files:
 - Wrapper: `.../server/lib/detection_engine/rule_types/create_security_rule_type_wrapper.ts`
 - Executors: `.../server/lib/detection_engine/rule_types/{eql,esql,query,threshold,ml,indicator_match,new_terms}/`
 - Utils (`getExceptions`, `getInputIndex`, query builders): `.../server/lib/detection_engine/rule_types/utils/`
+- Gap / catch-up: `.../rule_types/utils/utils.ts` (`getGapBetweenRuns`, `getNumCatchupIntervals`, `getCatchupTuples`, `getRuleRangeTuples`, `MAX_RULE_GAP_RATIO`); deep dive in [rule_gaps_and_catchup.md](./rule_gaps_and_catchup.md)
 
 ### Rule Management — server
 - Routes: `.../server/lib/detection_engine/rule_management/api/rules/{create_rule,update_rule,patch_rule,delete_rule,read_rule,find_rules,bulk_actions,export_rules,import_rules,filters,coverage_overview,rule_history}/`
@@ -2278,6 +2311,7 @@ Key files:
 | Change exception evaluation | `lists/server/services/exception_lists/build_exception_filter.ts` and `rule_types/utils/{utils.ts → getExceptions, get_filter.ts, get_query_filter.ts}` |
 | Add a new rule-edit field with read-only RBAC | `mergers/apply_rule_update.ts` + `methods/rbac_methods/update_rule_with_read_privileges.ts` |
 | Investigate why a rule isn't firing | Rule details page → Execution log table; inspect `.kibana-event-log-*`; check `rule.params.exceptionsList` and `RuleSource.is_customized`; inspect `.alerts-security.alerts-<ns>` for documents |
+| Understand late runs vs Gaps / catch-up | §8.1 + [rule_gaps_and_catchup.md](./rule_gaps_and_catchup.md); code in `rule_types/utils/utils.ts` (`getRuleRangeTuples`) |
 
 ---
 
