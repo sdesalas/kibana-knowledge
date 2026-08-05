@@ -1,0 +1,21 @@
+---
+description: Announce Slack MCP intent in chat before any Slack tool call that needs approval
+alwaysApply: true
+---
+
+# Slack MCP — announce intent before calling
+
+Before invoking any Slack MCP tool (`slack_search_*`, `slack_read_*`, `slack_send_*`, `slack_create_*`, `slack_update_*`, `slack_schedule_*`, or related), write a short note in chat first so the user can see it before approving the tool call.
+
+Include:
+
+1. **Channel / scope** — e.g. `#security-detection-engineering-experience-dex`, DMs, or “all public channels”
+2. **What you’re looking for** — keywords, issue IDs, people, exact query string when known
+3. **Date range** — if any (e.g. after 2026-07-14)
+4. **Why** — one line on what answer this unlocks
+
+Keep it to a few bullets. Do this in the same turn *before* the tool call, not only in the tool `description` field.
+
+Also set the MCP tool `description` to the same specifics (channel + search target), not a vague label like “Search Slack”.
+
+Do not batch many opaque Slack searches without stating what each one is for.

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeMCPExecution": [
+      {
+        "command": "./hooks/before-mcp-intent.sh",
+        "failClosed": false
+      }
+    ]
+  }
+}
