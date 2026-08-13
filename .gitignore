@@ -1,6 +1,7 @@
 .env
 .env.*
 skip/
+handoff/private/
 reviews/docs-274337/
 .DS_Store
 sdh/
