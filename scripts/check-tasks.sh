@@ -19,7 +19,7 @@ printf "1. "
 # 1. Fetch security-solution alerting rules visible to Kibana.
 rules_json=$(curl -s -u "$AUTH" \
   --get "$KIBANA_URL/api/alerting/rules/_find" \
-  --data-urlencode "per_page=2000" \
+  --data-urlencode "per_page=3000" \
   --data-urlencode 'filter=alert.attributes.alertTypeId:siem.*')
 
 printf "2. "
@@ -40,7 +40,7 @@ printf "3. "
 # 3. Count security-solution alert SOs whose encrypted apiKey is actually set.
 api_key_count=$(curl -s -u "$AUTH" \
   -H 'content-type: application/json' \
-  "$ES_URL/.kibana_alerting_cases/_search?size=2000&filter_path=hits.hits._source.alert.apiKey" \
+  "$ES_URL/.kibana_alerting_cases/_search?size=3000&filter_path=hits.hits._source.alert.apiKey" \
   -d '{
     "query": {
       "bool": {
