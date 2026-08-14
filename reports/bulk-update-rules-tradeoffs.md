@@ -50,107 +50,27 @@ Banderror on [#264894](https://github.com/elastic/kibana/issues/264894) asked us
 
 ---
 
-## Tradeoff: 2. Load with `getDecryptedRuleSo` per id, or with `createPointInTimeFinderDecryptedAsInternalUser`?
+## Tradeoff: 2. Apply `enabled` inside `bulkUpdateRules`, or leave it to `bulkEnableRules` / `bulkDisableRules`?
 
-Each rule stores an Elasticsearch API key. It is encrypted. To retire the old key after we replace it, we have to read it first.
+`UpdateRuleData` has no `enabled` field. `updateRule` never flips it. Detection-rule import/patch/update call `toggleRuleEnabledOnUpdate` afterwards, which is `rulesClient.enableRule` / `disableRule`.
 
-The ticket said: fetch each rule one at a time, 50 in parallel (`pMap` + `getDecryptedRuleSo`), because each encrypted document has to be decrypted on its own ([#264894](https://github.com/elastic/kibana/issues/264894)).
+From the contract session ([stub + wire](f9c81b61-aa9a-4fc7-b304-e64b15f6d41a)): *Do not include enabling/disabling rules in logic. We'll bulk enable the ones we need to after the update batch has completed.*
 
-Christos disagreed: use the same paged read edit-many already uses, filtered to the ids we care about ([comment](https://github.com/elastic/kibana/issues/264894#issuecomment-4333902656)).
+**Option A — Honour a requested `enabled` change inside `bulkUpdateRules` (schedule/unschedule tasks, mint keys, authz for enable).**
 
-**Option A — `getDecryptedRuleSo` per id via `pMap` at concurrency 50** (what the ticket wrote; same as `updateRule`).
+- Pros: One call does update + on/off, like a naive reading of “bulk update.”
+- Cons: Enable/disable is a different product path (`bulkEnableRules` / `bulkDisableRules`): Task Manager create/delete, circuit breaker, different authz. Folding it in retests that path and fights AAD/key policy (tradeoff 8). `UpdateRuleData` would have to grow an `enabled` field that `updateRule` still ignores.
 
-- Pros: If rule 47 is missing, we know it immediately. If decrypt fails, we can still load the document without the key (`getRuleSo`, what `updateRule` does today).
-- Cons: A 2000-rule import is 2000 extra round trips. Christos’s point: we do not actually have to do it that way.
+**Option B — Keep `enabled: original.enabled` on the overwrite. Callers that need a flip use `bulkEnableRules` / `bulkDisableRules` after.**
 
-**Option B — One paged read of those ids, using `createPointInTimeFinderDecryptedAsInternalUser` with a `convertRuleIdsToKueryNode` filter** (what Christos suggested, and what edit-many already uses).
+- Pros: Same as `updateRule`. No TM create/delete in this method. We still rewrite the paused task’s interval when it changed (tradeoff 11), so a later enable wakes the right cadence. Import overwrite can `toggleRuleEnabledOnUpdate` (or a bulk equivalent) after the batch, which is what it already does per rule today.
+- Cons: A rule imported as enabled stays in whatever state it had until that follow-up runs. That follow-up is not wired in this POC.
 
-- Pros: Far fewer calls. Same load path as edit-many. If an id is not in the results, we record an error for that rule and continue.
-- Cons: If decrypt fails for one document, that rule just looks missing. We do not fall back to “load it without the key.”
-
-**We picked B.** We use that finder. We still do not call the rest of edit-many’s helper (see tradeoff 1).
+**We picked B.** `prepareUpdate` stamps `enabled: originalRule.enabled`. Enable/disable-after-update stays a follow-up.
 
 ---
 
-## Tradeoff: 3. One PIT over the whole request, or `loadRulesByIds` per write batch?
-
-`bulkEditRulesOcc` pages the finder (`perPage: 100`), holds every matching rule, then one `saveBulkUpdatedRules`. `bulkCreateRules` has nothing to load — the rules are new — and writes with `bulkCreateRulesSo` 100 at a time.
-
-**Option A — One PIT for every id, then `createNewAPIKeySet`, then one save** (what `bulkEditRulesOcc` does).
-
-- Pros: One read. We can refuse the whole request (`bulkEnsureAuthorized`, `validateScheduleLimit`) before anything is saved.
-- Cons: Creating API keys is slow. By the time we save, the copy we loaded is old. A rule that ran in the meantime will collide with our save (OCC 409).
-
-**Option B — Per write batch: `loadRulesByIds` → `createNewAPIKeySet` → `bulkCreateRulesSo`, then the next 100** (`bulkCreateRules` write loop, plus a load of those 100 first because they already exist).
-
-- Pros: What we save is what we just read. Less likely to collide with a rule that is running right now. We don’t hold 2000 decrypted rules in memory.
-- Cons: If the second batch fails a hard check (permissions, schedule limit), the first 100 are already saved.
-
-**We picked B.** Load each save-batch as we go. Mirroring `bulkCreateRules`.
-
----
-
-## Tradeoff: 4. One `bulkCreateRulesSo` for the whole request, or one per `batchSize`?
-
-Creating API keys (`createNewAPIKeySet`, concurrency `API_KEY_GENERATE_CONCURRENCY` = 50) is about half the time. For 2000 enabled rules that is 40 rounds either way. Saving in batches does **not** create fewer keys and does **not** create them faster.
-
-`bulkEditRulesOcc` creates keys as it reads, then one `saveBulkUpdatedRules` (`bulkCreateRulesSo` overwrite of the whole pile). `bulkCreateRules` calls `bulkCreateRulesSo` 100 at a time.
-
-**Option A — One `saveBulkUpdatedRules` / `bulkCreateRulesSo` of the whole request** (what edit-many does).
-
-- Pros: We never stop creating keys to wait for a save. If saving is the other half of the time, this finishes a bit sooner.
-- Cons: If that one `bulkCreateRulesSo` throws, the catch can `bulkMarkApiKeysForInvalidation` every new key, including for rules Elasticsearch may already have stored ([#264892](https://github.com/elastic/kibana/issues/264892), [Banderror’s comment](https://github.com/elastic/kibana/issues/264892#issuecomment-4408025793)). One failure can hit the entire import.
-
-**Option B — `bulkCreateRulesSo` per `batchSize` (default 100)** (what `bulkCreateRules` does).
-
-- Pros: A failed save only risks those 100 new keys, not 2000. Smaller writes.
-- Cons: After each save we pause key creation. More trips to Elasticsearch.
-
-**We picked B.** Same number of keys. Batches are so one failure doesn’t take down the whole import.
-
----
-
-## Tradeoff: 5. Must we patch `saveBulkUpdatedRules` ([#264892](https://github.com/elastic/kibana/issues/264892)) before this ships?
-
-[#264894](https://github.com/elastic/kibana/issues/264894) says it depends on [#264892](https://github.com/elastic/kibana/issues/264892). The problem: if `bulkCreateRulesSo` throws, we must not leave (or wipe) API keys in a way that breaks rules. The ticket as written says: if the save throws with no row-by-row result, accept `bulkMarkApiKeysForInvalidation` on all the new keys; if some rows succeeded and some failed, invalidate **new** keys for the failures and **old** keys for the successes.
-
-Banderror later pushed back on “just accept the full throw” ([comment](https://github.com/elastic/kibana/issues/264892#issuecomment-4408025793)): Elasticsearch may have saved some rules before the throw, and if the cluster is down `bulkMarkApiKeysForInvalidation` may fail too.
-
-**Option A — Fix `saveBulkUpdatedRules` first, then reuse it.**
-
-- Pros: Honours the “depends on” line. One shared fix.
-- Cons: We are not using that function (see tradeoff 1). This work would wait on a change Banderror is not even sure is the right fix.
-
-**Option B — Copy that invalidate-new-on-fail / invalidate-old-on-success policy inside our `batchSize` writes. Leave `saveBulkUpdatedRules` alone.**
-
-- Pros: The new method can ship. A throw only risks one batch of keys, not the whole import. When Elasticsearch *does* return per-row results, we already wipe new keys on failure and old keys on success, which is what the ticket asked for.
-- Cons: If a save throws with no row-by-row result, we still wipe every new key in that batch — including for rules Elasticsearch may already have written. Batches shrink that from the whole import to 100 rules; they do not remove it. A later bulk operation can regenerate those keys, but in the meantime _the rule keeps the dead key_. We did not close [#264892](https://github.com/elastic/kibana/issues/264892).
-
-**We picked B.** Copy the behaviour. Don’t wait on a patch to a helper we aren’t calling. The conditions for this bug to arise are rare and the approach mirrors existing behavior. A thorough search found no matches to existing SDHs in elastic/sdh-security-team regarding dead or invalid keys. We also mitigated the risk by reducing batch sizes but did not remove it altogether.
-
----
-
-## Tradeoff: 6. When do we call `createNewAPIKeySet`?
-
-The ticket said: only mint a new key when `enabled` or `consumer` changes; skip it entirely for disabled rules ([#264894](https://github.com/elastic/kibana/issues/264894)).
-
-The key is encrypted, and AAD (`RuleAttributesIncludedInAAD`) binds that blob to name, tags, params, actions, schedule, enabled, consumer, and more. Change those fields and leave the old blob in place, and Kibana will not be able to decrypt it later.
-
-**Option A — Follow the ticket: `createNewAPIKeySet` only when `enabled` / `consumer` changes.**
-
-- Pros: Fewer slow key-creation calls. Disabled rules stay cheap.
-- Cons: Wrong. Import overwrite and prebuilt upgrade change name, query, actions, and schedule all the time. Leaving the old blob would make those rules unreadable.
-
-**Option B — Same as `updateRule`: `createNewAPIKeySet({ shouldUpdateApiKey: original.enabled })`. Disabled rules skip it (enable later will mint).**
-
-- Pros: Matches today’s single-rule update and edit-many. Encryption stays valid. Disabled rules skip the slow work.
-- Cons: Every update of a running rule pays the slow half. 2000 enabled overwrites = 2000 new keys, same as edit-many. There is no shortcut.
-
-**We picked B.** The ticket was wrong on this. Saving in batches does not change how many keys we create (see tradeoff 4).
-
----
-
-## Tradeoff: 7. OCC 409: fail the rule, `retryIfBulkEditConflicts`, or reload-and-PUT?
+## Tradeoff: 3. OCC 409: fail the rule, `retryIfBulkEditConflicts`, or reload-and-PUT?
 
 We stamp the loaded SO `version` on `bulkCreateRulesSo` overwrite. If something else wrote first, Elasticsearch returns **409**.
 
@@ -177,7 +97,107 @@ Note that **most 409's come from rule background execution updating the rule.** 
 
 ---
 
-## Tradeoff: 8. `bulkEnsureAuthorized` (throw the call), or `ensureAuthorized` per rule?
+## Tradeoff: 4. Must we patch `saveBulkUpdatedRules` ([#264892](https://github.com/elastic/kibana/issues/264892)) before this ships?
+
+[#264894](https://github.com/elastic/kibana/issues/264894) says it depends on [#264892](https://github.com/elastic/kibana/issues/264892). The problem: if `bulkCreateRulesSo` throws, we must not leave (or wipe) API keys in a way that breaks rules. The ticket as written says: if the save throws with no row-by-row result, accept `bulkMarkApiKeysForInvalidation` on all the new keys; if some rows succeeded and some failed, invalidate **new** keys for the failures and **old** keys for the successes.
+
+Banderror later pushed back on “just accept the full throw” ([comment](https://github.com/elastic/kibana/issues/264892#issuecomment-4408025793)): Elasticsearch may have saved some rules before the throw, and if the cluster is down `bulkMarkApiKeysForInvalidation` may fail too.
+
+**Option A — Fix `saveBulkUpdatedRules` first, then reuse it.**
+
+- Pros: Honours the “depends on” line. One shared fix.
+- Cons: We are not using that function (see tradeoff 1). This work would wait on a change Banderror is not even sure is the right fix.
+
+**Option B — Copy that invalidate-new-on-fail / invalidate-old-on-success policy inside our `batchSize` writes. Leave `saveBulkUpdatedRules` alone.**
+
+- Pros: The new method can ship. A throw only risks one batch of keys, not the whole import. When Elasticsearch *does* return per-row results, we already wipe new keys on failure and old keys on success, which is what the ticket asked for.
+- Cons: If a save throws with no row-by-row result, we still wipe every new key in that batch — including for rules Elasticsearch may already have written. Batches shrink that from the whole import to 100 rules; they do not remove it. A later bulk operation can regenerate those keys, but in the meantime _the rule keeps the dead key_. We did not close [#264892](https://github.com/elastic/kibana/issues/264892).
+
+**We picked B.** Copy the behaviour. Don’t wait on a patch to a helper we aren’t calling. The conditions for this bug to arise are rare and the approach mirrors existing behavior. A thorough search found no matches to existing SDHs in elastic/sdh-security-team regarding dead or invalid keys. We also mitigated the risk by reducing batch sizes but did not remove it altogether.
+
+---
+
+## Tradeoff: 5. Load with `getDecryptedRuleSo` per id, or with `createPointInTimeFinderDecryptedAsInternalUser`?
+
+Each rule stores an Elasticsearch API key. It is encrypted. To retire the old key after we replace it, we have to read it first.
+
+The ticket said: fetch each rule one at a time, 50 in parallel (`pMap` + `getDecryptedRuleSo`), because each encrypted document has to be decrypted on its own ([#264894](https://github.com/elastic/kibana/issues/264894)).
+
+Christos disagreed: use the same paged read edit-many already uses, filtered to the ids we care about ([comment](https://github.com/elastic/kibana/issues/264894#issuecomment-4333902656)).
+
+**Option A — `getDecryptedRuleSo` per id via `pMap` at concurrency 50** (what the ticket wrote; same as `updateRule`).
+
+- Pros: If rule 47 is missing, we know it immediately. If decrypt fails, we can still load the document without the key (`getRuleSo`, what `updateRule` does today).
+- Cons: A 2000-rule import is 2000 extra round trips. Christos’s point: we do not actually have to do it that way.
+
+**Option B — One paged read of those ids, using `createPointInTimeFinderDecryptedAsInternalUser` with a `convertRuleIdsToKueryNode` filter** (what Christos suggested, and what edit-many already uses).
+
+- Pros: Far fewer calls. Same load path as edit-many. If an id is not in the results, we record an error for that rule and continue.
+- Cons: If decrypt fails for one document, that rule just looks missing. We do not fall back to “load it without the key.”
+
+**We picked B.** We use that finder. We still do not call the rest of edit-many’s helper (see tradeoff 1).
+
+---
+
+## Tradeoff: 6. One PIT over the whole request, or `loadRulesByIds` per write batch?
+
+`bulkEditRulesOcc` pages the finder (`perPage: 100`), holds every matching rule, then one `saveBulkUpdatedRules`. `bulkCreateRules` has nothing to load — the rules are new — and writes with `bulkCreateRulesSo` 100 at a time.
+
+**Option A — One PIT for every id, then `createNewAPIKeySet`, then one save** (what `bulkEditRulesOcc` does).
+
+- Pros: One read. We can refuse the whole request (`bulkEnsureAuthorized`, `validateScheduleLimit`) before anything is saved.
+- Cons: Creating API keys is slow. By the time we save, the copy we loaded is old. A rule that ran in the meantime will collide with our save (OCC 409).
+
+**Option B — Per write batch: `loadRulesByIds` → `createNewAPIKeySet` → `bulkCreateRulesSo`, then the next 100** (`bulkCreateRules` write loop, plus a load of those 100 first because they already exist).
+
+- Pros: What we save is what we just read. Less likely to collide with a rule that is running right now. We don’t hold 2000 decrypted rules in memory.
+- Cons: If the second batch fails a hard check (permissions, schedule limit), the first 100 are already saved.
+
+**We picked B.** Load each save-batch as we go. Mirroring `bulkCreateRules`.
+
+---
+
+## Tradeoff: 7. One `bulkCreateRulesSo` for the whole request, or one per `batchSize`?
+
+Creating API keys (`createNewAPIKeySet`, concurrency `API_KEY_GENERATE_CONCURRENCY` = 50) is about half the time. For 2000 enabled rules that is 40 rounds either way. Saving in batches does **not** create fewer keys and does **not** create them faster.
+
+`bulkEditRulesOcc` creates keys as it reads, then one `saveBulkUpdatedRules` (`bulkCreateRulesSo` overwrite of the whole pile). `bulkCreateRules` calls `bulkCreateRulesSo` 100 at a time.
+
+**Option A — One `saveBulkUpdatedRules` / `bulkCreateRulesSo` of the whole request** (what edit-many does).
+
+- Pros: We never stop creating keys to wait for a save. If saving is the other half of the time, this finishes a bit sooner.
+- Cons: If that one `bulkCreateRulesSo` throws, the catch can `bulkMarkApiKeysForInvalidation` every new key, including for rules Elasticsearch may already have stored ([#264892](https://github.com/elastic/kibana/issues/264892), [Banderror’s comment](https://github.com/elastic/kibana/issues/264892#issuecomment-4408025793)). One failure can hit the entire import.
+
+**Option B — `bulkCreateRulesSo` per `batchSize` (default 100)** (what `bulkCreateRules` does).
+
+- Pros: A failed save only risks those 100 new keys, not 2000. Smaller writes.
+- Cons: After each save we pause key creation. More trips to Elasticsearch.
+
+**We picked B.** Same number of keys. Batches are so one failure doesn’t take down the whole import.
+
+---
+
+## Tradeoff: 8. When do we call `createNewAPIKeySet`?
+
+The ticket said: only mint a new key when `enabled` or `consumer` changes; skip it entirely for disabled rules ([#264894](https://github.com/elastic/kibana/issues/264894)).
+
+The key is encrypted, and AAD (`RuleAttributesIncludedInAAD`) binds that blob to name, tags, params, actions, schedule, enabled, consumer, and more. Change those fields and leave the old blob in place, and Kibana will not be able to decrypt it later.
+
+**Option A — Follow the ticket: `createNewAPIKeySet` only when `enabled` / `consumer` changes.**
+
+- Pros: Fewer slow key-creation calls. Disabled rules stay cheap.
+- Cons: Wrong. Import overwrite and prebuilt upgrade change name, query, actions, and schedule all the time. Leaving the old blob would make those rules unreadable.
+
+**Option B — Same as `updateRule`: `createNewAPIKeySet({ shouldUpdateApiKey: original.enabled })`. Disabled rules skip it (enable later will mint).**
+
+- Pros: Matches today’s single-rule update and edit-many. Encryption stays valid. Disabled rules skip the slow work.
+- Cons: Every update of a running rule pays the slow half. 2000 enabled overwrites = 2000 new keys, same as edit-many. There is no shortcut.
+
+**We picked B.** The ticket was wrong on this. Saving in batches does not change how many keys we create (see tradeoff 7).
+
+---
+
+## Tradeoff: 9. `bulkEnsureAuthorized` (throw the call), or `ensureAuthorized` per rule?
 
 `bulkCreateRules` calls `bulkEnsureAuthorized(Create)` on the type/consumer pairs in the list. If any pair is forbidden, the whole request throws and nothing is saved. `updateRule` calls `ensureAuthorized(Update)` for that one rule — only that rule fails.
 
@@ -195,7 +215,7 @@ Note that **most 409's come from rule background execution updating the rule.** 
 
 ---
 
-## Tradeoff: 9. `validateScheduleLimit`: throw the call, or skip the rules that don’t fit?
+## Tradeoff: 10. `validateScheduleLimit`: throw the call, or skip the rules that don’t fit?
 
 Kibana limits how many rule runs per minute the cluster will take (`validateScheduleLimit`). `updateRule` only checks this when that rule is already on **and** you changed how often it runs. `bulkCreateRules` throws the whole request if the new load doesn’t fit.
 
@@ -213,7 +233,7 @@ Kibana limits how many rule runs per minute the cluster will take (`validateSche
 
 ---
 
-## Tradeoff: 10. If `taskManager.bulkUpdateSchedules` fails, is the rule a failure?
+## Tradeoff: 11. If `taskManager.bulkUpdateSchedules` fails, is the rule a failure?
 
 After `bulkCreateRulesSo`, we call `taskManager.bulkUpdateSchedules` when the rule has a `scheduledTaskId` **and** the interval changed — on or off. Same as `updateRule` and bulk edit (`bulkUpdateTaskSchedules`). Edit-many sends *one* interval for every rule. We group by the **new** interval, because each payload can differ.
 
@@ -233,7 +253,7 @@ After `bulkCreateRulesSo`, we call `taskManager.bulkUpdateSchedules` when the ru
 
 ---
 
-## Tradeoff: 11. Who chunks — `bulkUpdateRules`, `DetectionRulesClient`, or the import/upgrade callers?
+## Tradeoff: 12. Who chunks — `bulkUpdateRules`, `DetectionRulesClient`, or the import/upgrade callers?
 
 The import HTTP route already splits the file into groups of 50. Inside that, `import_rules.ts` overwrite still hands the whole `toUpdate` list to one `rulesClient.bulkUpdateRules` call. Prebuilt-rule upgrade already chunks at 100. We said the *callers* should chunk, so upgrade can load only the ids in the chunk and not hold thousands in memory. We did not wire that in this pass.
 
@@ -248,23 +268,3 @@ The import HTTP route already splits the file into groups of 50. Inside that, `i
 - Cons: `import_rules.ts` overwrite does not chunk yet. If `validateScheduleLimit` throws on the second inner batch, the first batch is already saved.
 
 **We picked B, and did not change the callers in this pass.** `DEFAULT_BULK_UPDATE_BATCH_SIZE` / `MAX_BULK_UPDATE_BATCH_SIZE` stays as a safety net.
-
----
-
-## Tradeoff: 12. Apply `enabled` inside `bulkUpdateRules`, or leave it to `bulkEnableRules` / `bulkDisableRules`?
-
-`UpdateRuleData` has no `enabled` field. `updateRule` never flips it. Detection-rule import/patch/update call `toggleRuleEnabledOnUpdate` afterwards, which is `rulesClient.enableRule` / `disableRule`.
-
-From the contract session ([stub + wire](f9c81b61-aa9a-4fc7-b304-e64b15f6d41a)): *Do not include enabling/disabling rules in logic. We'll bulk enable the ones we need to after the update batch has completed.*
-
-**Option A — Honour a requested `enabled` change inside `bulkUpdateRules` (schedule/unschedule tasks, mint keys, authz for enable).**
-
-- Pros: One call does update + on/off, like a naive reading of “bulk update.”
-- Cons: Enable/disable is a different product path (`bulkEnableRules` / `bulkDisableRules`): Task Manager create/delete, circuit breaker, different authz. Folding it in retests that path and fights AAD/key policy (tradeoff 6). `UpdateRuleData` would have to grow an `enabled` field that `updateRule` still ignores.
-
-**Option B — Keep `enabled: original.enabled` on the overwrite. Callers that need a flip use `bulkEnableRules` / `bulkDisableRules` after.**
-
-- Pros: Same as `updateRule`. No TM create/delete in this method. We still rewrite the paused task’s interval when it changed (tradeoff 10), so a later enable wakes the right cadence. Import overwrite can `toggleRuleEnabledOnUpdate` (or a bulk equivalent) after the batch, which is what it already does per rule today.
-- Cons: A rule imported as enabled stays in whatever state it had until that follow-up runs. That follow-up is not wired in this POC.
-
-**We picked B.** `prepareUpdate` stamps `enabled: originalRule.enabled`. Enable/disable-after-update stays a follow-up.
