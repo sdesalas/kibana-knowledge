@@ -71,3 +71,7 @@ Reference paths or URLs to existing artifacts that the next agent should load or
 ## Tone
 
 Write for an agent, not a human. Dense, precise, no filler. Bullet points over prose wherever possible. The goal is maximum continuity per token.
+
+## Size
+
+Ideal size for handover doc is 1000-2500 words. For really focused tasks (like a search or sub-task) this can be reduced to ~800.
