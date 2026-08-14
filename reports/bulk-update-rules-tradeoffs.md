@@ -32,9 +32,9 @@ Banderror, on API keys when a bulk write throws ([#264892](https://github.com/el
 
 ---
 
-## Tradeoff: 1. Call `bulkEditRulesOcc`, or clone `bulkCreateRules` and reuse edit’s helpers?
+## Tradeoff: 1. Reuse `bulkEditRulesOcc` logic + helpers?
 
-Banderror on [#264894](https://github.com/elastic/kibana/issues/264894) asked us not to build a second way to save lots of rules. He wanted this method to share edit-many’s retry, bulk save, API-key handling, and task-schedule updates.
+Banderror on [#264894](https://github.com/elastic/kibana/issues/264894) asked us not to build a second way to save rules in bulk. He wanted this method to share edit-many’s logic for retry, bulk save, API-key handling, and task-schedule updates.
 
 **Option A — Call `bulkEditRulesOcc` / `saveBulkUpdatedRules`.**
 
@@ -50,23 +50,25 @@ Banderror on [#264894](https://github.com/elastic/kibana/issues/264894) asked us
 
 ---
 
-## Tradeoff: 2. Apply `enabled` inside `bulkUpdateRules`, or leave it to `bulkEnableRules` / `bulkDisableRules`?
+## Tradeoff: 2. Apply `enabled` inside `bulkUpdateRules`?
 
-`UpdateRuleData` has no `enabled` field. `updateRule` never flips it. Detection-rule import/patch/update call `toggleRuleEnabledOnUpdate` afterwards, which is `rulesClient.enableRule` / `disableRule`.
+Single `updateRule` never turns a rule on or off. Neither does `bulkEditRules` (`enabled` is not an editable field). That is a different product path (`enableRule` / `disableRule`, and the bulk equivalents): Task Manager creates or pauses a job, the circuit breaker may fire, a key may be minted, authz is different. Detection-rule import and patch already split it that way today — update the definition, then `toggleRuleEnabledOnUpdate`.
 
-From the contract session ([stub + wire](f9c81b61-aa9a-4fc7-b304-e64b15f6d41a)): *Do not include enabling/disabling rules in logic. We'll bulk enable the ones we need to after the update batch has completed.*
+This method is an alerting API. The Security callers in this PR (import overwrite, prebuilt upgrade) still need a final on/off; that is extra work those callers do after the batch. Folding toggle into the rewrite would reimplement enable/disable inside a save, fight key policy (tradeoff 8), and buy little for this one method.
+
+Callers must not think they can pass `enabled` and have it stick. `UpdateRuleData` types `enabled?: never` (spreading a `boolean` fails the type check). The overwrite always writes the rule’s existing `enabled`.
 
 **Option A — Honour a requested `enabled` change inside `bulkUpdateRules` (schedule/unschedule tasks, mint keys, authz for enable).**
 
-- Pros: One call does update + on/off, like a naive reading of “bulk update.”
-- Cons: Enable/disable is a different product path (`bulkEnableRules` / `bulkDisableRules`): Task Manager create/delete, circuit breaker, different authz. Folding it in retests that path and fights AAD/key policy (tradeoff 8). `UpdateRuleData` would have to grow an `enabled` field that `updateRule` still ignores.
+- Pros: One call does update + on/off.
+- Cons: Duplicates `bulkEnableRules` / `bulkDisableRules`. Retests that path. Fights AAD/key policy (tradeoff 8). Callers of `updateRule` still could not flip `enabled` the same way.
 
-**Option B — Keep `enabled: original.enabled` on the overwrite. Callers that need a flip use `bulkEnableRules` / `bulkDisableRules` after.**
+**Option B — Do not flip `enabled`. Callers that need a change use `bulkEnableRules` / `bulkDisableRules` after.**
 
-- Pros: Same as `updateRule`. No TM create/delete in this method. We still rewrite the paused task’s interval when it changed (tradeoff 11), so a later enable wakes the right cadence. Import overwrite can `toggleRuleEnabledOnUpdate` (or a bulk equivalent) after the batch, which is what it already does per rule today.
-- Cons: A rule imported as enabled stays in whatever state it had until that follow-up runs. That follow-up is not wired in this POC.
+- Pros: Same as `updateRule`. No TM create/delete in this method. We still rewrite the paused task’s interval when it changed (tradeoff 11), so a later enable wakes the right cadence.
+- Cons: Callers must still honor the file’s `enabled` in a follow-up. That follow-up is not wired in this POC.
 
-**We picked B.** `prepareUpdate` stamps `enabled: originalRule.enabled`. Enable/disable-after-update stays a follow-up.
+**We picked B.** Extra enable/disable logic should take place after the whole update batch is finished.
 
 ---
 
