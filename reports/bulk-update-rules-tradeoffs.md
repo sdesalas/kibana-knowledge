@@ -37,21 +37,41 @@ Banderror, on API keys when a bulk write throws ([#264892](https://github.com/el
 
 ---
 
-## Tradeoff: 1. Reuse `bulkEditRulesOcc` logic + helpers?
+## Tradeoff: 1. To share, or not to share?
 
-Banderror on [#264894](https://github.com/elastic/kibana/issues/264894) asked us not to build a second way to save rules in bulk. He wanted this method to share edit-many’s logic for retry, bulk save, API-key handling, and task-schedule updates.
+Banderror on [#264894](https://github.com/elastic/kibana/issues/264894):
 
-**Option A — Call `bulkEditRulesOcc` / `saveBulkUpdatedRules`.**
+> Common infrastructure (OCC retry, bulk SO write, API key management, task schedule updates) should be shared with `bulkEdit` to avoid maintaining parallel bulk write paths — exact reuse strategy to be determined during implementation.
 
-- Pros: That code already loads existing rules, creates API keys, overwrites the saved documents, and retries when two writes collide. It is what the ticket asked for, so reviewers see one write path.
-- Cons: Bulk Edit is built for a different use case then Bulk Update. Ie “apply this *one* change to every rule matcking a KQL query.” We are handing in a *different* new definition for each rule, and updating by ID in batches (because the larger input forces us to), not KQL for the whole lot. These pathways are fundamentally different. We would still have to build each updated document ourselves, then push the pile into their save function. Which we cannot optimize either in error handling or performance because it'll impact Bulk Edit.
+This request is a bit contradictory. 🤔
 
-**Option B — Clone `bulkCreateRules` (preValidate, then write `batchSize` at a time), but reuse edit’s helpers:** `createPointInTimeFinderDecryptedAsInternalUser`, `bulkCreateRulesSo` overwrite, `createNewAPIKeySet`, `bulkMarkApiKeysForInvalidation`, `taskManager.bulkUpdateSchedules`.
+Banderror asked us _not_ to maintain two write paths. Sharing one orchestration layer for both `bulkEdit` and `bulkUpdate`. But then he also says to _reuse common infrastructure with flexibility on reuse strategy_, which implies two write paths. Two orchestration layers, but shared helpers.
 
-- Pros: Create-many is already the “here is a list, each item is different” method. We update by ID and in batches so the logic matches closely. Writing X items (100) at a time means a failed save only risks that batch, not 2000 rules. We still use the same Elasticsearch and API-key helpers, so we are not inventing a third way to persist a rule.
-- Cons: The *sequence* of steps is not the same as edit-many. Helpers are different too. The ticket asked to avoid that. Someone reading the ticket may think we ignored it.
+With that last interpretation in mind: `bulkEditRulesOcc` seems like the *orchestrator*, not the infrastructure we should share.
 
-**We picked B.** Use the same building blocks as edit-many. Do not run our “each rule has its own new body” job through a helper that assumes one shared patch. We also want to *avoid retesting* `bulk_edit_rules.ts`, and to *maximize performance and minimise memory use*. The ticket is a straightjacket, so we take it as an informed opinion. Not gospel.
+In any case, this is not entirely clear either so here are the options (sharing or not sharing orchestration layer).
+
+| Primitives | Option A: re-use `bulkEditRulesOcc` | Option B: own orchestrator, shared helper infrastructure |
+| --- | --- | --- |
+| Load | PIT decrypt + `convertRuleIdsToKueryNode` | Same |
+| Bulk SO write | `bulkCreateRulesSo` overwrite, inside private `saveBulkUpdatedRules` | Same `bulkCreateRulesSo` call, own catch |
+| API keys | `createNewAPIKeySet`; invalidate via `bulkMarkApiKeysForInvalidation` | Same mint; same invalidation. |
+| TM schedules | `taskManager.bulkUpdateSchedules` **after** OCC returns | Same API, inside the batch (`updateTaskSchedules`) |
+| OCC retry | `retryIfBulkEditConflicts` wrapping OCC | Own `writeWithRetry` (tradeoff 3) |
+
+Note that changes to `bulkEditRulesOcc` or `saveBulkUpdatedRules` to accommodate new functionality would require retesting every caller that already depends on it.
+
+**Option A — Call `bulkEditRulesOcc` / `saveBulkUpdatedRules` as the write path.**
+
+- Pros: One orchestrator. That is the first reading of Banderror (“don’t maintain two write paths”). Reviewers see one write path.
+- Cons: Reusing `bulkEditRulesOcc` breaks up the orchestration into 2 layers. Complicating things unnecessarily because its not written to support batches by id. The batch loop, per-id merge, TM, and Update authz still need to be carried out outside of it. We also inherit edit’s save catch (a throw wipes every new key in that call, then rethrows) and edit’s 409 retry if we wrap it the same way.
+
+**Option B — Own orchestrator (same shape as `bulkCreateRules`: preValidate, then write `batchSize` at a time). Same primitives:** PIT decrypt, `bulkCreateRulesSo` overwrite, `createNewAPIKeySet`, `taskManager.bulkUpdateSchedules`.
+
+- Pros: Simpler overall. Same underlying infrastructure primitives as `bulkEdit`, but self-contained instead of spread across 2 namespaces. Sequence matches the API (per-id bodies, batches of 100). A failed save only risks that batch. OCC retry and the 264892 catch stay where they belong (tradeoffs 3 and 4), instead of arriving as side effects of calling OCC.
+- Cons: Two orchestrations. That is the duplication Banderror wanted to avoid. A reviewer who reads “shared with bulkEdit” as “call `bulkEditRulesOcc`” will still ask why we didn’t.
+
+**We picked B.** Share the primitives; leave the orchestrator alone. Why? We are over-complicating otherwise. Logic reuse looks _simpler in theory than in practice_. In this code it isn’t. We still have to include per-id merge, so most of the logic stays either way. Calling it means a translation layer for batches, 409s, and TM, not less code. Overall, its simpler to tailor the orchestration approach to rule updates. Rather than try to walk around it.
 
 ---
 
