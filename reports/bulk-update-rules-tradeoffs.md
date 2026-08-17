@@ -79,18 +79,18 @@ Note that changes to `bulkEditRulesOcc` or `saveBulkUpdatedRules` to accommodate
 
 Single `updateRule` never turns a rule on or off. Neither does `bulkEditRules` (`enabled` is not an editable field). That is a different product path (`enableRule` / `disableRule`, and the bulk equivalents): Task Manager creates or pauses a job, the circuit breaker may fire, a key may be minted, authz is different. Detection-rule import and patch already split it that way today — update the definition, then `toggleRuleEnabledOnUpdate`.
 
-This method is an alerting API. The Security callers in this PR (import overwrite, prebuilt upgrade) still need a final on/off; that is extra work those callers do after the batch. Folding toggle into the rewrite would reimplement enable/disable inside a save, fight key policy (tradeoff 6), and buy little for this one method.
+This method is an alerting API. The Security callers in this PR (import overwrite, prebuilt upgrade) still need a final on/off; that is extra work those callers do after the batch. Folding toggle into the rewrite would reimplement enable/disable inside a save (mint on enable, write `apiKey: null` on disable) and buy little for this one method.
 
 Callers must not think they can pass `enabled` and have it stick. `UpdateRuleData` types `enabled?: never` (spreading a `boolean` fails the type check). The overwrite always writes the rule’s existing `enabled`.
 
 **Option A — Honour a requested `enabled` change inside `bulkUpdateRules` (schedule/unschedule tasks, mint keys, authz for enable).**
 
 - Pros: One call does update + on/off.
-- Cons: Duplicates `bulkEnableRules` / `bulkDisableRules`. Retests that path. Fights AAD/key policy (tradeoff 6). Callers of `updateRule` still could not flip `enabled` the same way.
+- Cons: Duplicates `bulkEnableRules` / `bulkDisableRules`. Retests that path. Callers of `updateRule` still could not flip `enabled` the same way.
 
 **Option B — Do not flip `enabled`. Callers that need a change use `bulkEnableRules` / `bulkDisableRules` after.**
 
-- Pros: Same as `updateRule`. No TM create/delete in this method. We still rewrite the paused task’s interval when it changed (tradeoff 9), so a later enable wakes the right cadence.
+- Pros: Same as `updateRule`. No TM create/delete in this method. We still rewrite the paused task’s interval when it changed (tradeoff 8), so a later enable wakes the right cadence.
 - Cons: Callers must still honor the file’s `enabled` in a follow-up.
 
 **We picked B.** Extra enable/disable logic should take place after the whole update batch is finished.
@@ -161,36 +161,14 @@ Christos disagreed: use the same paged read edit-many already uses, filtered to 
 
 ---
 
-## Tradeoff: 6. When do we call `createNewAPIKeySet`?
-
-The ticket said: only mint a new key when `enabled` or `consumer` changes; skip it entirely for disabled rules ([#264894](https://github.com/elastic/kibana/issues/264894)).
-
-The key is encrypted, and AAD (`RuleAttributesIncludedInAAD`) binds that blob to name, tags, params, actions, schedule, enabled, consumer, and more. Change those fields and leave the old blob in place, and Kibana will not be able to decrypt it later.
-
-Creating API keys (`createNewAPIKeySet`, concurrency `API_KEY_GENERATE_CONCURRENCY` = 50) is about half the time. For 2000 enabled rules that is 40 rounds either way. Saving in batches (tradeoff 10) does **not** create fewer keys and does **not** create them faster.
-
-**Option A — Follow the ticket: `createNewAPIKeySet` only when `enabled` / `consumer` changes.**
-
-- Pros: Fewer slow key-creation calls. Disabled rules stay cheap.
-- Cons: Wrong. Import overwrite and prebuilt upgrade change name, query, actions, and schedule all the time. Leaving the old blob would make those rules unreadable.
-
-**Option B — Same as `updateRule`: `createNewAPIKeySet({ shouldUpdateApiKey: original.enabled })`. Disabled rules skip it (enable later will mint).**
-
-- Pros: Matches today’s single-rule update and edit-many. Encryption stays valid. Disabled rules skip the slow work.
-- Cons: Every update of a running rule pays the slow half. 2000 enabled overwrites = 2000 new keys, same as edit-many. There is no shortcut.
-
-**We picked B.** The ticket was wrong on this.
-
----
-
-## Tradeoff: 7. `bulkEnsureAuthorized` (throw the call), or `ensureAuthorized` per rule?
+## Tradeoff: 6. `bulkEnsureAuthorized` (throw the call), or `ensureAuthorized` per rule?
 
 `bulkCreateRules` calls `bulkEnsureAuthorized(Create)` on the type/consumer pairs in the list. If any pair is forbidden, the whole request throws and nothing is saved. `updateRule` calls `ensureAuthorized(Update)` for that one rule — only that rule fails.
 
 **Option A — `bulkEnsureAuthorized(Update)` on the loaded type/consumer pairs; any miss throws this `bulkUpdateRules` call.**
 
 - Pros: Same as create-many. Simple. For detection-rule import/upgrade, mixed permissions are rare (same user, same kinds of rules).
-- Cons: One forbidden pair fails every rule in *this* call. That is not the whole HTTP import: the import API already splits the file (50 rules). Earlier splits stay saved. If this call has already written an inner batch (tradeoff 10), those rows stay saved too.
+- Cons: One forbidden pair fails every rule in *this* call. That is not the whole HTTP import: the import API already splits the file (50 rules). Earlier splits stay saved. If this call has already written an inner batch (tradeoff 9), those rows stay saved too.
 
 **Option B — `ensureAuthorized` per rule; unauthorized rules become per-item errors, the rest save.**
 
@@ -201,11 +179,11 @@ Creating API keys (`createNewAPIKeySet`, concurrency `API_KEY_GENERATE_CONCURREN
 
 ---
 
-## Tradeoff: 8. `validateScheduleLimit`: throw the call, or skip the rules that don’t fit?
+## Tradeoff: 7. `validateScheduleLimit`: throw the call, or skip the rules that don’t fit?
 
 Kibana limits how many rule runs per minute the cluster will take (`validateScheduleLimit`). `updateRule` only checks this when that rule is already on **and** you changed how often it runs. `bulkCreateRules` throws the whole request if the new load doesn’t fit.
 
-**Option A — Throw this `bulkUpdateRules` call** (nothing in *this inner batch* is saved yet; earlier inner batches in the same call may already be saved — tradeoff 10).
+**Option A — Throw this `bulkUpdateRules` call** (nothing in *this inner batch* is saved yet; earlier inner batches in the same call may already be saved — tradeoff 9).
 
 - Pros: Same as create-many. You don’t save half the batch then discover the cluster can’t take the new run rate.
 - Cons: One rule with a too-aggressive interval fails the whole batch, including rules whose interval didn’t change.
@@ -219,7 +197,7 @@ Kibana limits how many rule runs per minute the cluster will take (`validateSche
 
 ---
 
-## Tradeoff: 9. If `taskManager.bulkUpdateSchedules` fails, is the rule a failure?
+## Tradeoff: 8. If `taskManager.bulkUpdateSchedules` fails, is the rule a failure?
 
 After `bulkCreateRulesSo`, we call `taskManager.bulkUpdateSchedules` when the rule has a `scheduledTaskId` **and** the interval changed — on or off. Same as `updateRule` and bulk edit (`bulkUpdateTaskSchedules`). Edit-many sends *one* interval for every rule. We group by the **new** interval, because each payload can differ.
 
@@ -239,7 +217,7 @@ After `bulkCreateRulesSo`, we call `taskManager.bulkUpdateSchedules` when the ru
 
 ---
 
-## Tradeoff: 10. Who chunks — `bulkUpdateRules`, `DetectionRulesClient`, or the import/upgrade callers?
+## Tradeoff: 9. Who chunks — `bulkUpdateRules`, `DetectionRulesClient`, or the import/upgrade callers?
 
 The import HTTP route already splits the file into groups of 50. Inside that, overwrite still hands that chunk’s `toUpdate` list to one `rulesClient.bulkUpdateRules` call. The upgrade handler already splices its queue at 100 (`PREBUILT_RULES_UPGRADE_BATCH_SIZE`) before it loads installed rules. We said the *callers* should chunk, so upgrade can load only the ids in the chunk and not hold thousands in memory.
 
@@ -251,6 +229,6 @@ The import HTTP route already splits the file into groups of 50. Inside that, ov
 **Option B — Callers chunk. This method still enforces `MAX_BULK_UPDATE_BATCH_SIZE` (500) / default 100 as a backstop.**
 
 - Pros: Upgrade can load 100, update 100, load the next 100. This method stays “save this list.”
-- Cons: Import overwrite does not slice further than the route’s 50. If `validateScheduleLimit` throws on a later inner batch (tradeoff 8), earlier inner batches in that call are already saved.
+- Cons: Import overwrite does not slice further than the route’s 50. If `validateScheduleLimit` throws on a later inner batch (tradeoff 7), earlier inner batches in that call are already saved.
 
 **We picked B.** `DEFAULT_BULK_UPDATE_BATCH_SIZE` / `MAX_BULK_UPDATE_BATCH_SIZE` stays as a safety net.
