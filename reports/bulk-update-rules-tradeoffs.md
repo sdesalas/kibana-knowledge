@@ -9,6 +9,9 @@ Kibana already has two ways to change many alerting rules at once:
 
 The new method, `bulkUpdateRules`, is for a third job: “here are 200 existing rules, and each one has its *own* new definition.” Typical callers: import with overwrite, and upgrading prebuilt detection rules. Every rule in the list is already in the database, but each one is being rewritten to a different body — not the same patch applied to everyone.
 
+<details>
+<summary>See related comments from issue  #264894</summary>
+
 Christos ([#264894](https://github.com/elastic/kibana/issues/264894#issuecomment-4333902656)):
 
 > Encrypted SO GETs: Per-rule via pMap at concurrency 50 to retrieve existing API keys (irreducible floor — each rule's API key is stored in an encrypted saved object that must be individually decrypted).
@@ -30,6 +33,8 @@ Banderror, on API keys when a bulk write throws ([#264892](https://github.com/el
 >
 > I think @sdesalas might already be dealing with error handling as part of https://github.com/elastic/kibana/issues/264893, where we're considering an optimistic approach to bulk rule creation.
 
+</details>
+
 ---
 
 ## Tradeoff: 1. Reuse `bulkEditRulesOcc` logic + helpers?
@@ -39,14 +44,14 @@ Banderror on [#264894](https://github.com/elastic/kibana/issues/264894) asked us
 **Option A — Call `bulkEditRulesOcc` / `saveBulkUpdatedRules`.**
 
 - Pros: That code already loads existing rules, creates API keys, overwrites the saved documents, and retries when two writes collide. It is what the ticket asked for, so reviewers see one write path.
-- Cons: Edit-many is built for “apply this *one* change to every rule I found.” We are handing in a *different* new definition for each rule. We would still have to build each updated document ourselves, then push the pile into their save function. If that one save fails halfway, it can throw away every new API key from the whole import ([#264892](https://github.com/elastic/kibana/issues/264892)).
+- Cons: Bulk Edit is built for a different use case then Bulk Update. Ie “apply this *one* change to every rule matcking a KQL query.” We are handing in a *different* new definition for each rule, and updating by ID in batches (because the larger input forces us to), not KQL for the whole lot. These pathways are fundamentally different. We would still have to build each updated document ourselves, then push the pile into their save function. Which we cannot optimize either in error handling or performance because it'll impact Bulk Edit.
 
 **Option B — Clone `bulkCreateRules` (preValidate, then write `batchSize` at a time), but reuse edit’s helpers:** `createPointInTimeFinderDecryptedAsInternalUser`, `bulkCreateRulesSo` overwrite, `createNewAPIKeySet`, `bulkMarkApiKeysForInvalidation`, `taskManager.bulkUpdateSchedules`.
 
-- Pros: Create-many is already the “here is a list, each item is different” method. Writing 100 at a time means a failed save only risks that batch, not 2000 rules. We still use the same Elasticsearch and API-key helpers, so we are not inventing a third way to persist a rule.
-- Cons: The *sequence* of steps is not the same as edit-many. The ticket asked to avoid that. Someone reading the ticket may think we ignored it.
+- Pros: Create-many is already the “here is a list, each item is different” method. We update by ID and in batches so the logic matches closely. Writing X items (100) at a time means a failed save only risks that batch, not 2000 rules. We still use the same Elasticsearch and API-key helpers, so we are not inventing a third way to persist a rule.
+- Cons: The *sequence* of steps is not the same as edit-many. Helpers are different too. The ticket asked to avoid that. Someone reading the ticket may think we ignored it.
 
-**We picked B.** Use the same building blocks as edit-many. Do not run our “each rule has its own new body” job through a helper that assumes one shared patch. We also want to *avoid retesting* `bulk_edit_rules.ts`, and to *maximize performance and minimise memory use*. The ticket is a straightjacket, so we take it as an informed recommendation. Not gospel.
+**We picked B.** Use the same building blocks as edit-many. Do not run our “each rule has its own new body” job through a helper that assumes one shared patch. We also want to *avoid retesting* `bulk_edit_rules.ts`, and to *maximize performance and minimise memory use*. The ticket is a straightjacket, so we take it as an informed opinion. Not gospel.
 
 ---
 
@@ -72,30 +77,25 @@ Callers must not think they can pass `enabled` and have it stick. `UpdateRuleDat
 
 ---
 
-## Tradeoff: 3. OCC 409: fail the rule, `retryIfBulkEditConflicts`, or reload-and-PUT?
+## Tradeoff: 3. OCC 409: `retryIfBulkEditConflicts`, or reload-and-PUT?
 
-We stamp the loaded SO `version` on `bulkCreateRulesSo` overwrite. If something else wrote first, Elasticsearch returns **409**.
+During `bulkCreateRulesSo` overwrite with PIT loaded OCC `version` (`_seq_no`, `_primary_term`) Elasticsearch returns **409** if something else wrote it first (TOCTOU).
 
-`updateRule` already retries a couple of times ([PR #77838](https://github.com/elastic/kibana/pull/77838), `RetryForConflictsAttempts`). `bulkEditRulesOcc` uses `retryIfBulkEditConflicts` (reload, reapply the same patch, rewrite everything). We first said: stamp `version`, 409 = per-item error, no retry — because retrying means another `createNewAPIKeySet`, and a real competing save would 409 again.
+`updateRule` already retries a couple of times ([PR #77838](https://github.com/elastic/kibana/pull/77838), `RetryForConflictsAttempts`). `bulkEditRulesOcc` uses `retryIfBulkEditConflicts` (reload, reapply the same patch, rewrite everything). Retrying means another `createNewAPIKeySet`, and a real competing save would 409 again.
 
-Note that **most 409's come from rule background execution updating the rule.** While we are saving an import or upgrade, the runner is writing last-run status onto the same document. That is not two people editing the same rule. Without retry, import/upgrade of *running* rules would fail at random.
+Note that **most 409's come from rule background execution updating the rule** (see [`retry_if_conflicts.ts`](https://github.com/elastic/kibana/blob/main/x-pack/platform/plugins/shared/alerting/server/lib/retry_if_conflicts.ts#L8-L12)). While we are saving an import or upgrade, the runner is writing last-run status onto the same document. That is not two people editing the same rule. Without retry, import/upgrade of *running* rules would fail at random.
 
-**Option A — Don’t retry. 409 is a per-item error.**
-
-- Pros: No extra key creation. Simple, if collisions are rare.
-- Cons: Rules that are currently running fail the import/upgrade for no good reason. That is not what `updateRule` does today.
-
-**Option B — `retryIfBulkEditConflicts` (reapply the same patch, rewrite everything).**
+**Option A — Reuse `retryIfBulkEditConflicts` (reapply the same patch, rewrite everything).**
 
 - Pros: Step 9 of [#264894](https://github.com/elastic/kibana/issues/264894) asked for this.
-- Cons: We are not applying one shared patch. Replaying the same bulk objects keeps the old `version`, so you 409 forever. It would also mint new keys for the whole set again.
+- Cons: `retryIfBulkEditConflicts` is *the wrong shape*. We are not applying one shared patch, we have different payload per rule. Modifying this method to fit our criteria is chasing [the wrong abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction). It would mean complicating our logic to be able to map whole payloads per rule on a [`filter`](https://github.com/elastic/kibana/blob/fab6469adfdc862a95f732b33dc2319b0822a6e4/x-pack/platform/plugins/shared/alerting/server/rules_client/common/bulk_edit/retry_if_bulk_edit_conflicts.ts#L77) that changes with each retry. Making it hard to follow, confusing and error prone.
 
-**Option C — Reload-and-PUT for 409 rows only, like `updateRule`: invalidate the new key, wait 100ms, `loadRulesByIds` those ids, `prepareUpdate` again (fresh `version`, same `item.data`, new key), overwrite. `RetryForConflictsAttempts` (2 retries / 3 attempts). Then per-item error.**
+**Option B — Reload-and-PUT for 409 rows only, like `updateRule`: invalidate the new key, wait 100ms, `loadRulesByIds` those ids, `prepareUpdate` again (fresh `version`, same `item.data`, new key), overwrite. `RetryForConflictsAttempts` (2 retries / 3 attempts). Then per-item error.**
 
-- Pros: Survives the runner writing last-run status. Only the collided rules pay for another key. We don’t use `retryIfBulkEditConflicts`.
-- Cons: Extra load and key creation for those rules. If someone really did save a competing edit in that window, last writer wins — same as `updateRule`.
+- Pros: Simpler logic. Authz, circuit breaker, migrate, and audit already ran. Retry is a small loop over the 409 ids with the payloads we already have. More readable, slightly more performant as it can be optimized for this flow.
+- Cons: A second OCC retry path.
 
-**We picked C.** Stamp `version` on overwrite. On 409, invalidate the new key (the rule still has the old one), reload, rebuild, overwrite.
+**We picked B.** Right tool for the job. Easier to follow for a per-id, per-payload write than a KQL `filter` callback written for single payload.
 
 ---
 
@@ -115,7 +115,7 @@ Banderror later pushed back on “just accept the full throw” ([comment](https
 - Pros: The new method can ship. A throw only risks one batch of keys, not the whole import. When Elasticsearch *does* return per-row results, we already wipe new keys on failure and old keys on success, which is what the ticket asked for.
 - Cons: If a save throws with no row-by-row result, we still wipe every new key in that batch — including for rules Elasticsearch may already have written. Batches shrink that from the whole import to 100 rules; they do not remove it. A later bulk operation can regenerate those keys, but in the meantime _the rule keeps the dead key_. We did not close [#264892](https://github.com/elastic/kibana/issues/264892).
 
-**We picked B.** Copy the behaviour. Don’t wait on a patch to a helper we aren’t calling. The conditions for this bug to arise are rare and the approach mirrors existing behavior. A thorough search found no matches to existing SDHs in elastic/sdh-security-team regarding dead or invalid keys. We also mitigated the risk by reducing batch sizes but did not remove it altogether.
+**We picked B.** Copy the behaviour. Don’t wait on a patch to a helper we aren’t calling. The conditions for this bug to arise are rare and the approach mirrors existing behavior. A [search found no conclusive matches](https://github.com/elastic/sdh-security-team/pull/1787) to existing SDHs in `elastic/sdh-security-team` regarding dead or invalid keys. We also mitigated the risk by reducing batch sizes but did not remove it altogether.
 
 ---
 
@@ -137,7 +137,7 @@ Christos disagreed: use the same paged read edit-many already uses, filtered to 
 - Pros: Far fewer calls. Same load path as edit-many. If an id is not in the results, we record an error for that rule and continue.
 - Cons: If decrypt fails for one document, that rule just looks missing. We do not fall back to “load it without the key.”
 
-**We picked B.** We use that finder. We still do not call the rest of edit-many’s helper (see tradeoff 1).
+**We picked B.** We use the PIT finder as [suggested](https://github.com/elastic/kibana/issues/264894#issuecomment-4333902656) by christos.
 
 ---
 
