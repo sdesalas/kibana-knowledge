@@ -48,18 +48,19 @@ Import overwrite honors the file’s `enabled` after the batch via `bulkEnableRu
 ### Files touched
 
 **Alerting primitive (the new write path)**
-- `alerting/server/application/rule/methods/bulk_update/{bulk_update_rules,utils,types,index}.ts` — orchestrator, PIT load, prepare/merge, OCC retry, TM grouping.
+- `alerting/server/application/rule/methods/bulk_update/{bulk_update_rules,utils,types,index}.ts` — orchestrator, PIT load, prepare/merge, OCC retry, TM grouping. `withSpan` names `bulkUpdateRules.runBatch.*` / `putAttempt.*`.
 - `alerting/server/application/rule/methods/update/types/update_rule_data.ts` — `enabled?: never` so callers cannot type-pass an on/off flip.
 - `alerting/server/rules_client/rules_client.ts`, `rules_client/common/constants.ts`, `alerting/server/index.ts`, `rules_client.mock.ts` — public method, batch-size caps (10 / 100 / 500), 10k hard limit.
 - `alerting/common/rule_circuit_breaker_error_message.ts` — `bulkUpdate` copy.
 
 **Review notes in-tree**
-- `bulk_update_rules_tradeoffs.md` — nine tradeoffs, meant for inline GitHub comments. Not product docs.
+- `bulk_update_rules_tradeoffs.md` — ten tradeoffs, meant for inline GitHub comments. Not product docs.
 
 **Security Solution callers**
 - `detection_rules_client` interface + impl + mock — `bulkUpdateRules` / `bulkUpgradePrebuiltRules`. `importRules` now returns `{ responses: Array<{ rule_id } | error> }` (no `ruleSourceImporter`).
 - `methods/bulk_update_rules.ts` — converts `RuleResponse` → `UpdateRuleData` then delegates. Import overwrite calls `rulesClient.bulkUpdateRules` directly.
-- `methods/import_rules.ts` — classify conflict / update / create from one installed-rules map. Update → `bulkUpdateRules` (`skipIfUnchanged: true`) then enable/disable. Create → `bulkCreateRules`. Throws become per-rule errors.
+- `methods/import_rules.ts` — classify conflict / update / create from one installed-rules map. Update → `getChanges` then `bulkUpdateRules` (changed rules only) then enable/disable. Create → `bulkCreateRules`. Throws become per-rule errors. Passes `matchingAsset` from the batch map so overwrite does not refetch assets per rule.
+- `methods/utils/get_changes.ts` — per-key `RuleResponse` diff (missing === `undefined`). Import also ignores `enabled`. Returns the field names that differ.
 - `logic/import/import_rules.ts` — chunks at `RULE_IMPORT_BATCH_SIZE` (200).
 - `logic/import/find_installed_rules_by_rule_ids.ts`, `fetch_prebuilt_import_context.ts` — one find + prebuilt asset context per chunk. `rule_source_importer` removed.
 - `api/constants.ts` — `RULE_IMPORT_BATCH_SIZE = 200` (timeouts moved here from `timeouts.ts`).
@@ -76,21 +77,21 @@ Import overwrite honors the file’s `enabled` after the batch via `bulkEnableRu
 2. Each chunk calls `detectionRulesClient.importRules`.
 3. One parallel load: exception lists, `fetchPrebuiltImportContext`, `findInstalledRulesByRuleIds` (KQL OR on `params.ruleId`). Then per-rule prep (version, ML authz, exceptions, rule source).
 4. Classify from the installed map: conflict / update / create.
-5. Update path: `applyRuleUpdate` + `convertRuleResponseToAlertingRule`, then `rulesClient.bulkUpdateRules` with `batchSize: 200` and `skipIfUnchanged: true`. Create path: `bulkCreateRules` with the same batch size.
+5. Update path: `applyRuleUpdate` (with `matchingAsset` from the batch map), then `getChanges(existing, after, ['enabled'])`. Unchanged ids skip the alerting call but stay in `successfulIds` so enable/disable still runs. Changed ids: `convertRuleResponseToAlertingRule` then `rulesClient.bulkUpdateRules` with `batchSize: 200`. Create path: `bulkCreateRules` with the same batch size.
 6. Per alerting batch (`runBatch`): PIT decrypt load → `bulkMigrateLegacyActions` → `bulkEnsureAuthorized(Update)` (throw the call) → `validateScheduleLimit` on **enabled** rules whose interval changed (throw the call) → `writeWithRetry`. Import catches those throws and maps them to per-rule errors.
-7. `prepareUpdate` (pMap, concurrency 50): schema, rule-type params, actions, `incrementRevision`. If `skipIfUnchanged` and revision did not bump, skip write/key/history. Else mint a key iff the existing rule is enabled (`createNewAPIKeySet({ shouldUpdateApiKey: original.enabled })`), merge onto the original SO, force `enabled: originalRule.enabled`.
+7. `prepareUpdate` (pMap, concurrency 50): schema, rule-type params, actions, `incrementRevision` (revision number only — always writes). Mint a key iff the existing rule is enabled (`createNewAPIKeySet({ shouldUpdateApiKey: original.enabled })`), merge onto the original SO, force `enabled: originalRule.enabled`.
 8. `bulkCreateRulesSo({ overwrite: true })`. Per-row 409 → invalidate the **new** key for that row, wait 100ms, reload those ids, prepare again, retry (`RetryForConflictsAttempts` = 2). Full throw → invalidate every new key in the batch (the #264892 shape, scoped to the batch).
 9. Success rows: invalidate **old** keys (gated on `!apiKeyCreatedByUser`), `updateTaskSchedules` grouped by new interval if `scheduledTaskId` exists and interval changed (on **or** off), `logRuleChanges`. TM errors are logged and swallowed; the id stays in `successfulIds`.
 10. Import maps `successfulIds` to `{ rule_id }`. Then `bulkEnableRules` / `bulkDisableRules` for successful ids whose file `enabled` differs from the existing rule.
 
-Same-type prebuilt upgrade is the same from step 5, without `skipIfUnchanged`, after a second round of `getRuleByRuleId` + `applyRuleUpdate` inside `bulkUpgradePrebuiltRules` (the handler already loaded current versions).
+Same-type prebuilt upgrade is the same from step 5, with no skip — always writes — after a second round of `getRuleByRuleId` + `applyRuleUpdate` inside `bulkUpgradePrebuiltRules` (the handler already loaded current versions).
 
 ---
 
 ### Assumptions
 
 - Executor `lastRun` / `executionStatus` writes are the main 409 source, and two retries at 100ms are enough for a running fleet. A real competing edit loses to last-writer-wins after retries.
-- `incrementRevision` is a complete enough diff for `skipIfUnchanged`. Action UUIDs keep their existing values (`uuid || v4()`), so a no-op re-import of rules with actions can still skip. Generated-on-missing UUIDs on actions that never had one will bump revision and write.
+- Import skip is `getChanges` on two `RuleResponse`s (ignore id / timestamps / `execution_summary`, and `enabled` at the call site). Per-key compare: a missing key and `undefined` are equal, so `applyRuleDefaults` filling optional fields as `undefined` does not force a write. Same-shape compare, so Cases / actions are in the diff. `applyRuleUpdate` copies `revision` from the existing rule.
 - Callers never need the persisted rule documents back — only ids. Import HTTP and `detectionRulesClient.importRules` both return `{ rule_id }` (plus errors), not a `RuleResponse`.
 - Mixed Update privileges across rule types in one batch are rare enough that failing the whole call is acceptable. Detection import/upgrade is usually one user, SIEM consumers.
 - Disabled rules with a `scheduledTaskId` should have their paused TM task’s interval rewritten (same as `updateRule`). Later enable uses that cadence without rewriting the interval.
@@ -103,19 +104,24 @@ Same-type prebuilt upgrade is the same from step 5, without `skipIfUnchanged`, a
 
 ### Risks
 
-- ~~**Import overwrite no longer honors `enabled`.** Old path: `importRule` → `toggleRuleEnabledOnUpdate`. New path: keep the existing on/off. Re-importing `"enabled": true` over disabled rules used to turn them on; now they stay off. The single-rule `importRule` API still toggles — two overwrites, two behaviors. The PR description treats this as intended; tradeoff 2 says callers will do enable/disable after the batch, and they don’t.~~ **FIXED**
-  - `updateRules` now collects enable/disable ids and calls `bulkEnableRules` / `bulkDisableRules` only for `successfulIds`.
-  - Residual: if enable/disable returns per-item errors, that rule can show as both a `{ rule_id }` success and an error. If `bulkEnableRules` throws, the outer catch skips ids already in `responses` — success, no flip, no error.
-- ~~**Circuit-breaker / authz throws are no longer per-item.** `updateRule` throwing “too many runs per minute” used to fail that one import row. `validateScheduleLimit` / `bulkEnsureAuthorized` now throw the `bulkUpdateRules` call. `import_rules.ts` does not catch it. The HTTP route’s outer `catch` returns 400 for the whole request. Earlier route chunks (and earlier inner batches) are already saved. Client sees a failed import; server has a partial one.~~ **ADDRESSED (import only)**
-  - Import’s outer `try/catch` maps a thrown `bulkUpdateRules` / `bulkCreateRules` onto remaining rule_ids as per-item errors. HTTP import stays 200 with a mixed result list. Earlier `RULE_IMPORT_BATCH_SIZE` chunks keep their responses.
-  - Upgrade (`bulkUpgradePrebuiltRules`) still does not catch the throw.
-- ~~**Uncommitted chunk 500 makes inner batching real.** Committed import chunk is 50 < default `batchSize` 100, so the inner loop never splits. At 500, you get five inner batches. An authz/circuit-breaker throw on batch 3 leaves batches 1–2 persisted, then the HTTP 400 above. Also 500 concurrent `getRuleByRuleId` finds per chunk (`Promise.all`).~~ **DONE**
-  - Uncommitted 500 is gone. Outer chunk and `batchSize` share `RULE_IMPORT_BATCH_SIZE` (200). No nested inner batches on import.
-- **No tests for a new public `RulesClient` method.** OCC retry, skip-if-unchanged, key invalidation on partial vs full throw, disabled+interval TM update, circuit breaker, authz-throw-the-call — none of it has a unit or integration test. Existing `detection_rules_client.import_rules.test.ts` still mocks `importRule` and only covers `overwriteRules: false`. Overwrite-enabled tests live on `importRule`, which this path no longer uses.
-  - **Partial:** import-client tests now cover overwrite, mixed create/update, thrown `bulkUpdateRules`, and enable-after-update. Alerting-layer `bulkUpdateRules` still has no tests.
-- **#264892 still applies per batch.** Full `bulkCreateRulesSo` throw invalidates every new key in that batch, including for docs ES may have written. Those rules keep a dead key until the next write. Documented; not closed.
-- **Upgrade double-fetches.** `perform_rule_upgrade_handler` already loaded current rules. `bulkUpgradePrebuiltRules` calls `getRuleByRuleId` per asset anyway (another find each). Extra ES load and a TOCTOU between the revision check and the write.
-- **GitHub may auto-close #264892.** `closingIssuesReferences` includes it. The PR does not fix that ticket.
+1. ~~**Import overwrite no longer honors `enabled`.** Old path: `importRule` → `toggleRuleEnabledOnUpdate`. New path: keep the existing on/off. Re-importing `"enabled": true` over disabled rules used to turn them on; now they stay off. The single-rule `importRule` API still toggles — two overwrites, two behaviors. The PR description treats this as intended; tradeoff 2 says callers will do enable/disable after the batch, and they don’t.~~ **FIXED**
+   - `updateRules` now collects enable/disable ids and calls `bulkEnableRules` / `bulkDisableRules` only for `successfulIds`.
+   - ~~Residual: if enable/disable returns per-item errors, that rule can show as both a `{ rule_id }` success and an error.~~ **FIXED — see activity #3.** Option A in `294caac1b9d`: record `{ rule_id }` only after enable/disable, and only when that flip succeeded.
+   - ~~If `bulkEnableRules` throws, the outer catch skips ids already in `responses` — success, no flip, no error.~~ **WRONG — see activity #3.** `updateRules` throws before it returns the local successes, so the outer catch reports those `rule_id`s as errors. Body saved, no flip, client sees an error.
+2. ~~**Circuit-breaker / authz throws are no longer per-item.** `updateRule` throwing “too many runs per minute” used to fail that one import row. `validateScheduleLimit` / `bulkEnsureAuthorized` now throw the `bulkUpdateRules` call. `import_rules.ts` does not catch it. The HTTP route’s outer `catch` returns 400 for the whole request. Earlier route chunks (and earlier inner batches) are already saved. Client sees a failed import; server has a partial one.~~ **ADDRESSED (import only)**
+   - Import’s outer `try/catch` maps a thrown `bulkUpdateRules` / `bulkCreateRules` onto remaining rule_ids as per-item errors. HTTP import stays 200 with a mixed result list. Earlier `RULE_IMPORT_BATCH_SIZE` chunks keep their responses.
+   - Upgrade (`bulkUpgradePrebuiltRules`) still does not catch the throw.
+3. ~~**Uncommitted chunk 500 makes inner batching real.** Committed import chunk is 50 < default `batchSize` 100, so the inner loop never splits. At 500, you get five inner batches. An authz/circuit-breaker throw on batch 3 leaves batches 1–2 persisted, then the HTTP 400 above. Also 500 concurrent `getRuleByRuleId` finds per chunk (`Promise.all`).~~ **DONE**
+   - Uncommitted 500 is gone. Outer chunk and `batchSize` share `RULE_IMPORT_BATCH_SIZE` (200). No nested inner batches on import.
+4. **No tests for a new public `RulesClient` method.** OCC retry, key invalidation on partial vs full throw, disabled+interval TM update, circuit breaker, authz-throw-the-call — none of it has a unit or integration test. Existing `detection_rules_client.import_rules.test.ts` still mocks `importRule` and only covers `overwriteRules: false`. Overwrite-enabled tests live on `importRule`, which this path no longer uses.
+   - **Partial:** import-client tests now cover overwrite, mixed create/update, thrown `bulkUpdateRules`, enable-after-update, and skip-when-unchanged (`getChanges` mocked `[]` → no `bulkUpdateRules`). Alerting-layer `bulkUpdateRules` still has no tests. See activity #5.
+5. **#264892 still applies per batch.** Full `bulkCreateRulesSo` throw invalidates every new key in that batch, including for docs ES may have written. Those rules keep a dead key until the next write. Documented; not closed.
+6. **Upgrade double-fetches.** `perform_rule_upgrade_handler` already loaded current rules. `bulkUpgradePrebuiltRules` calls `getRuleByRuleId` per asset anyway (another find each). Extra ES load and a TOCTOU between the revision check and the write.
+   - Architecture pass: this is the write method re-owning load. Sibling `revertPrebuiltRule` already takes `existingRule: RuleResponse`. See activity #2.
+7. **GitHub may auto-close #264892.** `closingIssuesReferences` includes it. The PR does not fix that ticket.
+8. **`IDetectionRulesClient.bulkUpdateRules` is a leaky public passthrough with no external caller.** It re-exports alerting knobs (`batchSize`, `exitEarlyOnError`) and writes `RuleResponse[]` with no ML authz / `applyRuleUpdate` / exception merge. Only `bulkUpgradePrebuiltRules` uses the method file internally. Import overwrite reimplements the same convert-and-delegate against `rulesClient.bulkUpdateRules` directly. A future caller of the client method will skip domain checks. This belongs as a private helper, not on the public interface. See activity #2.
+9. **HTTP import and `importRule` are now two write implementations.** Before this PR, `importRules` composed `importRule`. After `da7eaf43af4` they diverge: bulk uses `bulkUpdateRules` + `bulkCreateRules` + `bulkEnable`/`bulkDisable` and returns `{ rule_id }`; single still uses `update` + `toggleRuleEnabledOnUpdate` and returns a `RuleResponse`. `import_rules/route.test.ts` still says the old composition is true. See activity #2.
+10. **`prepareUpdate` fetches connectors twice per rule.** `validateActions` and `extractReferences` / `denormalizeActions` each `getBulk` the same ids (concurrency 50). APM pass left this; spans will confirm it, not fix it. See activity #7.
 
 ---
 
@@ -129,14 +135,19 @@ Same-type prebuilt upgrade is the same from step 5, without `skipIfUnchanged`, a
 5. Should `bulkUpgradePrebuiltRules` take the already-loaded current rules from the handler instead of N `getRuleByRuleId` calls?
 6. Is `bulk_update_rules_tradeoffs.md` staying in `alerting/server/...` after review, or is it PR-only scaffolding?
 7. Confirm #264892 should **not** close when this merges.
+8. Should `IDetectionRulesClient.bulkUpdateRules` stay on the public interface, or become a private helper shared by import overwrite and upgrade? (Risk #8)
+10. ~~`skipIfUnchanged` lives in alerting (`incrementRevision` after the PIT load). Import already has `installedRulesById` and could drop no-ops before the call. Stay in alerting, or move the skip to Security Solution?~~ **ADDRESSED — see activity #5.** Tradeoff 10 picked B: skip in the caller. Import uses `getChanges` and does not pass a skip flag. Alerting always writes.
+   - `enabled` is ignored in that diff, so enable-only reimport still hits `bulkEnable` / `bulkDisable`.
+   - Skipped ids still count as success.
+   - ~~Residual: `applyRuleDefaults` can make an otherwise identical file look changed.~~ **FIXED — see activity #6.** Whole-object `isEqual` treated missing vs `undefined` as different. Per-key `getChanges` does not. `updateRules` still has a TODO about an import flag.
 
 ---
 
 ### Notes for your codebase map
 
 - Alerting now has three bulk write shapes: **create-many** (`bulkCreateRules`, persist-first + demote), **edit-many** (`bulkEditRulesOcc`, one patch + `retryIfBulkEditConflicts`), **update-many** (`bulkUpdateRules`, per-id bodies + reload-and-PUT). They share primitives (`bulkCreateRulesSo`, `createNewAPIKeySet`, PIT decrypt, `invalidateKeys`) but not orchestrators.
-- `updateRule` / `bulkUpdateRules` never flip `enabled`. Detection create/update/patch/import-single do it afterwards via `toggleRuleEnabledOnUpdate` → `enableRule` / `disableRule`. Bulk import overwrite currently skips that follow-up.
-- `incrementRevision` is the “did anything editable change?” signal. `skipIfUnchanged` is just “don’t write if revision would not bump.”
+- `updateRule` / `bulkUpdateRules` never flip `enabled`. Detection create/update/patch/import-single do it afterwards via `toggleRuleEnabledOnUpdate` → `enableRule` / `disableRule`. Bulk import overwrite does the same follow-up via `bulkEnableRules` / `bulkDisableRules` on `successfulIds`.
+- `incrementRevision` only decides the revision *number*. Alerting always writes the list it is given (tradeoff 10, Option B). Import skip is `getChanges` on two `RuleResponse`s before `bulkUpdateRules`. Skipped ids still count as success, so enable/disable still runs. Same-shape compare includes Cases / actions; that closes the old `systemActions`-exclude hole. See OQ #10 / activity #5–#6.
 - TM interval is rewritten for disabled rules that still have a `scheduledTaskId` (disable keeps the paused task on purpose — see `rule_so_task_consistency.md`). Circuit breaker only counts **enabled** interval changes.
 - Detection `getRuleByRuleId` is a `findRules` on `params.ruleId`, not an SO get-by-id. Cheap-looking loops of it are still N ES searches.
 - Prebuilt upgrade still has two implementations: new `bulkUpgradePrebuiltRules` on `upgrade/_perform`, old `upgradePrebuiltRules` pMap on promotion-rule install and the legacy prepackaged path.
@@ -155,3 +166,21 @@ Same-type prebuilt upgrade is the same from step 5, without `skipIfUnchanged`, a
    - Residual: enable/disable failure after a recorded success can emit both a success and an error (or success only, no flip, if the enable call throws).
    - Unchanged: upgrade still N `getRuleByRuleId`; no alerting `bulkUpdateRules` tests; #264892 still in `closingIssuesReferences`; `tradeoffs.md` still in-tree; import return is `{ rule_id }` only.
    - Rewrote header → Assumptions to match the post-`da7eaf43af4` import path. Risks / open questions left as-is.
+
+2. **Focused review: architecture.** Pass over the PR file list (alerting primitive + detection import/upgrade). Third write orchestrator (own `writeWithRetry`, shared primitives with `bulkCreate`/`bulkEdit`) and `enabled?: never` on `UpdateRuleData` are the right shape. Import chunk and alerting `batchSize` sharing 200 is the right layering. New findings: `IDetectionRulesClient.bulkUpdateRules` is a leaky unused public passthrough (Risk #8, OQ #8); import overwrite bypasses it and reimplements convert-and-delegate; `importRules` no longer composes `importRule` so two import write paths will drift (Risk #9); upgrade still re-owns load via N `getRuleByRuleId` instead of taking the handler’s already-loaded currents the way `revertPrebuiltRule` takes `existingRule` (Risk #6, OQ #5). Leftover `upgradePrebuiltRules` pMap on promotion-rule / legacy prepackaged is now OQ #9. Fixed the stale Notes enable bullet. Checked and clean: no inverted plugin deps, `timeouts.ts` → `constants.ts` is colocation not drive-by, type-change upgrade staying on delete+create is correct, `rule_source_importer` removal + `fetchPrebuiltImportContext` is a good extract.
+
+3. **Risk #1 residual.** Re-read the enable/disable leftover after the import rewrite. Two items:
+
+   - Throw path was a misread. `updateRules` throws before it returns local successes, so the outer catch reports those `rule_id`s as errors (body saved, no flip). Struck that sentence on Risk #1.
+   - Per-item enable/disable error was real (success `{ rule_id }` plus an error). Two possible fixes: **A** do not record `{ rule_id }` until after the flip, and skip ids that failed. **B** record success, then remove it when the enable/disable error arrives. Option A in `294caac1b9d`. A per-item `bulkEnableRules` error is now the only result for that rule. Residual **FIXED**.
+
+4. **Missed tradeoff: where `skipIfUnchanged` lives.** Import already loaded `installedRulesById`, so a no-op skip does not have to be an alerting flag. Raised as OQ #10.
+
+   - **Inside alerting:** `incrementRevision` on the decrypted SO. Any caller gets it. Skipped ids stay in `successfulIds`, so import enable/disable still runs when only `enabled` changed. Cost: convert + PIT + prepare still run for no-ops.
+   - **Outside, in Security Solution:** drop unchanged rules before `bulkUpdateRules`. Saves that work. The diff is `RuleResponse` vs `RuleResponse`, not revision, so it can disagree with alerting (e.g. generated action UUIDs). Must still treat those rules as success for enable/disable.
+
+5. **Flipped tradeoff 10 to B (skip in the caller).** [`f741fee251f`](https://github.com/elastic/kibana/commit/f741fee251f2a3329ab14ef94be573f3d35502ae). `skipIfUnchanged` is gone from alerting types / `prepareUpdate`. Import `updateRules` runs `detectChanges(existing, after, ['enabled'])`; unchanged ids skip `bulkUpdateRules` but stay in `successfulIds` for enable/disable. Tests: unchanged → no write; enable-only → no write, still `bulkEnableRules`. Struck OQ #10. Residual: `applyRuleDefaults` can false-write; TODO in `updateRules` about an import flag. Upgrade still always writes (no skip). The old `systemActions` hole is closed on this path — Cases / actions are in the `RuleResponse` diff.
+
+6. **Same-payload reimport always looked dirty.** [`0af6c07208e`](https://github.com/elastic/kibana/commit/0af6c07208e0070edeff221f30e57af6adb34582). Whole-object `isEqual(omit(...))` treated a missing key and `undefined` as different; `applyRuleDefaults` writes optional fields as `undefined`, so every reimport looked changed. Switched to per-key compare (missing === `undefined`) and renamed `detectChanges` → `getChanges` (returns the differing field names). Struck the OQ #10 `applyRuleDefaults` residual.
+
+7. **Focused review: APM / `withSpan`.** [`cf16e0a0555`](https://github.com/elastic/kibana/commit/cf16e0a05551914e4be98cf6c2b679e40595897f). Existing spans were phase timers; migrate / invalidate / TM / change-history were dark. Added those (`bulkUpdateRules.runBatch.*` / `putAttempt.*`); skipped labels so APM did not grow extra args. Import APM showed ~200 `IPrebuiltRuleAssetsClient.fetchAssetsByVersion` per batch: `calculateRuleSource` refetched before `getChanges`. Import now passes `matchingAsset` from `fetchPrebuiltImportContext` (`undefined` still fetches). Residual: connector `getBulk` still twice per rule in prepare — raised as Risk #10. `validateScheduleLimit` is still one cluster agg per batch.
