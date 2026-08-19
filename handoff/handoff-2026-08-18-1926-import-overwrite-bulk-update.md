@@ -29,8 +29,9 @@ Steven (`sdesalas`) in `kibana-4th` on branch `rule-bulk-update-poc` ([PR #28494
 - **Repo:** `/Users/sdesalas/Code/sdesalas/kibana-4th`
 - **Branch:** `rule-bulk-update-poc` (tracks `origin/rule-bulk-update-poc` for committed alerting work). HEAD `4e118d094ba` (tradeoffs md). **Uncommitted Security Solution import wire** — staged/unstaged mix from `git checkout FETCH_HEAD` of 275695 plus later edits. Do not discard without checking `git status`.
 - **Hot file:** `x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules.ts`
-- **Trial ESS FTR green (follow-up session):** 107 passing on `trial_license_complete_tier/configs/ess.config.ts` (`@ess` grep). Includes overwrite, mixed 501 create+overwrite, 568 overwrite-only, create, conflicts, identity, concurrent, exceptions, actions, connectors.
-- **Not done:** basic-license ESS FTR; large-payload FTR; commit of Security wire; PR body still says import create is out of scope (stale vs this work); no rebase onto 275695 (files copied instead).
+- **Trial ESS FTR TODO:** `trial_license_complete_tier/configs/ess.config.ts` (`@ess` grep). Includes overwrite, mixed 501 create+overwrite, 568 overwrite-only, create, conflicts, identity, concurrent, exceptions, actions, connectors.
+- **Basic-license ESS FTR TODO:** `basic_license_essentials_tier/configs/ess.config.ts` (export, import, overwrite, transport errors).
+- **Large-payload FTR TODO:** `ess.large_payload.config.ts` — 8000 disabled (20.7s), 2000 enabled (41.5s).
 
 ## Next session focus
 
