@@ -43,7 +43,7 @@ Write the document in this order:
 1–3 sentences on what this session was about. Who the user is, what repo/project, what problem was being solved.
 
 ### Original dialog
-Include original dialog focusing on questions posed and prompts entered by the user, add key insights and short reflections where it makes sense.
+Include original dialog focusing on questions posed and prompts entered by the user. These are important because they add instructions thare are often expected to be followed by the next agent, like how to format a document, handle certain code changes, or how to interact with the user. Add key insights and short reflections as a sub-commentary after each dialog point, where it makes sense.
 
 ### Conclusions
 Add bulleted list of the key decisions, findings, and actions taken this session — ordered chronologically. Focus on conclusions, not process. Skip dead ends unless they ruled out an important path.
