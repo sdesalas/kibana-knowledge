@@ -1,15 +1,17 @@
 ---
 name: detection-alerting-architecture
-description: Answer questions about Kibana detection rules and alerting framework architecture. Checks local knowledge docs in ~/Code/sdesalas/kibana-knowledge/architecture/ before answering. Use when the user asks about detection rules, alerting framework internals, rule types, rule execution, API key handling, prebuilt rules, rule management UI, or any related Kibana Security Solution architecture.
+description: "Answer questions about Kibana detection rules and alerting framework architecture. Use only when the user is asking how that architecture works (rule execution, scheduling, API keys, rule types, layers, TM). Do not use for PR reviews, code changes, handoffs, or ambient detection-engine work."
 ---
 
 # Detection Rules & Alerting Framework Architecture
 
-Answer questions about Kibana detection rules and the alerting framework by drawing on local knowledge docs first, then the live codebase.
+Use this skill when the user asks about architecture guidance on how detection rules or the alerting framework work. Do not load it because a PR, diff, or handoff happens to touch that code.
 
 ## Step 1 — Load local knowledge
 
-Before answering, always read the relevant files from:
+The information in the architecture folder is often stale so it should not be treated as a source of truth over the code. Its often best not to read into the folder unless the user specifically asks for architecture guidance.
+
+Before answering, you may read the relevant files from:
 
 ```
 ~/Code/sdesalas/kibana-knowledge/architecture/
