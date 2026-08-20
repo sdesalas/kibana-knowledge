@@ -75,6 +75,8 @@ Never infer status from `isResolved`. Explicitly surface mismatches in both dire
 
 Group threads that describe the same underlying issue. Count both raw threads and real remaining issues so duplicate bot findings do not inflate the punch list.
 
+Sort themes strictly by the total number of related comments, highest count first. Count root comments, replies, follow-ups, and repeated comments across related threads. For equal counts, order by severity or perceived importance.
+
 Within each theme:
 
 1. State the verified status first.
@@ -98,7 +100,7 @@ Save the result to:
 Use the smallest structure that makes the PR easy to close. For a substantive PR, normally include:
 
 1. Header block: PR, author, checked branch/SHA, date, method, and verification-based counts.
-2. Themes ordered by urgency or recurrence.
+2. Themes ordered by total number of related comments, descending.
 3. Addressed table with concise evidence.
 4. Not addressed / partial / decision-needed table.
 5. Unsure or trap section when relevant.
