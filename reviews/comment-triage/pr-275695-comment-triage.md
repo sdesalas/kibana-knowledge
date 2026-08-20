@@ -12,19 +12,6 @@
 
 ---
 
-## Executive summary
-
-The latest refactor substantially addresses Georgii's structural review: the feature flag and parallel legacy path are gone, `DetectionRulesClient.importRules` is the single entry point, `RuleSourceImporter` has been removed, and the implementation is decomposed into focused validation, grouping, create, overwrite, and lookup helpers.
-
-Two areas still need human attention:
-
-1. **Import lifecycle telemetry is missing at the current head.** Four threads independently identify the same regression. The latest reviewer re-verified it against today's refactor. This is the only clear code blocker in the inline comments.
-2. **Georgii's performance request is only partially satisfied.** ECH comparisons exist for 1,000 enabled/disabled rules across batch sizes 100–500, and the code now uses 250. His explicit request for separate 2,000-enabled and 2,000-disabled runs has not been completed, nor has the high-end LA/ECH versus local comparison in the current task list.
-
-Reinaldo's suggestion to keep a second parallel bulk-import implementation conflicts directly with Georgii's earlier direction to replace the old path. The code follows Georgii's direction and now gains reviewability through decomposition. That thread needs an explanatory reply, not another implementation.
-
----
-
 ## Themes
 
 ### 1. Missing `DETECTION_RULE_IMPORT_EVENT` telemetry (4 threads)
