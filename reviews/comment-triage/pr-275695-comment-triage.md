@@ -14,24 +14,7 @@
 
 ## Themes
 
-### 1. Missing `DETECTION_RULE_IMPORT_EVENT` telemetry (4 threads)
-
-**Status: Not addressed at current head — real blocker**
-
-Raised first by AI, acknowledged by Steven, then repeated by Reinaldo and twice more after later refactors:
-
-- [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939) — original telemetry-parity finding; Steven replied “On it.”
-- [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890) — re-raised after the feature flag was removed, making the regression unconditional.
-- [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) — Reinaldo repeated the concern during his local test/review pass.
-- [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) — latest reviewer confirmed it against `08f9baca78cd`.
-
-**Current code:** `DetectionRulesClient.importRules` delegates to the new import pipeline and returns the result. It does not call `sendRuleLifecycleTelemetryEvent`. `createRules` returns successful `rule_id`s from `bulkCreateRules`; `overwriteRules` also returns only `rule_id`. The `DETECTION_RULE_IMPORT_EVENT` import/call that existed on the old single-rule wrapper is gone.
-
-**Triage:** Treat all four threads as one issue. Fix once, reply on the latest human thread ([T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756)) and latest active AI thread ([T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056)), then resolve the older duplicates.
-
-**Implementation decision needed:** telemetry expects a successful rule domain object, while the new internal result currently contains only `rule_id`. Avoid emitting events for failed `bulkCreateRules` entries. Either retain the successful rule data through `createRules`/`overwriteRules`, or emit from those helpers with the necessary analytics dependency.
-
-### 2. Replace the old path; remove flag and decompose implementation (7 threads)
+### 1. Replace the old path; remove flag and decompose implementation (7 threads)
 
 **Status: Addressed, except Reinaldo's conflicting design question needs a reply**
 
@@ -57,6 +40,23 @@ Reinaldo later asked for the opposite architecture in [T25](https://github.com/e
 
 **Suggested reply on T25:** explain that keeping parallel paths was explicitly rejected to avoid permanent tech debt, while the latest helper-level decomposition and parity tests provide the requested review surface.
 
+### 2. Missing `DETECTION_RULE_IMPORT_EVENT` telemetry (4 threads)
+
+**Status: Not addressed at current head — real blocker**
+
+Raised first by AI, acknowledged by Steven, then repeated by Reinaldo and twice more after later refactors:
+
+- [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939) — original telemetry-parity finding; Steven replied “On it.”
+- [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890) — re-raised after the feature flag was removed, making the regression unconditional.
+- [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) — Reinaldo repeated the concern during his local test/review pass.
+- [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) — latest reviewer confirmed it against `08f9baca78cd`.
+
+**Current code:** `DetectionRulesClient.importRules` delegates to the new import pipeline and returns the result. It does not call `sendRuleLifecycleTelemetryEvent`. `createRules` returns successful `rule_id`s from `bulkCreateRules`; `overwriteRules` also returns only `rule_id`. The `DETECTION_RULE_IMPORT_EVENT` import/call that existed on the old single-rule wrapper is gone.
+
+**Triage:** Treat all four threads as one issue. Fix once, reply on the latest human thread ([T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756)) and latest active AI thread ([T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056)), then resolve the older duplicates.
+
+**Implementation decision needed:** telemetry expects a successful rule domain object, while the new internal result currently contains only `rule_id`. Avoid emitting events for failed `bulkCreateRules` entries. Either retain the successful rule data through `createRules`/`overwriteRules`, or emit from those helpers with the necessary analytics dependency.
+
 ### 3. Batch-size selection, ECH/local evidence, and ES clause safety (3 threads + review summary)
 
 **Status: Functional safety addressed; performance-selection request partially addressed**
@@ -81,18 +81,7 @@ Steven's earlier large-import analysis in [T4](https://github.com/elastic/kibana
 
 **Remaining performance work:** complete or explicitly defer the 2,000-rule matrix and the high-end LA/ECH versus local check. Link the follow-up performance ticket when created, then ask Georgii whether the current 250 value is acceptable for this PR.
 
-### 4. Whole-batch throws and partial persistence (2 threads)
-
-**Status: Addressed**
-
-- [T3](https://github.com/elastic/kibana/pull/275695#discussion_r3503928659) — a `bulkCreateRules` preflight throw could discard specific responses and misreport already-persisted overwrites.
-- [T5](https://github.com/elastic/kibana/pull/275695#discussion_r3527416923) — later-batch failure could leave earlier batches persisted while returning a generic request failure.
-
-**Verified current code:** each outer batch calls `DetectionRulesClient.importRules`; the internal `importRules` wraps its complete classification/overwrite/create pipeline in `try/catch`. Existing responses are preserved, and any input rule without a response receives a per-rule error. The outer loop then continues aggregating batch responses. `overwriteRules` also contains per-rule failures via `pMap`.
-
-The current unit suite includes “a thrown bulkCreateRules ... surfaces as per-rule errors, not a rejection” and the equivalent lookup-throw case.
-
-### 5. Change-tracking payload ownership (3 threads)
+### 4. Change-tracking payload ownership (3 threads)
 
 **Status: Addressed**
 
@@ -104,7 +93,28 @@ The current unit suite includes “a thrown bulkCreateRules ... surfaces as per-
 
 The current unit suite explicitly checks that caller change tracking is forwarded verbatim to `bulkCreateRules`.
 
-### 6. KQL safety for adversarial `rule_id` values (2 threads)
+### 5. Informational/self-note threads and stale anchors (3 threads)
+
+**Status: No action**
+
+- [T7](https://github.com/elastic/kibana/pull/275695#discussion_r3537178641) — old author note documenting batch size 200; outdated, current value is 250.
+- [T8](https://github.com/elastic/kibana/pull/275695#discussion_r3537183970) — old author note about the legacy 50-rule chunk; legacy path is gone.
+- [T23](https://github.com/elastic/kibana/pull/275695#discussion_r3593361874) — author note about moving a test; the test has moved again under `methods/import_rules/`.
+
+Resolve as obsolete/self-notes after the substantive threads are handled.
+
+### 6. Whole-batch throws and partial persistence (2 threads)
+
+**Status: Addressed**
+
+- [T3](https://github.com/elastic/kibana/pull/275695#discussion_r3503928659) — a `bulkCreateRules` preflight throw could discard specific responses and misreport already-persisted overwrites.
+- [T5](https://github.com/elastic/kibana/pull/275695#discussion_r3527416923) — later-batch failure could leave earlier batches persisted while returning a generic request failure.
+
+**Verified current code:** each outer batch calls `DetectionRulesClient.importRules`; the internal `importRules` wraps its complete classification/overwrite/create pipeline in `try/catch`. Existing responses are preserved, and any input rule without a response receives a per-rule error. The outer loop then continues aggregating batch responses. `overwriteRules` also contains per-rule failures via `pMap`.
+
+The current unit suite includes “a thrown bulkCreateRules ... surfaces as per-rule errors, not a rejection” and the equivalent lookup-throw case.
+
+### 7. KQL safety for adversarial `rule_id` values (2 threads)
 
 **Status: Addressed by escaping plus regression coverage**
 
@@ -113,7 +123,7 @@ The current unit suite explicitly checks that caller change tracking is forwarde
 
 **Verified current code:** `findInstalledRulesByRuleIds` wraps each value in a quoted KQL literal and uses `escapeQuotes`. Its tests cover embedded quotes, backslashes, parentheses, `*`, angle brackets, `and`/`or`/`not`, and a mixed case, and assert both the filter literal and successful round-trip lookup.
 
-### 7. Test wiring and stale tests (2 threads)
+### 8. Test wiring and stale tests (2 threads)
 
 **Status: Addressed**
 
@@ -121,17 +131,6 @@ The current unit suite explicitly checks that caller change tracking is forwarde
 - [T24](https://github.com/elastic/kibana/pull/275695#discussion_r3637352453) — tests constructed the subject with a throwaway rules-client mock.
 
 **Verified current code:** `detection_rules_client.import_rules.test.ts` creates one `rulesClient`, passes that exact instance into `createDetectionRulesClient`, stubs it, and asserts its calls. The suite now includes forwarding, error isolation, conflict, create, overwrite, prebuilt, and validation cases. The stale standalone `bulk_import_rules` test file is gone.
-
-### 8. Informational/self-note threads and stale anchors (4 threads)
-
-**Status: No action**
-
-- [T7](https://github.com/elastic/kibana/pull/275695#discussion_r3537178641) — old author note documenting batch size 200; outdated, current value is 250.
-- [T8](https://github.com/elastic/kibana/pull/275695#discussion_r3537183970) — old author note about the legacy 50-rule chunk; legacy path is gone.
-- [T9](https://github.com/elastic/kibana/pull/275695#discussion_r3537192453) — author note; superseded by current route ownership described above.
-- [T23](https://github.com/elastic/kibana/pull/275695#discussion_r3593361874) — author note about moving a test; the test has moved again under `methods/import_rules/`.
-
-Resolve as obsolete/self-notes after the substantive threads are handled.
 
 ---
 
