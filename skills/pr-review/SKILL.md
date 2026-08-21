@@ -50,7 +50,7 @@ In the Summary section of the output, briefly reconcile the stated intent (in th
 
 After confirming the PR to review and before starting the analysis, ask the user:
 
-> *"Do you want a team-aware review? If yes, which team's files should I focus on? (default: `@elastic/security-detection-rule-management`)"*
+> *"Do you want a team-aware review? If yes, which team's files should I focus on? (default: `@elastic/security-detection-engineering`)"*
 
 Accept answers like "yes", "no", "skip", or a different team handle (e.g. `@elastic/some-other-team`). If the user declines, skip this section entirely and proceed with a standard review.
 
@@ -66,7 +66,7 @@ If the user accepts, determine ownership for each changed file:
 
 Include an **Ownership** block near the top of the output, before Files touched:
 
-> **Ownership (team: `@elastic/security-detection-rule-management`)**
+> **Ownership (team: `@elastic/security-detection-engineering`)**
 > - **Your team's files (N):** `path/a.py`, `path/b.py` — *focus review effort here*
 > - **Other teams' files:** `path/c.py` (`@elastic/some-other-team`), `path/d.py` (`@elastic/another-team`)
 > - **Unowned:** `path/e.py`
@@ -187,7 +187,7 @@ Where `<number>` is the PR number (e.g. `pr-review-1234.md`). If the PR has no n
 
 When the user asks you to dig further into something related to a review already saved to file — checking a code path, verifying an assumption, confirming a local test result, exploring a risk — append a new numbered entry to the **Review activities** section of that review file.
 
-Each entry should be one tight paragraph: what was investigated and what was found (or confirmed). Do not rewrite or reorganise existing entries.
+Each entry should be a short paragraph followed by bulletpoints: what was investigated and what was found (or confirmed). Do not rewrite or reorganise existing entries.
 
 This keeps a faithful log of what was actually explored during the session, so the review file reflects not just the initial analysis but the full conversation.
 
@@ -209,7 +209,7 @@ For a small PR that adds rate-limiting middleware to an API endpoint:
 
 > **Scale:** Small PR.
 >
-> **Ownership (team: `@elastic/security-detection-rule-management`):** Both files owned by target team — squarely in scope.
+> **Ownership (team: `@elastic/security-detection-engineering`):** Both files owned by target team — squarely in scope.
 >
 > **Context / Motivation:** Security flagged ([issue #4821](https://github.com/org/repo/issues/4821)) that `POST /api/v1/webhooks` was being abused in a credential-stuffing incident. The original endpoint had no rate limiting because webhook throughput was assumed to be low-volume internal traffic. That assumption no longer holds after the endpoint was made public in v2.3.
 >
