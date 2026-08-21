@@ -1,11 +1,11 @@
 ---
 name: notify-when-done
-description: Speak an out-loud notification via the macOS `say` command when the current task finishes. Use when the user asks to be notified, told, pinged, or alerted when the task/build/run is done, or says things like "let me know when this is finished", "notify me when done", or "tell me when it's ready".
+description: Speak an out-loud notification via macOS `say` + `afplay` when the current task finishes. Use when the user asks to be notified, told, pinged, or alerted when the task/build/run is done, or says things like "let me know when this is finished", "notify me when done", or "tell me when it's ready".
 ---
 
 # Notify When Done
 
-Announce out loud, using the macOS `say` command, that the current task has finished.
+Announce out loud that the current task has finished by running this skill's `scripts/notify.sh`. It renders speech with `say` and plays it quietly with `afplay` (modern voices ignore `say`'s inline volume markup).
 
 ## When this skill triggers
 
@@ -16,20 +16,20 @@ The user asks to be notified when the current task completes, e.g.:
 
 ## Must run outside the sandbox
 
-**`say` produces no sound inside the sandbox.** The default sandbox has no audio device access, so the command exits 0 almost instantly and you get silence — it *looks* like it worked but nothing plays. Always run it with full permissions (outside the sandbox) so the audio actually reaches the speakers. A real, audible run takes a few seconds; an instant return is the tell-tale sign it was blocked.
+**Playback produces no sound inside the sandbox.** Always run the script with full permissions (outside the sandbox). A real, audible run takes a few seconds; an instant return means it was blocked.
 
-**The allowlist avoids the approval prompt.** With `say` on the terminal allowlist (see setup below), it auto-runs outside the sandbox — no approval card. Without it, the full-permissions escalation gets flagged by auto-review as an unnecessary side effect and needs manual approval each time; in that case, surface the prompt rather than silently giving up, and only re-request when the user actually asked to be notified.
+**Allowlisting the script avoids the approval prompt.** The script is one command, so `say` / `afplay` inside it inherit that environment — you do not allowlist those binaries, and you must not chain or wrap the script (`bash …`, `~`, `$HOME` all miss the prefix match). Without the allowlist, the full-permissions escalation gets flagged by auto-review; surface the prompt rather than silently giving up.
 
 ## One-time setup
 
-Allowlist `say` so it runs without prompting. Set this up for whichever agent you use:
+Allowlist the script path (prefix match on the command as typed):
 
 **Claude Code** — in `~/.claude/settings.json`:
 
 ```json
 {
   "permissions": {
-    "allow": ["Bash(say:*)"]
+    "allow": ["Bash(/Users/sdesalas/.claude/skills/notify-when-done/scripts/notify.sh *)"]
   }
 }
 ```
@@ -38,32 +38,29 @@ Allowlist `say` so it runs without prompting. Set this up for whichever agent yo
 
 ```json
 {
-  "terminalAllowlist": ["say"]
+  "terminalAllowlist": ["/Users/sdesalas/.claude/skills/notify-when-done/scripts/notify.sh"]
 }
 ```
 
-Both are prefix matches, so they cover `say -v Rishi "..."`. This only works if the `say` call is standalone — a chained command no longer starts with `say` and won't match.
-
 ## How to notify
 
-Run `say` as the last step, once the task is actually complete, with full permissions:
+Run this as the last step, once the task is actually complete. Use the absolute path — no `~`, no `$HOME`, no `bash` wrapper:
 
 ```bash
-say -v Rishi "Your task is finished."
+/Users/sdesalas/.claude/skills/notify-when-done/scripts/notify.sh "Your task is finished."
 ```
 
-- **Default voice is `Rishi`** (Indian English) — it's the clearest.
-- Keep the spoken message short and specific — say *what* finished, e.g. `say -v Rishi "The Kibana build has finished."`
-- If the task failed, say so plainly: `say -v Rishi "The task failed. Please check the output."`
+- **Default voice is `Rishi`.** Override only if the user asks: `-v Daniel`.
+- **Default volume is `0.10`.** Do not play through `say` yourself.
+- Keep the spoken message short and specific — say *what* finished.
+- If the task failed, say so plainly: `"The task failed. Please check the output."`
 
 ## Include the location (directory + branch)
 
-Always mention *where* the finished work lives so it's clear which checkout/worktree it's in. Include the current directory name and/or git branch.
-
-Inline the location directly as a literal string — you already know the directory and branch from context, so no shell expansion is needed. Keep the `say` call plain so it stays under the `Bash(say *)` allowlist:
+Always mention *where* the finished work lives (directory name and/or git branch). Inline it as a literal string — no shell expansion:
 
 ```bash
-say -v Rishi "Your PR review task on bulk import create is ready on kibana-6th."
+/Users/sdesalas/.claude/skills/notify-when-done/scripts/notify.sh "Your PR review task on bulk import create is ready on kibana-6th."
 ```
 
 Phrase it naturally, describing the task and ending with the location:
@@ -72,18 +69,9 @@ Phrase it naturally, describing the task and ending with the location:
 
 ## Choosing a different voice
 
-Only override the default if the user asks for a specific accent/voice. List installed voices with `say -v '?'`. Handy English options:
-
-| Voice | Accent |
-|-------|--------|
-| Rishi | Indian (default) |
-| Daniel | British |
-| Karen | Australian |
-| Moira | Irish |
-| Tessa | South African |
-| Samantha | US |
+Only override the default if the user asks. List installed voices with `say -v '?'`. Handy English options: Rishi (Indian, default), Daniel (British), Karen (Australian), Moira (Irish), Tessa (South African), Samantha (US).
 
 ## Notes
 
 - Fire the notification only when the work is genuinely done, not before.
-- Do the actual task first; the `say` call is the final step, not a substitute for finishing.
+- Do the actual task first; the notify call is the final step, not a substitute for finishing.
