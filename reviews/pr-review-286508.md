@@ -92,15 +92,15 @@ A caller (eventually import overwrite / prebuilt upgrade) invokes `rulesClient.b
 - `bulkCreateRulesSo` full throws are rare; the #264892 dead-key window is one inner batch (default 100). A later bulk operation is expected to remint.
 - Inner `batchSize` 100 is the ES/key-mint unit. Callers still chunk for memory (import HTTP is 50 today / 200 on the POC; upgrade is 100). The 10k cap is a backstop, not a supported payload size.
 - `updateRuleDataSchema` `{ unknowns: 'allow' }` plus the explicit `enabled: originalRule.enabled` assignment is enough to keep on/off flips out at runtime. The `enabled?: never` on the shared type is the compile-time half of that.
-- Decrypt-failed PIT rows are rare enough (AAD drift) that matching `bulkEdit`’s “proceed anyway” is acceptable. See Risk 1.
+- ~~Decrypt-failed PIT rows are rare enough (AAD drift) that matching `bulkEdit`’s “proceed anyway” is acceptable. See Risk 1.~~ **WRONG characterization — see activity #1 / Risk #1.** Not data corruption. Only the old keys are lost; the body write is fine. Same leftover as `bulkEdit` / `updateRule`. Deferred to [#286812](https://github.com/elastic/kibana/issues/286812).
 
 ---
 
 ### Risks
 
-1. **PIT decrypt failure is not “not found” — the stripped SO is merged and overwritten.** ESO `createPointInTimeFinderDecryptedAsInternalUser` catches decrypt errors, strips encrypted fields (`apiKey`, `uiamApiKey`), and returns the same SO with `error` set — the caller is supposed to stop or proceed on public fields only (`encrypted_saved_objects/server/saved_objects/index.ts` ~162–169). `loadRulesByIds` concatenates `saved_objects` with no `so.error` check. `runBatch` only errors when the id is missing from the map, so a decrypt-failed rule goes into `prepareUpdate` as a normal original: merge onto a doc with `apiKey` stripped, mint a new key if enabled, overwrite. The old key is gone from the stripped attributes so it cannot be invalidated. `updateRule` at least falls back to an undecrypted GET and skips key invalidation. Same hole exists in `bulkEditRulesOcc`’s PIT loop. Rare, but the failure mode is silent corruption + an orphaned key, not a per-item error.
+1. ~~**PIT decrypt failure is not “not found” — the stripped SO is merged and overwritten.**~~ **DEFERRED — see activity #1.** Not data corruption: ESO only encrypts `apiKey` / `uiamApiKey`; a failed decrypt strips those two and the incoming body still overwrites the rest. What is lost is the old key values, so invalidation cannot run. Same leftover on `bulkEditRulesOcc` (no `so.error` check, alerting-layer silent) and `updateRule` (falls back to an undecrypted GET, logs, marks ciphertext not the real key). Filed [#286812](https://github.com/elastic/kibana/issues/286812). Not fixing in this PR — address across the write methods later.
 
-2. **Authz throw after a partial save.** `bulkEnsureAuthorized` still throws. The unit test `'authz throw on later batch: earlier batch already written, call throws (current behavior)'` documents it. With default `batchSize` 100, a 200-rule call can persist batch 1 and then throw on batch 2 — the caller gets an exception, not `{ successfulIds: [...batch1], errors: [...] }`. Circuit-breaker was changed to return errors for exactly this reason; authz was not. Detection import’s outer catch can map the throw onto remaining ids; a future caller that assumes “throw means nothing persisted” will be wrong.
+2. ~~**Authz throw after a partial save.**~~ **THEORETICAL for Detection — see activity #2.** The throw-after-write path needs batch N authorized and batch N+1 not. Security `all` grants Update on every `siem.*` type + `siem` consumer as one bundle. Import/upgrade also require `RULES_API_ALL` before the handler runs. A Detection-only payload either fails on the first batch (nothing written) or never fails. Residual is a custom role that splits alerting types, or a platform caller mixing Security + Stack/Obs rules in one call.
 
 3. **#264892 still applies per batch.** Full `bulkCreateRulesSo` throw invalidates every new key in that batch, including for docs ES may have written. Those rules keep a dead key until the next write. Documented as tradeoff 4; not closed. Batches bound the blast radius vs `saveBulkUpdatedRules` doing it for the whole edit.
 
@@ -114,11 +114,11 @@ A caller (eventually import overwrite / prebuilt upgrade) invokes `rulesClient.b
 
 ### Open questions
 
-1. Should `loadRulesByIds` treat `so.error` as a per-item failure (and skip the write), instead of merging a stripped original? `updateRule` already special-cases decrypt failure. Copying `bulkEdit`’s hole into a third write path locks it in.
+1. ~~Should `loadRulesByIds` treat `so.error` as a per-item failure (and skip the write), instead of merging a stripped original?~~ **DEFERRED — [#286812](https://github.com/elastic/kibana/issues/286812).** Same hole already exists on `bulkEdit` / `updateRule`. Fix across the write methods, not just here.
 
 2. Ticket asked for `{ rules, errors, total }`. Callers only get ids. Is that enough for upgrade telemetry / import UI, or will someone need the persisted revision / `updated_at` next? Sibling `bulkCreateRules` made the same choice.
 
-3. Should an authz miss on a later batch return errors for that batch (and leftovers) the way the circuit breaker now does, instead of throwing? Mixed privileges are rare, but the throw is the one remaining “partial persist + exception” path, and the test already admits it.
+3. ~~Should an authz miss on a later batch return errors for that batch (and leftovers) the way the circuit breaker now does, instead of throwing?~~ **No change needed for Detection.** Mixed type/consumer privileges do not happen on the Security feature. Leave the throw. A platform caller mixing features is the only leftover, and that is on them.
 
 4. Confirm #264892 should stay open when this merges. Body says Related; `closingIssuesReferences` is empty. Good — just don’t let GitHub keywords creep in.
 
@@ -134,10 +134,23 @@ A caller (eventually import overwrite / prebuilt upgrade) invokes `rulesClient.b
 - `updateRule` / `bulkUpdateRules` never flip `enabled`. Detection create/update/patch/import-single do it afterwards via `toggleRuleEnabledOnUpdate` → `enableRule` / `disableRule`. Bulk import overwrite (POC) does the same follow-up via `bulkEnableRules` / `bulkDisableRules`.
 - `incrementRevision` only decides the revision *number*. Alerting always writes the list it is given (tradeoff 10, Option B). Skip-if-unchanged belongs in the caller.
 - TM interval is rewritten for disabled rules that still have a `scheduledTaskId`. Circuit breaker only counts **enabled** interval changes. Same split as `updateRule`.
-- ESO PIT finder does not throw on decrypt failure — it returns the SO with `error` + stripped encrypted attributes. Consumers must check `so.error`. `bulkEdit` doesn’t. This method doesn’t either.
+- ESO PIT finder does not throw on decrypt failure — it returns the SO with `error` + stripped `apiKey` / `uiamApiKey` (the only encrypted rule fields). Public attributes stay intact. Consumers must check `so.error`. `bulkEdit` doesn’t. This method doesn’t either. The leftover is an orphaned old key, not a half-written body ([#286812](https://github.com/elastic/kibana/issues/286812)).
 - `invalidateKeys` never throws (logs inside `bulkMarkApiKeysForInvalidation`) and skips keys with `apiKeyCreatedByUser`. User-owned keys are left alone on purpose.
 
 ---
 
 ### Review activities
+
+1. **Checked Risk #1 — PIT decrypt is NOT data corruption, just orphaned API keys.** Re-read the decrypt path. ESO only encrypts `apiKey` / `uiamApiKey` (`RuleAttributesToEncrypt`); a failed decrypt strips those two. The incoming body still overwrites the rest. What is lost is the old key values, so invalidation cannot run. Same leftover on `bulkEditRulesOcc` (no `so.error` check, alerting-layer silent) and `updateRule` (falls back to undecrypted GET, logs, marks ciphertext not the real key). ESO still logs `Failed to decrypt attribute "apiKey"` on both paths.
+
+   - Confirmed against `alerting/server/saved_objects/index.ts` (`RuleAttributesToEncrypt`) and [#286812](https://github.com/elastic/kibana/issues/286812) (`Decrypt failure orphans old API keys on bulkEdit and updateRule`).
+   - **Deferred** from this PR — address across the write methods later. Struck Risk #1 and OQ #1.
+
+2. **Checked Risk #2 — later-batch authz throw is not a real Detection problem.** `bulkEnsureAuthorized` checks `(ruleTypeId, consumer)` pairs and throws if `hasAllRequested` is false. That only becomes “batch 1 written, batch 2 throws” if a later batch introduces a pair the earlier one did not have *and* the user lacks that pair.
+
+   - Security feature `all` (`getRulesV4BaseKibanaFeature`) grants `alerting.rule.all` for every `SECURITY_SOLUTION_RULE_TYPE_IDS` type (`siem.queryRule`, `eql`, `esql`, `ml`, `indicator`, `savedQuery`, `threshold`, `newTerms`) plus legacy notifications, all with consumer `siem`. There is no UI to grant Update on query but not eql.
+   - Import and `upgrade/_perform` both require `RULES_API_ALL` on the HTTP route, so a read-only user never reaches this method.
+   - Detection callers size the call to one inner batch (chunk == `batchSize`). Even a 500-rule call with default 100 would re-check the same `siem` pairs each batch.
+   - The unit test that fails the second `bulkEnsureAuthorized` is synthetic. A custom Kibana role that splits alerting types, or a Stack caller mixing `siem` + `logs` in one list, could still hit it. Not a Detection customer.
+   - Struck Risk #2 / OQ #3 as theoretical for this caller.
 
