@@ -4,6 +4,8 @@ alwaysApply: false
 ---
 # Detection Rules Architecture in Kibana
 
+Use this rule when the user asks about architecture guidance on how detection rules or the alerting framework work. Do not load it because a PR, diff, handoff or a task you've been asked to do happens to touch that code.
+
 ## Overview
 
 Detection Rules in Kibana are security-focused rules that detect threats and suspicious activities in your data. They are built on top of the Alerting Framework, which provides the infrastructure for rule execution, scheduling, and alert management. The Detection Rules Client provides a high-level abstraction layer for managing detection rules, while the Alerting Framework handles the low-level rule execution and persistence.

@@ -5,7 +5,7 @@ description: "Answer questions about Kibana detection rules and alerting framewo
 
 # Detection Rules & Alerting Framework Architecture
 
-Use this skill when the user asks about architecture guidance on how detection rules or the alerting framework work. Do not load it because a PR, diff, or handoff happens to touch that code.
+Use this skill when the user asks about architecture guidance on how detection rules or the alerting framework work. Do not load it because a PR, diff, handoff or a task you've been asked to do happens to touch that code.
 
 ## Step 1 — Load local knowledge
 
