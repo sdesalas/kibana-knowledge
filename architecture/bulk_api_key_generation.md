@@ -6,10 +6,10 @@ Companion to [detection-rules-architecture.md](./detection-rules-architecture.md
 
 This doc is a brief for the Kibana change that should follow
 [elastic/elasticsearch#157410](https://github.com/elastic/elasticsearch/pull/157410)
-(`POST /_security/api_key/_bulk_grant`). Do not start that Kibana work
-until the ES endpoint has landed.
+(`POST /_security/api_key/_bulk_grant`). 
 
 Kibana ticket: [elastic/kibana#273675](https://github.com/elastic/kibana/issues/273675).
+
 Today each enabled rule is one `POST /_security/api_key/grant`. That is
 ~70% of the extra latency when creating 1000 enabled vs disabled rules.
 The issue’s acceptance criteria name `bulkCreateRules` only. Bulk update
