@@ -1,0 +1,1130 @@
+diff --git a/src/core/packages/security/server-internal/src/utils/convert_security_api.test.ts b/src/core/packages/security/server-internal/src/utils/convert_security_api.test.ts
+index dbbd98682e5..5c10ca21d2c 100644
+--- a/src/core/packages/security/server-internal/src/utils/convert_security_api.test.ts
++++ b/src/core/packages/security/server-internal/src/utils/convert_security_api.test.ts
+@@ -27,6 +27,7 @@ describe('convertSecurityApi', () => {
+           invalidate: jest.fn(),
+           invalidateAsInternalUser: jest.fn(),
+           grantAsInternalUser: jest.fn(),
++          bulkGrantAsInternalUser: jest.fn(),
+           cloneAsInternalUser: jest.fn(),
+           create: jest.fn(),
+           update: jest.fn(),
+diff --git a/src/core/packages/security/server-internal/src/utils/default_implementation.ts b/src/core/packages/security/server-internal/src/utils/default_implementation.ts
+index 61f13b2958f..66db5044f12 100644
+--- a/src/core/packages/security/server-internal/src/utils/default_implementation.ts
++++ b/src/core/packages/security/server-internal/src/utils/default_implementation.ts
+@@ -23,6 +23,7 @@ export const getDefaultSecurityImplementation = (): CoreSecurityDelegateContract
+         create: REJECT_WHEN_API_KEYS_DISABLED,
+         update: REJECT_WHEN_API_KEYS_DISABLED,
+         grantAsInternalUser: REJECT_WHEN_API_KEYS_DISABLED,
++        bulkGrantAsInternalUser: REJECT_WHEN_API_KEYS_DISABLED,
+         cloneAsInternalUser: REJECT_WHEN_API_KEYS_DISABLED,
+         validate: REJECT_WHEN_API_KEYS_DISABLED,
+         invalidate: REJECT_WHEN_API_KEYS_DISABLED,
+diff --git a/src/core/packages/security/server-mocks/src/api_keys.mock.ts b/src/core/packages/security/server-mocks/src/api_keys.mock.ts
+index 7003380c53f..e84d78e240a 100644
+--- a/src/core/packages/security/server-mocks/src/api_keys.mock.ts
++++ b/src/core/packages/security/server-mocks/src/api_keys.mock.ts
+@@ -18,6 +18,7 @@ export const apiKeysMock = {
+       create: jest.fn(),
+       update: jest.fn(),
+       grantAsInternalUser: jest.fn(),
++      bulkGrantAsInternalUser: jest.fn(),
+       cloneAsInternalUser: jest.fn(),
+       validate: jest.fn(),
+       invalidate: jest.fn(),
+diff --git a/src/core/packages/security/server/src/authentication/api_keys/api_keys.ts b/src/core/packages/security/server/src/authentication/api_keys/api_keys.ts
+index c7d76c28ff6..f9550ee7418 100644
+--- a/src/core/packages/security/server/src/authentication/api_keys/api_keys.ts
++++ b/src/core/packages/security/server/src/authentication/api_keys/api_keys.ts
+@@ -68,6 +68,20 @@ export interface NativeAPIKeysType {
+     createParams: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams
+   ): Promise<GrantAPIKeyResult | null>;
+ 
++  /**
++   * Tries to grant multiple API keys for the current user in a single Elasticsearch call
++   * (`POST /_security/api_key/_bulk_grant`). Grant credentials are shared; each item is a
++   * key specification. Successfully created keys are listed under `created` in request order
++   * (failures omitted). Returns `null` if API keys are disabled.
++   *
++   * @param request Request instance.
++   * @param createParams Key specifications to grant.
++   */
++  bulkGrantAsInternalUser(
++    request: KibanaRequest,
++    createParams: Array<CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams>
++  ): Promise<BulkGrantAPIKeyResult | null>;
++
+   /**
+    * Tries to validate an API key.
+    * @param apiKeyPrams ValidateAPIKeyParams.
+@@ -173,6 +187,18 @@ export interface GrantAPIKeyResult {
+   api_key: string;
+ }
+ 
++/**
++ * Response of Elasticsearch `POST /_security/api_key/_bulk_grant`.
++ * `created` is in the original request order with per-key failures omitted.
++ */
++export interface BulkGrantAPIKeyResult {
++  created: GrantAPIKeyResult[];
++  errors?: {
++    count: number;
++    details: Record<string, { type?: string; reason?: string | null }>;
++  };
++}
++
+ export interface CloneAPIKeyParams {
+   name: string;
+   metadata?: Record<string, unknown>;
+diff --git a/src/core/packages/security/server/src/authentication/api_keys/index.ts b/src/core/packages/security/server/src/authentication/api_keys/index.ts
+index 5f25c95b656..4ff49128a62 100644
+--- a/src/core/packages/security/server/src/authentication/api_keys/index.ts
++++ b/src/core/packages/security/server/src/authentication/api_keys/index.ts
+@@ -22,6 +22,7 @@ export type {
+   CreateRestAPIKeyWithKibanaPrivilegesParams,
+   CreateCrossClusterAPIKeyParams,
+   GrantAPIKeyResult,
++  BulkGrantAPIKeyResult,
+   CloneAPIKeyParams,
+   CloneAPIKeyResult,
+   UpdateAPIKeyParams,
+diff --git a/src/core/packages/security/server/src/authentication/index.ts b/src/core/packages/security/server/src/authentication/index.ts
+index b9a1dbec198..d3f8904bbaa 100644
+--- a/src/core/packages/security/server/src/authentication/index.ts
++++ b/src/core/packages/security/server/src/authentication/index.ts
+@@ -19,6 +19,7 @@ export type {
+   CreateRestAPIKeyWithKibanaPrivilegesParams,
+   CreateCrossClusterAPIKeyParams,
+   GrantAPIKeyResult,
++  BulkGrantAPIKeyResult,
+   CloneAPIKeyParams,
+   CloneAPIKeyResult,
+   NativeAPIKeysType,
+diff --git a/x-pack/platform/packages/shared/security/plugin_types_server/index.ts b/x-pack/platform/packages/shared/security/plugin_types_server/index.ts
+index 2e6f338da32..eecd778c3be 100644
+--- a/x-pack/platform/packages/shared/security/plugin_types_server/index.ts
++++ b/x-pack/platform/packages/shared/security/plugin_types_server/index.ts
+@@ -89,6 +89,7 @@ export type {
+   CreateRestAPIKeyWithKibanaPrivilegesParams,
+   CreateCrossClusterAPIKeyParams,
+   GrantAPIKeyResult,
++  BulkGrantAPIKeyResult,
+   CloneAPIKeyParams,
+   CloneAPIKeyResult,
+ } from '@kbn/core-security-server';
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/common/index.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/common/index.ts
+index 9889d672aed..ae45735dd29 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/common/index.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/common/index.ts
+@@ -52,5 +52,5 @@ export {
+   verifySnoozeScheduleLimit,
+ } from './snooze_utils';
+ export { tryToRemoveTasks } from './try_to_remove_tasks';
+-export { resolveRuleAPIKey } from './resolve_rule_api_key';
++export { resolveRuleAPIKey, shouldGrantRuleApiKey } from './resolve_rule_api_key';
+ export type { ResolvedAPIKey, RuleApiKeyOwnership } from './resolve_rule_api_key';
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/common/resolve_rule_api_key.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/common/resolve_rule_api_key.ts
+index 66edf6f28b8..6301bbae4a3 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/common/resolve_rule_api_key.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/common/resolve_rule_api_key.ts
+@@ -28,6 +28,28 @@ const grantKey = async (context: RulesClientContext, name: string): Promise<Reso
+   return { createdAPIKey, isAuthTypeApiKey: false };
+ };
+ 
++export const shouldGrantRuleApiKey = (
++  context: RulesClientContext,
++  enabled: boolean,
++  apiKeyOwnership?: RuleApiKeyOwnership
++): boolean => {
++  if (!enabled) {
++    return false;
++  }
++  if (!apiKeyOwnership && context.cloneApiKeysOnCreate) {
++    return false;
++  }
++  const isApiKeyAuth = context.isAuthenticationTypeAPIKey();
++  const frameworkManaged = apiKeyOwnership?.apiKeyCreatedByUser === false;
++  if (frameworkManaged) {
++    return !isApiKeyAuth;
++  }
++  if (isApiKeyAuth) {
++    return false;
++  }
++  return true;
++};
++
+ export const resolveRuleAPIKey = async (
+   context: RulesClientContext,
+   name: string,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/grant_bulk_api_keys.test.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/grant_bulk_api_keys.test.ts
+new file mode 100644
+index 00000000000..2b22a983503
+--- /dev/null
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/grant_bulk_api_keys.test.ts
+@@ -0,0 +1,101 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { grantBulkApiKeys } from './grant_bulk_api_keys';
++import type { CreateAPIKeyResult, RulesClientContext } from '../types';
++
++const granted: CreateAPIKeyResult = {
++  apiKeysEnabled: true,
++  result: { id: 'granted-id', name: 'Alerting: query/a', api_key: 'secret' },
++};
++
++const createMockContext = (overrides: Partial<RulesClientContext> = {}): RulesClientContext =>
++  ({
++    createAPIKeys: jest.fn().mockResolvedValue([granted]),
++    createAPIKey: jest.fn().mockResolvedValue(granted),
++    cloneAPIKey: jest.fn(),
++    getAuthenticationAPIKey: jest.fn(),
++    isAuthenticationTypeAPIKey: jest.fn().mockReturnValue(false),
++    cloneApiKeysOnCreate: false,
++    logger: { debug: jest.fn() },
++    ...overrides,
++  } as unknown as RulesClientContext);
++
++describe('grantBulkApiKeys', () => {
++  test('falls back to per-rule createAPIKey when createAPIKeys is not wired', async () => {
++    const createAPIKey = jest.fn().mockResolvedValue(granted);
++    const context = createMockContext({ createAPIKeys: undefined, createAPIKey });
++    const result = await grantBulkApiKeys(context, [
++      { id: '1', typeId: 'query', name: 'a', enabled: true },
++    ]);
++    expect(createAPIKey).toHaveBeenCalledWith('Alerting: query/a');
++    expect(result.granted.get('1')).toEqual({ result: granted, createdByUser: false });
++  });
++
++  test('skips disabled rules', async () => {
++    const createAPIKeys = jest.fn();
++    const createAPIKey = jest.fn();
++    const context = createMockContext({ createAPIKeys, createAPIKey });
++
++    const result = await grantBulkApiKeys(context, [
++      { id: 'disabled', typeId: 'query', name: 'a', enabled: false },
++    ]);
++
++    expect(createAPIKeys).not.toHaveBeenCalled();
++    expect(createAPIKey).not.toHaveBeenCalled();
++    expect(result.granted.size).toBe(0);
++  });
++
++  test('reuses the caller key instead of granting when auth is API key', async () => {
++    const userKey: CreateAPIKeyResult = {
++      apiKeysEnabled: true,
++      result: { id: 'user', name: 'user', api_key: 'u' },
++    };
++    const createAPIKeys = jest.fn();
++    const context = createMockContext({
++      createAPIKeys,
++      isAuthenticationTypeAPIKey: jest.fn().mockReturnValue(true),
++      getAuthenticationAPIKey: jest.fn().mockReturnValue(userKey),
++    });
++
++    const result = await grantBulkApiKeys(context, [
++      { id: 'reuse', typeId: 'query', name: 'b', enabled: true },
++    ]);
++
++    expect(createAPIKeys).not.toHaveBeenCalled();
++    expect(result.granted.get('reuse')).toEqual({ result: userKey, createdByUser: true });
++  });
++
++  test('grants enabled rules that take the ES grant path', async () => {
++    const createAPIKeys = jest.fn().mockResolvedValue([granted]);
++    const context = createMockContext({ createAPIKeys });
++
++    const result = await grantBulkApiKeys(context, [
++      { id: '1', typeId: 'query', name: 'a', enabled: true },
++    ]);
++
++    expect(createAPIKeys).toHaveBeenCalledWith(['Alerting: query/a']);
++    expect(context.createAPIKey).not.toHaveBeenCalled();
++    expect(result.granted.get('1')).toEqual({ result: granted, createdByUser: false });
++  });
++
++  test('falls back to per-rule createAPIKey when createAPIKeys throws', async () => {
++    const createAPIKey = jest.fn().mockResolvedValue(granted);
++    const context = createMockContext({
++      createAPIKeys: jest.fn().mockRejectedValue(new Error('boom')),
++      createAPIKey,
++    });
++
++    const result = await grantBulkApiKeys(context, [
++      { id: '1', typeId: 'query', name: 'a', enabled: true },
++    ]);
++
++    expect(createAPIKey).toHaveBeenCalledWith('Alerting: query/a');
++    expect(result.granted.get('1')).toEqual({ result: granted, createdByUser: false });
++    expect(context.logger.debug).toHaveBeenCalled();
++  });
++});
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/grant_bulk_api_keys.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/grant_bulk_api_keys.ts
+new file mode 100644
+index 00000000000..13be60ff061
+--- /dev/null
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/grant_bulk_api_keys.ts
+@@ -0,0 +1,98 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import pMap from 'p-map';
++import { withSpan } from '@kbn/apm-utils';
++import { generateAPIKeyName, resolveRuleAPIKey, shouldGrantRuleApiKey } from '../common';
++import type { RuleApiKeyOwnership } from '../common';
++import { API_KEY_GENERATE_CONCURRENCY } from '../common/constants';
++import type { CreateAPIKeyResult, RulesClientContext } from '../types';
++
++export interface GrantBulkItem {
++  id: string;
++  typeId: string;
++  name: string;
++  enabled: boolean;
++  apiKeyOwnership?: RuleApiKeyOwnership;
++}
++
++export interface GrantedKey {
++  result: CreateAPIKeyResult;
++  createdByUser: boolean;
++}
++
++export interface GrantBulkResult {
++  granted: Map<string, GrantedKey>;
++  failures: Map<string, Error>;
++}
++
++/**
++ * Resolves API keys for a batch. Grant-path items use one `_bulk_grant` call
++ * when `createAPIKeys` is wired; clone, reuse, and per-rule fallback go
++ * through `resolveRuleAPIKey`. Failed items are omitted (caller treats
++ * enabled + missing as an error).
++ */
++export const grantBulkApiKeys = async (
++  context: RulesClientContext,
++  items: GrantBulkItem[]
++): Promise<GrantBulkResult> => {
++  const granted = new Map<string, GrantedKey>();
++  const failures = new Map<string, Error>();
++  const createAPIKeys = context.createAPIKeys;
++  const toGrant = items.filter((item) =>
++    shouldGrantRuleApiKey(context, item.enabled, item.apiKeyOwnership)
++  );
++
++  if (createAPIKeys && toGrant.length > 0) {
++    try {
++      const results = await withSpan({ name: 'createAPIKeys', type: 'rules' }, () =>
++        createAPIKeys(toGrant.map((item) => generateAPIKeyName(item.typeId, item.name)))
++      );
++      toGrant.forEach((item, i) => {
++        if (results[i]) {
++          granted.set(item.id, { result: results[i], createdByUser: false });
++        }
++      });
++    } catch (err) {
++      context.logger.debug(
++        `bulk API key grant failed, falling back to per-rule generation: ${
++          err instanceof Error ? err.message : String(err)
++        }`
++      );
++    }
++  }
++
++  const remaining = items.filter((item) => item.enabled && !granted.has(item.id));
++  if (remaining.length === 0) {
++    return { granted, failures };
++  }
++
++  await pMap(
++    remaining,
++    async (item) => {
++      try {
++        const resolved = await resolveRuleAPIKey(
++          context,
++          generateAPIKeyName(item.typeId, item.name),
++          true,
++          item.apiKeyOwnership
++        );
++        if (resolved.createdAPIKey) {
++          granted.set(item.id, {
++            result: resolved.createdAPIKey,
++            createdByUser: resolved.isAuthTypeApiKey,
++          });
++        }
++      } catch (err) {
++        failures.set(item.id, err instanceof Error ? err : new Error(String(err)));
++      }
++    },
++    { concurrency: API_KEY_GENERATE_CONCURRENCY }
++  );
++
++  return { granted, failures };
++};
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/index.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/index.ts
+index 753decf306b..cd1aa5a8f2a 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/index.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/index.ts
+@@ -18,6 +18,8 @@ export { getAuthorizationFilter } from './get_authorization_filter';
+ export { checkAuthorizationAndGetTotal } from './check_authorization_and_get_total';
+ export { scheduleTask, bulkScheduleTask, buildTaskInstance } from './schedule_task';
+ export { createNewAPIKeySet } from './create_new_api_key_set';
++export { grantBulkApiKeys } from './grant_bulk_api_keys';
++export type { GrantedKey, GrantBulkItem, GrantBulkResult } from './grant_bulk_api_keys';
+ export { untrackRuleAlerts } from './untrack_rule_alerts';
+ export { bulkMigrateLegacyActions } from './siem_legacy_actions/migrate_legacy_actions';
+ export { formatLegacyActions } from './siem_legacy_actions/format_legacy_actions';
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/types.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/types.ts
+index d154c2a3a78..34e2e045d1c 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/types.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/types.ts
+@@ -86,6 +86,7 @@ export interface RulesClientContext {
+   readonly maxScheduledPerMinute: AlertingRulesConfig['maxScheduledPerMinute'];
+   readonly minimumScheduleIntervalInMs: number;
+   readonly createAPIKey: (name: string) => Promise<CreateAPIKeyResult>;
++  readonly createAPIKeys?: (names: string[]) => Promise<CreateAPIKeyResult[]>;
+   readonly getActionsClient: () => Promise<ActionsClient>;
+   readonly actionsAuthorization: ActionsAuthorization;
+   readonly getEventLogClient: () => Promise<IEventLogClient>;
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.test.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.test.ts
+index 209aebc6b73..4c3664e2275 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.test.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.test.ts
+@@ -194,6 +194,7 @@ describe('RulesClientFactory', () => {
+         getActionsClient: expect.any(Function),
+         getEventLogClient: expect.any(Function),
+         createAPIKey: expect.any(Function),
++        createAPIKeys: expect.any(Function),
+         internalSavedObjectsRepository: rulesClientFactoryParams.internalSavedObjectsRepository,
+         encryptedSavedObjectsClient: rulesClientFactoryParams.encryptedSavedObjectsClient,
+         kibanaVersion: '7.10.0',
+@@ -274,6 +275,7 @@ describe('RulesClientFactory', () => {
+         getUserName: expect.any(Function),
+         changeTrackingService: scopedChangeTrackingService,
+         createAPIKey: expect.any(Function),
++        createAPIKeys: expect.any(Function),
+         internalSavedObjectsRepository: rulesClientFactoryParams.internalSavedObjectsRepository,
+         encryptedSavedObjectsClient: rulesClientFactoryParams.encryptedSavedObjectsClient,
+         getActionsClient: expect.any(Function),
+@@ -683,6 +685,100 @@ describe('RulesClientFactory', () => {
+     });
+   });
+ 
++  test('createAPIKeys() bulk-grants ES keys in one call', async () => {
++    const factory = new RulesClientFactory();
++    factory.initialize({
++      ...rulesClientFactoryParams,
++      securityService,
++      securityPluginSetup,
++      securityPluginStart,
++    });
++    await factory.create(mockRouter.createKibanaRequest(), savedObjectsService);
++    const constructorCall = jest.requireMock('./rules_client').RulesClient.mock.calls[0][0];
++
++    securityService.authc.apiKeys.bulkGrantAsInternalUser.mockResolvedValueOnce({
++      created: [
++        { id: 'a', name: 'key-a', api_key: 'secret-a' },
++        { id: 'b', name: 'key-b', api_key: 'secret-b' },
++      ],
++    });
++
++    const result = await constructorCall.createAPIKeys(['key-a', 'key-b']);
++
++    expect(securityService.authc.apiKeys.bulkGrantAsInternalUser).toHaveBeenCalledWith(
++      expect.any(Object),
++      [
++        {
++          name: 'key-a',
++          role_descriptors: {},
++          metadata: { managed: true, kibana: { type: 'alerting_rule' } },
++        },
++        {
++          name: 'key-b',
++          role_descriptors: {},
++          metadata: { managed: true, kibana: { type: 'alerting_rule' } },
++        },
++      ]
++    );
++    expect(securityService.authc.apiKeys.grantAsInternalUser).not.toHaveBeenCalled();
++    expect(result).toEqual([
++      { apiKeysEnabled: true, result: { id: 'a', name: 'key-a', api_key: 'secret-a' } },
++      { apiKeysEnabled: true, result: { id: 'b', name: 'key-b', api_key: 'secret-b' } },
++    ]);
++  });
++
++  test('createAPIKeys() falls back to per-rule grant when bulk endpoint is unavailable', async () => {
++    const factory = new RulesClientFactory();
++    factory.initialize({
++      ...rulesClientFactoryParams,
++      securityService,
++      securityPluginSetup,
++      securityPluginStart,
++    });
++    await factory.create(mockRouter.createKibanaRequest(), savedObjectsService);
++    const constructorCall = jest.requireMock('./rules_client').RulesClient.mock.calls[0][0];
++
++    securityService.authc.apiKeys.bulkGrantAsInternalUser.mockRejectedValueOnce({
++      statusCode: 404,
++      message: 'no handler found for uri [/_security/api_key/_bulk_grant]',
++    });
++    securityService.authc.apiKeys.grantAsInternalUser
++      .mockResolvedValueOnce({ api_key: '1', id: 'a', name: 'key-a' })
++      .mockResolvedValueOnce({ api_key: '2', id: 'b', name: 'key-b' });
++
++    const result = await constructorCall.createAPIKeys(['key-a', 'key-b']);
++
++    expect(securityService.authc.apiKeys.grantAsInternalUser).toHaveBeenCalledTimes(2);
++    expect(result).toEqual([
++      { apiKeysEnabled: true, result: { api_key: '1', id: 'a', name: 'key-a' } },
++      { apiKeysEnabled: true, result: { api_key: '2', id: 'b', name: 'key-b' } },
++    ]);
++  });
++
++  test('createAPIKeys() maps omitted created keys as apiKeysEnabled: false', async () => {
++    const factory = new RulesClientFactory();
++    factory.initialize({
++      ...rulesClientFactoryParams,
++      securityService,
++      securityPluginSetup,
++      securityPluginStart,
++    });
++    await factory.create(mockRouter.createKibanaRequest(), savedObjectsService);
++    const constructorCall = jest.requireMock('./rules_client').RulesClient.mock.calls[0][0];
++
++    securityService.authc.apiKeys.bulkGrantAsInternalUser.mockResolvedValueOnce({
++      created: [{ id: 'b', name: 'key-b', api_key: 'secret-b' }],
++      errors: { count: 1, details: { 'missing-id': { reason: 'failed' } } },
++    });
++
++    const result = await constructorCall.createAPIKeys(['key-a', 'key-b']);
++
++    expect(result).toEqual([
++      { apiKeysEnabled: false },
++      { apiKeysEnabled: true, result: { id: 'b', name: 'key-b', api_key: 'secret-b' } },
++    ]);
++  });
++
+   test('create() calls getSpaceId to derive spaceId from request', async () => {
+     const factory = new RulesClientFactory();
+     factory.initialize(rulesClientFactoryParams);
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.ts
+index f01d0538584..825afcf3778 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.ts
+@@ -34,6 +34,7 @@ import type { FakeRawRequest } from '@kbn/core-http-server';
+ import { kibanaRequestFactory } from '@kbn/core-http-server-utils';
+ import type { RuleTypeRegistry, SpaceIdToNamespaceFunction } from './types';
+ import { RulesClient } from './rules_client';
++import type { CreateAPIKeyResult } from './rules_client/types';
+ import type { AlertingAuthorizationClientFactory } from './alerting_authorization_client_factory';
+ import type { AlertingRulesConfig } from './config';
+ import type { GetAlertIndicesAlias } from './lib';
+@@ -231,7 +232,7 @@ export class RulesClientFactory {
+         `Failed to create UIAM API key for alerting rule : ${name}: ${errorMessage}`,
+         {
+           tags: UIAM_LOGS_GRANT_TAGS,
+-          error: { stack_trace: err.stack },
++          error: { stack_trace: err instanceof Error ? err.stack : undefined },
+         }
+       );
+       return;
+@@ -360,6 +361,124 @@ export class RulesClientFactory {
+     await Promise.all(tasks);
+   }
+ 
++  private async createAPIKeyForRule(
++    request: KibanaRequest,
++    name: string
++  ): Promise<CreateAPIKeyResult> {
++    if (!this.securityPluginStart) {
++      return { apiKeysEnabled: false };
++    }
++    const createUiamApiKeyResult = await this.createUiamApiKey(request, name);
++
++    let createEsAPIKeyResult;
++    try {
++      createEsAPIKeyResult = await this.securityService.authc.apiKeys.grantAsInternalUser(request, {
++        name,
++        role_descriptors: {},
++        metadata: { managed: true, kibana: { type: 'alerting_rule' } },
++      });
++    } catch (err) {
++      if (createUiamApiKeyResult?.id) {
++        await this.invalidateUiamApiKey(request, name, createUiamApiKeyResult.id);
++      }
++      throw err;
++    }
++
++    if (!createEsAPIKeyResult) {
++      if (createUiamApiKeyResult?.id) {
++        await this.invalidateUiamApiKey(request, name, createUiamApiKeyResult.id);
++      }
++      return { apiKeysEnabled: false };
++    }
++
++    return {
++      apiKeysEnabled: true,
++      result: createEsAPIKeyResult,
++      ...(createUiamApiKeyResult ? { uiamResult: createUiamApiKeyResult } : {}),
++    };
++  }
++
++  private async createAPIKeysForRules(
++    request: KibanaRequest,
++    names: string[]
++  ): Promise<CreateAPIKeyResult[]> {
++    if (names.length === 0) {
++      return [];
++    }
++    if (!this.securityPluginStart) {
++      return names.map(() => ({ apiKeysEnabled: false as const }));
++    }
++
++    const metadata = { managed: true, kibana: { type: 'alerting_rule' } };
++    const uiamResults = await Promise.all(
++      names.map((name) => this.createUiamApiKey(request, name))
++    );
++
++    const invalidateUiam = async (indices: number[]) => {
++      await Promise.all(
++        indices.map(async (i) => {
++          const uiam = uiamResults[i];
++          if (uiam?.id) {
++            await this.invalidateUiamApiKey(request, names[i], uiam.id);
++          }
++        })
++      );
++    };
++
++    const toResult = (
++      esResult: GrantAPIKeyResult | undefined,
++      uiamResult: GrantAPIKeyResult | undefined
++    ): CreateAPIKeyResult => {
++      if (!esResult) {
++        return { apiKeysEnabled: false };
++      }
++      return {
++        apiKeysEnabled: true,
++        result: esResult,
++        ...(uiamResult ? { uiamResult } : {}),
++      };
++    };
++
++    try {
++      const bulk = await this.securityService.authc.apiKeys.bulkGrantAsInternalUser(
++        request,
++        names.map((name) => ({ name, role_descriptors: {}, metadata }))
++      );
++
++      if (!bulk) {
++        await invalidateUiam(names.map((_, i) => i));
++        return names.map(() => ({ apiKeysEnabled: false as const }));
++      }
++
++      const results: CreateAPIKeyResult[] = [];
++      const failedIndices: number[] = [];
++      let createdIndex = 0;
++      for (let i = 0; i < names.length; i++) {
++        const created = bulk.created[createdIndex];
++        if (created && created.name === names[i]) {
++          results.push(toResult(created, uiamResults[i]));
++          createdIndex++;
++        } else {
++          failedIndices.push(i);
++          results.push({ apiKeysEnabled: false });
++        }
++      }
++      await invalidateUiam(failedIndices);
++      return results;
++    } catch (err) {
++      await invalidateUiam(names.map((_, i) => i));
++      if (isBulkGrantUnsupported(err)) {
++        this.logger.debug(
++          `bulk grant endpoint unavailable, falling back to per-rule grant: ${
++            err instanceof Error ? err.message : String(err)
++          }`
++        );
++        return Promise.all(names.map((name) => this.createAPIKeyForRule(request, name)));
++      }
++      throw err;
++    }
++  }
++
+   private async createInternal({
+     request,
+     savedObjects,
+@@ -427,43 +546,10 @@ export class RulesClientFactory {
+         return user?.username ?? null;
+       },
+       async createAPIKey(name: string) {
+-        if (!securityPluginStart) {
+-          return { apiKeysEnabled: false };
+-        }
+-        // Create an API key using the new grant API - in this case the Kibana system user is creating the
+-        // API key for the user, instead of having the user create it themselves, which requires api_key
+-        // privileges
+-        const createUiamApiKeyResult = await factory.createUiamApiKey(request, name);
+-
+-        let createEsAPIKeyResult;
+-        try {
+-          createEsAPIKeyResult = await securityService.authc.apiKeys.grantAsInternalUser(request, {
+-            name,
+-            role_descriptors: {},
+-            metadata: { managed: true, kibana: { type: 'alerting_rule' } },
+-          });
+-        } catch (err) {
+-          // if the ES API key creation failed, we need to invalidate the UIAM API key
+-          if (createUiamApiKeyResult?.id) {
+-            await factory.invalidateUiamApiKey(request, name, createUiamApiKeyResult.id);
+-          }
+-          // rethrow the error to be handled by the caller
+-          throw err;
+-        }
+-
+-        // if we created a UIAM API key but the ES API key creation failed, we need to invalidate the UIAM API key
+-        if (!createEsAPIKeyResult) {
+-          if (createUiamApiKeyResult?.id) {
+-            await factory.invalidateUiamApiKey(request, name, createUiamApiKeyResult.id);
+-          }
+-          return { apiKeysEnabled: false };
+-        }
+-
+-        return {
+-          apiKeysEnabled: true,
+-          result: createEsAPIKeyResult,
+-          ...(createUiamApiKeyResult ? { uiamResult: createUiamApiKeyResult } : {}),
+-        };
++        return factory.createAPIKeyForRule(request, name);
++      },
++      async createAPIKeys(names: string[]) {
++        return factory.createAPIKeysForRules(request, names);
+       },
+       async getActionsClient() {
+         if (isExplicitSpaceOverride) {
+@@ -576,3 +662,14 @@ export class RulesClientFactory {
+     });
+   }
+ }
++
++const isBulkGrantUnsupported = (error: unknown): boolean => {
++  if (!error || typeof error !== 'object') {
++    return false;
++  }
++  const status = (error as { statusCode?: number }).statusCode;
++  const bodyReason = (error as { body?: { error?: { reason?: string } } }).body?.error?.reason;
++  const message = error instanceof Error ? error.message : String(error);
++  const reason = bodyReason ?? message;
++  return status === 404 || status === 405 || /no handler found/i.test(reason);
++};
+diff --git a/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.test.ts b/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.test.ts
+index 137b36a993e..e4dba56d27c 100644
+--- a/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.test.ts
++++ b/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.test.ts
+@@ -658,6 +658,121 @@ describe('API Keys', () => {
+       });
+     });
+ 
++    describe('bulkGrantAsInternalUser()', () => {
++      it('returns null when security feature is disabled', async () => {
++        mockLicense.isEnabled.mockReturnValue(false);
++        const result = await apiKeys.bulkGrantAsInternalUser(httpServerMock.createKibanaRequest(), [
++          { name: 'test_api_key', role_descriptors: {} },
++        ]);
++        expect(result).toBeNull();
++        expect(mockClusterClient.asInternalUser.transport.request).not.toHaveBeenCalled();
++      });
++
++      it('returns empty created list without calling ES when given no keys', async () => {
++        mockLicense.isEnabled.mockReturnValue(true);
++        const result = await apiKeys.bulkGrantAsInternalUser(
++          httpServerMock.createKibanaRequest({
++            headers: { authorization: `Basic ${encodeToBase64('foo:bar')}` },
++          }),
++          []
++        );
++        expect(result).toEqual({ created: [] });
++        expect(mockClusterClient.asInternalUser.transport.request).not.toHaveBeenCalled();
++      });
++
++      it('throws when request does not contain authorization header', async () => {
++        mockLicense.isEnabled.mockReturnValue(true);
++        await expect(
++          apiKeys.bulkGrantAsInternalUser(httpServerMock.createKibanaRequest(), [
++            { name: 'test_api_key', role_descriptors: {} },
++          ])
++        ).rejects.toThrowErrorMatchingInlineSnapshot(
++          `"Unable to grant an API Key, request does not contain an authorization header"`
++        );
++        expect(mockClusterClient.asInternalUser.transport.request).not.toHaveBeenCalled();
++      });
++
++      it('calls `_bulk_grant` with proper parameters for the Basic scheme', async () => {
++        mockLicense.isEnabled.mockReturnValue(true);
++        mockClusterClient.asInternalUser.transport.request.mockResolvedValueOnce({
++          created: [
++            { id: '1', name: 'key-a', api_key: 'secret-a' },
++            { id: '2', name: 'key-b', api_key: 'secret-b' },
++          ],
++        });
++
++        const result = await apiKeys.bulkGrantAsInternalUser(
++          httpServerMock.createKibanaRequest({
++            headers: { authorization: `Basic ${encodeToBase64('foo:bar')}` },
++          }),
++          [
++            { name: 'key-a', role_descriptors: roleDescriptors, metadata: { managed: true } },
++            { name: 'key-b', role_descriptors: {} },
++          ]
++        );
++
++        expect(result).toEqual({
++          created: [
++            { id: '1', name: 'key-a', api_key: 'secret-a' },
++            { id: '2', name: 'key-b', api_key: 'secret-b' },
++          ],
++        });
++        expect(mockClusterClient.asInternalUser.transport.request).toHaveBeenCalledWith({
++          method: 'POST',
++          path: '/_security/api_key/_bulk_grant',
++          body: {
++            grant_type: 'password',
++            username: 'foo',
++            password: 'bar',
++            api_keys: [
++              { name: 'key-a', role_descriptors: { foo: true }, metadata: { managed: true } },
++              { name: 'key-b', role_descriptors: {} },
++            ],
++          },
++        });
++      });
++
++      it('calls `_bulk_grant` with proper parameters for the Bearer scheme', async () => {
++        mockLicense.isEnabled.mockReturnValue(true);
++        mockClusterClient.asInternalUser.transport.request.mockResolvedValueOnce({
++          created: [{ id: '1', name: 'key-a', api_key: 'secret-a' }],
++        });
++
++        await apiKeys.bulkGrantAsInternalUser(
++          httpServerMock.createKibanaRequest({
++            headers: { authorization: `Bearer foo-access-token` },
++          }),
++          [{ name: 'key-a', role_descriptors: roleDescriptors }]
++        );
++
++        expect(mockClusterClient.asInternalUser.transport.request).toHaveBeenCalledWith({
++          method: 'POST',
++          path: '/_security/api_key/_bulk_grant',
++          body: {
++            grant_type: 'access_token',
++            access_token: 'foo-access-token',
++            api_keys: [{ name: 'key-a', role_descriptors: roleDescriptors }],
++          },
++        });
++      });
++
++      it('throws when transport.request fails', async () => {
++        mockLicense.isEnabled.mockReturnValue(true);
++        mockClusterClient.asInternalUser.transport.request.mockRejectedValueOnce(
++          new Error('Elasticsearch error')
++        );
++
++        await expect(
++          apiKeys.bulkGrantAsInternalUser(
++            httpServerMock.createKibanaRequest({
++              headers: { authorization: `Bearer foo-access-token` },
++            }),
++            [{ name: 'key-a', role_descriptors: {} }]
++          )
++        ).rejects.toThrow('Elasticsearch error');
++      });
++    });
++
+     it('throw error for other schemes', async () => {
+       mockLicense.isEnabled.mockReturnValue(true);
+       await expect(
+diff --git a/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.ts b/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.ts
+index 4e79316737e..ee0a805ac47 100644
+--- a/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.ts
++++ b/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.ts
+@@ -12,6 +12,7 @@ import type { IClusterClient, KibanaRequest, Logger } from '@kbn/core/server';
+ import { HTTPAuthorizationHeader, isUiamCredential } from '@kbn/core-security-server';
+ import type { KibanaFeature } from '@kbn/features-plugin/server';
+ import type {
++  BulkGrantAPIKeyResult,
+   ClientAuthentication,
+   CloneAPIKeyParams,
+   CloneAPIKeyResult,
+@@ -52,19 +53,22 @@ export interface ConstructorOptions {
+   uiam?: UiamServicePublic;
+ }
+ 
+-type GrantAPIKeyParams =
++type GrantCredentials =
+   | {
+-      api_key: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams;
+       grant_type: 'password';
+       username: string;
+       password: string;
+     }
+   | {
+-      api_key: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams;
+       grant_type: 'access_token';
+       access_token: string;
++      client_authentication?: ClientAuthentication;
+     };
+ 
++type GrantAPIKeyParams = GrantCredentials & {
++  api_key: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams;
++};
++
+ /**
+  * Class responsible for managing Elasticsearch API keys.
+  */
+@@ -287,39 +291,9 @@ export class APIKeys implements NativeAPIKeysType {
+       );
+     }
+ 
+-    // If API key is granted for UIAM credentials, we need to pass UIAM client authentication and ignore any other
+-    // client credentials that might have been provided. Otherwise, try to extract optional Elasticsearch client
+-    // credentials from `es-client-authentication` HTTP header (currently only used by JWT).
+-    let clientAuthentication: ClientAuthentication | undefined;
+-
+-    if (this.uiam && isUiamCredential(authorizationHeader)) {
+-      clientAuthentication = this.uiam.getClientAuthentication();
+-    } else {
+-      const clientAuthorizationHeader = HTTPAuthorizationHeader.parseFromRequest(
+-        request,
+-        ELASTICSEARCH_CLIENT_AUTHENTICATION_HEADER
+-      );
+-
+-      if (clientAuthorizationHeader) {
+-        clientAuthentication = {
+-          scheme: clientAuthorizationHeader.scheme,
+-          value: clientAuthorizationHeader.credentials,
+-        };
+-      }
+-    }
+-
+-    const { expiration, metadata, name } = createParams;
+-    const roleDescriptors =
+-      'role_descriptors' in createParams
+-        ? createParams.role_descriptors
+-        : this.parseRoleDescriptorsWithKibanaPrivileges(
+-            createParams.kibana_role_descriptors,
+-            this.kibanaFeatures,
+-            false
+-          );
+-
++    const clientAuthentication = this.resolveClientAuthentication(request, authorizationHeader);
+     const params = this.getGrantParams(
+-      { expiration, metadata, name, role_descriptors: roleDescriptors },
++      this.toApiKeyBody(createParams),
+       authorizationHeader,
+       clientAuthentication
+     );
+@@ -336,6 +310,54 @@ export class APIKeys implements NativeAPIKeysType {
+     return result;
+   }
+ 
++  /**
++   * Tries to grant multiple API keys for the current user in a single Elasticsearch call.
++   */
++  async bulkGrantAsInternalUser(
++    request: KibanaRequest,
++    createParams: Array<CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams>
++  ): Promise<BulkGrantAPIKeyResult | null> {
++    if (!this.license.isEnabled()) {
++      return null;
++    }
++
++    if (createParams.length === 0) {
++      return { created: [] };
++    }
++
++    this.logger.debug(`Trying to bulk grant ${createParams.length} API keys`);
++
++    const authorizationHeader = HTTPAuthorizationHeader.parseFromRequest(request);
++    if (authorizationHeader == null) {
++      throw new Error(
++        `Unable to grant an API Key, request does not contain an authorization header`
++      );
++    }
++
++    const clientAuthentication = this.resolveClientAuthentication(request, authorizationHeader);
++    const credentials = this.getGrantCredentials(authorizationHeader, clientAuthentication);
++    const apiKeys = createParams.map((params) => this.toApiKeyBody(params));
++
++    try {
++      const result =
++        await this.clusterClient.asInternalUser.transport.request<BulkGrantAPIKeyResult>({
++          method: 'POST',
++          path: '/_security/api_key/_bulk_grant',
++          body: {
++            ...credentials,
++            api_keys: apiKeys,
++          },
++        });
++      this.logger.debug(
++        `Bulk granted ${result.created.length}/${createParams.length} API keys successfully`
++      );
++      return result;
++    } catch (e) {
++      this.logger.error(`Failed to bulk grant API keys: ${e.message}`);
++      throw e;
++    }
++  }
++
+   /**
+    * Clones an existing API key using the internal user. Extracts the source key credential
+    * from the request's Authorization header and calls the ES clone endpoint to create a new
+@@ -483,14 +505,36 @@ export class APIKeys implements NativeAPIKeysType {
+     );
+   }
+ 
+-  private getGrantParams(
+-    createParams: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams,
++  private resolveClientAuthentication(
++    request: KibanaRequest,
++    authorizationHeader: HTTPAuthorizationHeader
++  ): ClientAuthentication | undefined {
++    // If API key is granted for UIAM credentials, we need to pass UIAM client authentication and ignore any other
++    // client credentials that might have been provided. Otherwise, try to extract optional Elasticsearch client
++    // credentials from `es-client-authentication` HTTP header (currently only used by JWT).
++    if (this.uiam && isUiamCredential(authorizationHeader)) {
++      return this.uiam.getClientAuthentication();
++    }
++
++    const clientAuthorizationHeader = HTTPAuthorizationHeader.parseFromRequest(
++      request,
++      ELASTICSEARCH_CLIENT_AUTHENTICATION_HEADER
++    );
++
++    if (clientAuthorizationHeader) {
++      return {
++        scheme: clientAuthorizationHeader.scheme,
++        value: clientAuthorizationHeader.credentials,
++      };
++    }
++  }
++
++  private getGrantCredentials(
+     authorizationHeader: HTTPAuthorizationHeader,
+     clientAuthentication?: ClientAuthentication
+-  ): GrantAPIKeyParams {
++  ): GrantCredentials {
+     if (authorizationHeader.scheme.toLowerCase() === 'bearer') {
+       return {
+-        api_key: createParams,
+         grant_type: 'access_token',
+         access_token: authorizationHeader.credentials,
+         ...(clientAuthentication ? { client_authentication: clientAuthentication } : {}),
+@@ -502,7 +546,6 @@ export class APIKeys implements NativeAPIKeysType {
+         authorizationHeader.credentials
+       );
+       return {
+-        api_key: createParams,
+         grant_type: 'password',
+         username: basicCredentials.username,
+         password: basicCredentials.password,
+@@ -512,6 +555,36 @@ export class APIKeys implements NativeAPIKeysType {
+     throw new Error(`Unsupported scheme "${authorizationHeader.scheme}" for granting API Key`);
+   }
+ 
++  private toApiKeyBody(
++    createParams: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams
++  ): CreateRestAPIKeyParams {
++    const { expiration, metadata, name } = createParams;
++    return {
++      expiration,
++      metadata,
++      name,
++      role_descriptors:
++        'role_descriptors' in createParams
++          ? createParams.role_descriptors
++          : this.parseRoleDescriptorsWithKibanaPrivileges(
++              createParams.kibana_role_descriptors,
++              this.kibanaFeatures,
++              false
++            ),
++    };
++  }
++
++  private getGrantParams(
++    createParams: CreateRestAPIKeyParams | CreateRestAPIKeyWithKibanaPrivilegesParams,
++    authorizationHeader: HTTPAuthorizationHeader,
++    clientAuthentication?: ClientAuthentication
++  ): GrantAPIKeyParams {
++    return {
++      ...this.getGrantCredentials(authorizationHeader, clientAuthentication),
++      api_key: createParams,
++    };
++  }
++
+   private parseRoleDescriptorsWithKibanaPrivileges(
+     kibanaRoleDescriptors: CreateRestAPIKeyWithKibanaPrivilegesParams['kibana_role_descriptors'],
+     features: KibanaFeature[],
+diff --git a/x-pack/platform/plugins/shared/security/server/authentication/authentication_service.ts b/x-pack/platform/plugins/shared/security/server/authentication/authentication_service.ts
+index 51737fcf95e..2bbd2c1a393 100644
+--- a/x-pack/platform/plugins/shared/security/server/authentication/authentication_service.ts
++++ b/x-pack/platform/plugins/shared/security/server/authentication/authentication_service.ts
+@@ -88,6 +88,7 @@ export interface InternalAuthenticationServiceStart extends AuthenticationServic
+     | 'invalidate'
+     | 'validate'
+     | 'grantAsInternalUser'
++    | 'bulkGrantAsInternalUser'
+     | 'cloneAsInternalUser'
+     | 'invalidateAsInternalUser'
+     | 'uiam'
+@@ -464,6 +465,7 @@ export class AuthenticationService {
+         create: apiKeys.create.bind(apiKeys),
+         update: apiKeys.update.bind(apiKeys),
+         grantAsInternalUser: apiKeys.grantAsInternalUser.bind(apiKeys),
++        bulkGrantAsInternalUser: apiKeys.bulkGrantAsInternalUser.bind(apiKeys),
+         cloneAsInternalUser: apiKeys.cloneAsInternalUser.bind(apiKeys),
+         invalidate: apiKeys.invalidate.bind(apiKeys),
+         validate: apiKeys.validate.bind(apiKeys),
+diff --git a/x-pack/platform/plugins/shared/security/server/build_delegate_apis.ts b/x-pack/platform/plugins/shared/security/server/build_delegate_apis.ts
+index d4b595b2577..12f979617b7 100644
+--- a/x-pack/platform/plugins/shared/security/server/build_delegate_apis.ts
++++ b/x-pack/platform/plugins/shared/security/server/build_delegate_apis.ts
+@@ -55,6 +55,8 @@ export const buildSecurityApi = ({
+         areCrossClusterAPIKeysEnabled: () => getAuthc().apiKeys.areAPIKeysEnabled(),
+         grantAsInternalUser: (request, createParams) =>
+           getAuthc().apiKeys.grantAsInternalUser(request, createParams),
++        bulkGrantAsInternalUser: (request, createParams) =>
++          getAuthc().apiKeys.bulkGrantAsInternalUser(request, createParams),
+         cloneAsInternalUser: (request, cloneParams) =>
+           getAuthc().apiKeys.cloneAsInternalUser(request, cloneParams),
+         create: (request, createParams) => getAuthc().apiKeys.create(request, createParams),
+diff --git a/x-pack/platform/plugins/shared/security/server/index.ts b/x-pack/platform/plugins/shared/security/server/index.ts
+index ad3084f4d95..c4eeaed5593 100644
+--- a/x-pack/platform/plugins/shared/security/server/index.ts
++++ b/x-pack/platform/plugins/shared/security/server/index.ts
+@@ -37,6 +37,7 @@ export type {
+   AuthenticationServiceStart,
+   InvalidateAPIKeyResult,
+   GrantAPIKeyResult,
++  BulkGrantAPIKeyResult,
+   CloneAPIKeyParams,
+   CloneAPIKeyResult,
+   ValidateAPIKeyParams,
+diff --git a/x-pack/platform/plugins/shared/security/server/plugin.test.ts b/x-pack/platform/plugins/shared/security/server/plugin.test.ts
+index 7071e18783f..24e85f39962 100644
+--- a/x-pack/platform/plugins/shared/security/server/plugin.test.ts
++++ b/x-pack/platform/plugins/shared/security/server/plugin.test.ts
+@@ -197,6 +197,7 @@ describe('Security Plugin', () => {
+             "apiKeys": Object {
+               "areAPIKeysEnabled": [Function],
+               "areCrossClusterAPIKeysEnabled": [Function],
++              "bulkGrantAsInternalUser": [Function],
+               "cloneAsInternalUser": [Function],
+               "create": [Function],
+               "grantAsInternalUser": [Function],
