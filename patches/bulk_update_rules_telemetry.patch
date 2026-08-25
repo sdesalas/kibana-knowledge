@@ -1,0 +1,294 @@
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.test.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.test.ts
+index 709d152d7330..8542c2285b41 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.test.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.test.ts
+@@ -925,4 +925,79 @@ describe('bulkUpdateRules', () => {
+       );
+     });
+   });
++
++  describe('telemetry', () => {
++    test('emits alerting_rule_updated for each successfully updated rule', async () => {
++      mockPit([so('id-1'), so('id-2')]);
++
++      await rulesClient.bulkUpdateRules({
++        rules: [item('id-1', { name: 'a' }), item('id-2', { name: 'b' })],
++      });
++
++      expect(rulesClientParams.analytics!.reportEvent).toHaveBeenCalledTimes(2);
++      expect(rulesClientParams.analytics!.reportEvent).toHaveBeenCalledWith(
++        'alerting_rule_updated',
++        {
++          rule_id: 'id-1',
++          rule_type_id: '123',
++          enabled: false,
++          consumer: 'siem',
++          producer: 'alerts',
++          updated_at: '2019-02-12T21:01:22.479Z',
++        }
++      );
++      expect(rulesClientParams.analytics!.reportEvent).toHaveBeenCalledWith(
++        'alerting_rule_updated',
++        {
++          rule_id: 'id-2',
++          rule_type_id: '123',
++          enabled: false,
++          consumer: 'siem',
++          producer: 'alerts',
++          updated_at: '2019-02-12T21:01:22.479Z',
++        }
++      );
++    });
++
++    test('does not emit for rules whose SO update failed', async () => {
++      mockPit([so('id-1'), so('id-2')]);
++      unsecuredSavedObjectsClient.bulkCreate.mockResolvedValue(
++        buildBulkResponse([
++          { id: 'id-1' },
++          { id: 'id-2', error: { message: 'es down', statusCode: 500 } },
++        ])
++      );
++
++      await rulesClient.bulkUpdateRules({
++        rules: [item('id-1'), item('id-2')],
++      });
++
++      expect(rulesClientParams.analytics!.reportEvent).toHaveBeenCalledTimes(1);
++      expect(rulesClientParams.analytics!.reportEvent).toHaveBeenCalledWith(
++        'alerting_rule_updated',
++        {
++          rule_id: 'id-1',
++          rule_type_id: '123',
++          enabled: false,
++          consumer: 'siem',
++          producer: 'alerts',
++          updated_at: '2019-02-12T21:01:22.479Z',
++        }
++      );
++    });
++
++    test('does not fail bulk update when reportEvent throws', async () => {
++      mockPit([so('id-1')]);
++      (rulesClientParams.analytics!.reportEvent as jest.Mock).mockImplementationOnce(() => {
++        throw new Error('telemetry failure');
++      });
++
++      const result = await rulesClient.bulkUpdateRules({
++        rules: [item('id-1')],
++      });
++
++      expect(result.errors).toEqual([]);
++      expect(result.successfulIds).toEqual(['id-1']);
++    });
++  });
+ });
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts
+index ab621b0082ea..c0b63b598908 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts
+@@ -34,6 +34,7 @@ import type { RuleParams } from '../../types';
+ import { validateScheduleLimit } from '../get_schedule_frequency';
+ import { invalidateKeys, type ApiKeyEntry } from '../common_utils/invalidate_keys';
+ import { logRuleChanges } from '../common_utils/log_rule_changes';
++import { reportRuleUpdatedEvent } from '../common_utils/event_based_telemetry';
+ import type {
+   BatchResult,
+   BulkUpdateRulesItem,
+@@ -512,6 +513,17 @@ async function putAttempt<Params extends RuleParams>({
+         },
+       })
+     );
++
++    for (const prepared of successfulPrepared) {
++      reportRuleUpdatedEvent(context, {
++        id: prepared.id,
++        updatedAt: prepared.rawRule.updatedAt,
++        alertTypeId: prepared.rawRule.alertTypeId,
++        enabled: prepared.rawRule.enabled,
++        consumer: prepared.rawRule.consumer,
++        producer: prepared.producer,
++      });
++    }
+   }
+ 
+   return {
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/types.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/types.ts
+index 83b11bd93113..5df0a8535446 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/types.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/types.ts
+@@ -48,6 +48,7 @@ export interface PreparedUpdate {
+   newSchedule: IntervalSchedule;
+   scheduledTaskId?: string | null;
+   oldKeys: ApiKeyEntry;
++  producer: string;
+ }
+ 
+ export interface BatchResult<Params extends RuleParams = never> {
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts
+index d0452286c950..d4338bd58fe5 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts
+@@ -235,6 +235,7 @@ export const prepareUpdate = async <Params extends RuleParams>({
+           uiamApiKey: originalRule.uiamApiKey ?? null,
+           apiKeyCreatedByUser: originalRule.apiKeyCreatedByUser ?? null,
+         },
++        producer: ruleType.producer,
+       },
+     };
+   } catch (err) {
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/common_utils/event_based_telemetry.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/common_utils/event_based_telemetry.ts
+index 0df12714b9bc..40762336ff55 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/common_utils/event_based_telemetry.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/common_utils/event_based_telemetry.ts
+@@ -5,7 +5,12 @@
+  * 2.0.
+  */
+ 
+-import type { AnalyticsServiceStart, EventTypeOpts, Logger } from '@kbn/core/server';
++import type {
++  AnalyticsServiceSetup,
++  AnalyticsServiceStart,
++  EventTypeOpts,
++  Logger,
++} from '@kbn/core/server';
+ 
+ interface ReportEventContext {
+   analytics?: Pick<AnalyticsServiceStart, 'reportEvent'>;
+@@ -78,10 +83,76 @@ export const RULE_CREATED_EVENT: EventTypeOpts<RuleCreatedEventData> = {
+   },
+ };
+ 
+-export const ruleCreateTelemetryEvents: Array<EventTypeOpts<Record<string, unknown>>> = [
++export interface RuleUpdatedEventData {
++  rule_id: string;
++  updated_at: string;
++  rule_type_id: string;
++  enabled: boolean;
++  consumer: string;
++  producer: string;
++}
++
++export const RULE_UPDATED_EVENT: EventTypeOpts<RuleUpdatedEventData> = {
++  eventType: 'alerting_rule_updated',
++  schema: {
++    rule_id: {
++      type: 'keyword',
++      _meta: {
++        description: 'The id of the updated rule.',
++        optional: false,
++      },
++    },
++    updated_at: {
++      type: 'date',
++      _meta: {
++        description: 'ISO timestamp of when the rule was updated.',
++        optional: false,
++      },
++    },
++    rule_type_id: {
++      type: 'keyword',
++      _meta: {
++        description: 'The rule type identifier (e.g. `.es-query`).',
++        optional: false,
++      },
++    },
++    enabled: {
++      type: 'boolean',
++      _meta: {
++        description: 'Whether the rule is enabled after the update.',
++        optional: false,
++      },
++    },
++    consumer: {
++      type: 'keyword',
++      _meta: {
++        description: 'The consumer (feature/application) that owns the rule.',
++        optional: false,
++      },
++    },
++    producer: {
++      type: 'keyword',
++      _meta: {
++        description: 'The rule type producer, as registered by the owning plugin.',
++        optional: false,
++      },
++    },
++  },
++};
++
++const ruleTelemetryEvents: Array<EventTypeOpts<Record<string, unknown>>> = [
+   RULE_CREATED_EVENT,
++  RULE_UPDATED_EVENT,
+ ];
+ 
++export function registerTelemetryEvents(
++  analytics: Pick<AnalyticsServiceSetup, 'registerEventType'>
++): void {
++  for (const event of ruleTelemetryEvents) {
++    analytics.registerEventType(event);
++  }
++}
++
+ export function reportRuleCreatedEvent(
+   context: ReportEventContext,
+   {
+@@ -116,3 +187,35 @@ export function reportRuleCreatedEvent(
+     context.logger.debug(`Failed to report rule create telemetry event: ${e}`);
+   }
+ }
++
++export function reportRuleUpdatedEvent(
++  context: ReportEventContext,
++  {
++    id,
++    updatedAt,
++    alertTypeId,
++    enabled,
++    consumer,
++    producer,
++  }: {
++    id: string;
++    updatedAt: string;
++    alertTypeId: string;
++    enabled: boolean;
++    consumer: string;
++    producer: string;
++  }
++): void {
++  try {
++    context.analytics?.reportEvent(RULE_UPDATED_EVENT.eventType, {
++      rule_id: id,
++      updated_at: updatedAt,
++      rule_type_id: alertTypeId,
++      enabled,
++      consumer,
++      producer,
++    });
++  } catch (e) {
++    context.logger.debug(`Failed to report rule update telemetry event: ${e}`);
++  }
++}
+diff --git a/x-pack/platform/plugins/shared/alerting/server/plugin.ts b/x-pack/platform/plugins/shared/alerting/server/plugin.ts
+index d1b582d9a249..27e8b57005ca 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/plugin.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/plugin.ts
+@@ -119,7 +119,7 @@ import { registerGapAutoFillSchedulerTask } from './lib/rule_gaps/task/gap_auto_
+ import { ChangeTrackingService } from './rules_client/lib/change_tracking';
+ import { UiamApiKeyProvisioningTask } from './provisioning';
+ import { uiamProvisioningEvents } from './provisioning/event_based_telemetry';
+-import { ruleCreateTelemetryEvents } from './application/rule/methods/common_utils/event_based_telemetry';
++import { registerTelemetryEvents } from './application/rule/methods/common_utils/event_based_telemetry';
+ 
+ export const EVENT_LOG_PROVIDER = 'alerting';
+ export const EVENT_LOG_ACTIONS = {
+@@ -430,9 +430,7 @@ export class AlertingPlugin {
+     );
+ 
+     uiamProvisioningEvents.forEach((eventConfig) => core.analytics.registerEventType(eventConfig));
+-    ruleCreateTelemetryEvents.forEach((eventConfig) =>
+-      core.analytics.registerEventType(eventConfig)
+-    );
++    registerTelemetryEvents(core.analytics);
+ 
+     this.uiamApiKeyProvisioningTask = new UiamApiKeyProvisioningTask({
+       logger: this.logger,
