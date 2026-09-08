@@ -1,85 +1,162 @@
-# PR Review: #275695 — [Security Solution] Optimize bulk `rule/_import` (create path) via `bulkCreateRules()`
+# PR Review: #275695 — [Security Solution] Optimize `rules/_import` (create path) via `bulkCreateRules()`
 
 **PR:** [elastic/kibana#275695](https://github.com/elastic/kibana/pull/275695) by @sdesalas
 
-**Scale:** Substantive — new client method, orchestrator rewrite, feature flag, cross-batch loop, persisted-state side effects.
+**Scale:** Substantive.
 
-**Ownership:** All 12 files live under `detection_engine/rule_management/*` — squarely owned by the rule management / detection engineering area. No cross-team files, so review depth is fully warranted here.
+**Ownership (team: `@elastic/security-detection-engineering`):**
+- **Your team's files (39):** every path in this PR matches `/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management` — *reviewed in full, not just this bucket*
+- **Other teams' files:** none
+- **Unowned:** none
 
 ---
 
-## Comment triage (what's addressed vs still open)
+### Context / Motivation
 
-You asked me to check which PR comments are already handled. Here's the status against HEAD (`b498fc3`):
+[#264909](https://github.com/elastic/kibana/issues/264909) asked to wire `POST /api/detection_engine/rules/_import` through `rulesClient.bulkCreateRules()` for **new** rules, replacing the per-rule create loop. The expected win was ~3x on large imports. Overwrite stays per-rule until `bulkUpdate` lands ([#275204](https://github.com/elastic/kibana/issues/275204)).
 
-| Comment | Where | Status |
-|---|---|---|
-| **Unconditional concurrency tag** (429 on flag-off prod path) | `import_rules/route.ts:69` | ✅ **Addressed.** You removed the concurrency cap entirely — no `registerLimitedConcurrencyRoutes` / `RULE_MANAGEMENT_IMPORT_CONCURRENCY` anywhere in the route now. Flag-off path is back to no cap. |
-| **Unescaped KQL `rule_id`** (whole-batch filter blowup) | `bulk_import_rules.ts` conflict lookup | ✅ **Addressed.** `findExistingRuleIds` now wraps each id in `escapeQuotes(id)` from `@kbn/es-query`. |
-| **Big imports fail — cap vs chunk (Options A/B/C)** | `bulk_import_rules.ts:145` | ✅ **Addressed.** Went with Option B (chunk internally), at 200 not 5000. Each batch runs its own conflict search + bulk create, so the ES condition-count 500 risk is gone and there's no new hard ceiling. |
-| **Uncaught throw from `bulkCreateRules`** (discards per-rule responses) | `bulk_import_rules.ts:253` | ✅ **Mostly addressed.** The `bulkCreateRules` call is now wrapped in `try/catch` and converts a thrown error into per-rule `RuleImportErrorObject`s for the `toBulkCreate` set. Covered by a test ("a thrown bulkCreateRules ... surfaces as per-rule errors"). |
-| **Cross-batch partial persistence** (batch N throws, 1..N-1 already committed) | `import_rules.ts:72` | ⚠️ **Partially addressed.** See Risks below — the `bulkCreateRules` throw is now contained, but the chunk loop itself still has no `try/catch`, so a throw from anything *else* inside `bulkImportRules` still aborts mid-loop. |
-| **Stale `changeTracking` test** | `bulk_import_rules.test.ts:256` | ✅ **Addressed.** The current test now passes `changeTracking: { metadata: { bulkCount } }` and asserts the merged `{ action: ruleImport, metadata }` shape — matches production. |
+The issue originally mentioned a `bulkCreateRulesEnabled` feature flag and a sample patch from [#271722](https://github.com/elastic/kibana/pull/271722). This PR dropped the flag — the bulk create path is the only create path once it merges. That’s intentional, and the PR treats FTR coverage in [#280553](https://github.com/elastic/kibana/pull/280553) / [#280531](https://github.com/elastic/kibana/pull/280531) as the safety net.
 
-Net: the two "blocking-ish" findings (concurrency, KQL escaping) and the design decision (chunking) are done. The remaining nuance is the cross-batch throw window, which is smaller now but not fully closed.
+> Wire the `rules/_import` flow to use `rulesClient.bulkCreateRules()` for new rules, replacing the existing per-rule loop.
 
-## Summary
+> Existing rules with `overwriteRules: true` can fall back to per-rule for now.
 
-Adds a faster path for `POST /api/detection_engine/rules/_import` that routes **new** rules through alerting's `rulesClient.bulkCreateRules()` in batches of 200, instead of the per-rule create loop. Enabled/disabled state, API-key minting and task scheduling all happen inline in the bulk call. It's gated behind a new `bulkImportRulesEnabled` experimental flag (off by default), so production behavior is unchanged until flipped. Rules being **overwritten** (`overwrite: true`) still go through the proven per-rule `importRule` path. The stated intent (parity + ~2-3x speedup on the create path, lower heap) matches what the diff does.
+> This replaces the previous import create path **unconditionally** — no feature flag.
 
-## Files touched
+---
 
-- **Flag + constants:** `common/experimental_features.ts` (new `bulkImportRulesEnabled`), `api/timeouts.ts` → renamed `api/constants.ts` (adds `RULE_MANAGEMENT_IMPORT_BATCH_SIZE = 50` and `RULE_MANAGEMENT_BULK_IMPORT_BATCH_SIZE = 200`). `bulk_actions/route.ts` and `export_rules/route.ts` just update the import path after the rename.
-- **New bulk method:** `detection_rules_client/methods/bulk_import_rules.ts` — the core of the PR. Per-rule prep, single conflict lookup, classify (conflict / overwrite / bulk-create), one `bulkCreateRules` call with uuid re-pairing.
-- **Wiring:** `detection_rules_client.ts` (adds `bulkImportRules`), `detection_rules_client_interface.ts` (interface + `BulkImportRulesArgs` type alias), `__mocks__/detection_rules_client.ts` (mock).
-- **Orchestrator:** `logic/import/import_rules.ts` — now takes a flat `rules` array (not pre-chunked `ruleChunks`), branches on the flag, chunks per path, shared `toImportRuleResponse`. `import_rules/route.ts` passes `experimentalFeatures` and the flat rule list.
-- **Tests:** new `detection_rules_client.bulk_import_rules.test.ts` (14 cases), updated `import_rules.test.ts` (bulk-path branch, chunking, error mapping).
+### Validating the issue — does this PR address it?
 
-## Flow trace (flag ON, mixed enabled/disabled/existing NDJSON)
+**The concern is technically valid. The PR addresses the create-path bottleneck, with a leftover sequential overwrite path and a stricter whole-batch failure mode than today.**
 
-1. `importRulesRoute` parses NDJSON, validates actions/exceptions, reads `experimentalFeatures`, calls `importRules({ rules, experimentalFeatures, ... })`.
-2. `importRules` sees `bulkImportRulesEnabled`, chunks `rules` by 200, calls `detectionRulesClient.bulkImportRules(batch)` per chunk.
-3. `bulkImportRules` resolves referenced exception lists, runs `ruleSourceImporter.setup(rules)`, then `prepareRules`: version default, `validateMlAuth`, exception ref check, `calculateRuleSource`. Failures become per-rule errors; survivors are `prepared`.
-4. `findExistingRuleIds` runs one escaped KQL OR-filter `findRules` over the batch's rule_ids → `Set` of existing ids.
-5. Classify each prepared rule: existing + overwrite → `toOverwrite`; existing + no overwrite → `conflict`; new → `toBulkCreate`.
-6. Conflicts pushed as `conflict` errors. `toOverwrite` run through `overwriteExisting` (pMap over per-rule `importRuleSingle`, concurrency 50) — **this persists updates to ES before the bulk create runs**.
-7. `buildBulkInputs` converts each new rule to an alerting create input with a pre-assigned uuid (`options.id`), `enabled` preserved; conversion failures become per-rule errors.
-8. `rulesClient.bulkCreateRules({ rules, batchSize: 200, changeTracking: { ...ct, action: ruleImport } })` inside a `try/catch`. Successes re-paired by uuid → `{ rule_id }`; per-row errors → per-rule error; a thrown error → every `toBulkCreate` rule gets that error message.
-9. `bulkImportRules` returns `{ responses }`; orchestrator maps via `toImportRuleResponse` (409 for conflict, 400 otherwise, 200 success) and accumulates across batches.
+- **Where the problem manifests** — on `main`, the route chunks at 50 and `detectionRulesClient.importRules` runs `Promise.all` over `importRule()`, which does `getRuleByRuleId` + `rulesClient.create` (or `update`) per rule. That’s one find and one create per rule, times every rule in the file.
+- **Why the old approach was a problem** — a 1000-rule import is ~1000 alerting creates (plus ~1000 finds). That’s the timeout / wall-time problem in [#249176](https://github.com/elastic/kibana/issues/249176).
+- **How the PR fixes it** — one KQL find per outer chunk, then one `rulesClient.bulkCreateRules()` for the new-rule subset. Payload construction matches `createRule()` (`applyRuleDefaults` → `convertRuleResponseToAlertingRule` → `enabled ?? false`).
+- **Residual caveat** — overwrite is still `pMap` + `rulesClient.update`. Mixed create+overwrite files still pay the slow path for existing `rule_id`s. And `bulkCreateRules` pre-checks (schedule-limit, authz) throw for the **whole call**, which is stricter than per-rule `create`.
 
-## Assumptions
+---
 
-- `params.ruleId` on the alerting side maps 1:1 to the imported `rule_id` — the conflict lookup and the re-pairing both rely on this.
-- uuids assigned in `buildBulkInputs` come back verbatim in `successfulIds` / `errors[].rule.id` from `bulkCreateRules`. If alerting ever reassigns ids, re-pairing silently drops responses (the code `if (source)` / `if (!source) return` just skips unmatched).
-- `bulkCreateRules` internally batches at `batchSize` and enforces `MAX_RULES_NUMBER_FOR_BULK_OPERATION` (10k) — the outer 200 chunk keeps every call well under that.
-- The overwrite branch running before bulk-create is acceptable ordering — overwrites commit even if the later bulk-create throws (now less impactful since the throw is caught).
-- `changeTracking.metadata.bulkCount` carries the *pre-batching* NDJSON count from the route, not the per-batch count — the test asserts this threads through unchanged.
+### Summary
 
-## Risks
+New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunks of 250, with no feature flag. Existing `rule_id`s still update one-by-one. The old `importRule()` method and `RuleSourceImporter` class are gone; their jobs live in a new `methods/import_rules/` folder (validate → split → overwrite / create). HTTP response shape is still `{ rule_id, status_code }` / per-rule errors. Stated intent matches the diff. The extra surface is the folder split and deleting the singular import API, not a second feature.
 
-1. ~~**Cross-batch partial persistence — narrowed but not closed** (`import_rules.ts` bulk loop). The `bulkCreateRules` throw is now caught inside `bulkImportRules`, which was the main case. But the chunk loop still `await`s each `bulkImportRules` with no `try/catch`, and `bulkImportRules` can still throw *before* the guarded section — from `getReferencedExceptionLists`, `ruleSourceImporter.setup`, or `findExistingRuleIds` (`findRules`). If batch N throws there, batches 1..N-1 are already durably in ES but the request returns one top-level error and all accumulated `responses` are discarded → dirty, non-idempotent retry (409s on re-import).~~ **Resolved — see activity #3.** The whole `bulkImportRules` body is now wrapped in one guard that converts any throw into per-rule errors for rules not already reported, so a batch can no longer reject and abort the loop.
-2. **Overwrite side effects on a later failure.** `overwriteExisting` commits updates before bulk-create. With the throw now caught this is much less likely to surface as a total failure, but overwrites in an earlier batch are still committed if a *later* batch aborts per (1).
-3. **Silent response drop on uuid mismatch.** If `successfulIds`/`errors` ever contain an id not in `inputById`, that rule produces neither a success nor an error response — it just vanishes from the results. Unlikely given uuids are caller-assigned, but there's no assertion/telemetry if it happens. **(see activity #1.)**
-4. **`RuleSignatureId` is unconstrained `z.string()`.** Escaping fixed the filter-injection blast radius; worth a passing thought whether any other interpolation of `rule_id` in the new path is unescaped (I only saw the one, and it's fixed).
+---
 
-## Open questions
+### Files touched
 
-- For risk (1): is it worth wrapping the per-batch `bulkImportRules` call (or the internal pre-`bulkCreateRules` work) so a throw degrades to per-rule errors for that batch instead of aborting the whole loop? That would fully close the cross-batch dirty-retry case before the flag flips. Or is "flag off + chunk=200 makes findRules throw very unlikely" considered good enough for now?
-- `overwriteExisting` uses `pMap` with `concurrency: RULE_MANAGEMENT_IMPORT_BATCH_SIZE` (50). Is 50 concurrent per-rule overwrites (each minting API keys / scheduling tasks) intended, or should overwrite concurrency be its own tuned constant rather than reusing the legacy batch-size number?
-- The CI Jest failure in the latest build (`AlertFlyoutOverviewTab ...`) looks unrelated to this diff — is that a known flake, or worth confirming before merge?
-- Manual-testing checklist items (flag-on flows, API integration coverage) are still unchecked in the PR body — are those planned before merge or deferred as follow-ups?
-- Status codes are flattened on re-wrap: a thrown authz (403), schedule-limit (429), or a per-row `bulkErrors[].status` (e.g. 500) all become `createRuleImportErrorObject` with no status, so `toImportRuleResponse` reports them as `400`. This matches the legacy import model (`RuleImportErrorType` is only `conflict | unknown`), so it's not a regression — but is 400 the right code to show a user for a schedule-limit/authz failure, or worth carrying `status` through the error object? (see activity #1.)
+**Route + constants**
+- `api/rules/import_rules/route.ts` — drops the 50-rule chunk and `RuleSourceImporter`; installs the prebuilt package once; forwards `changeTracking.action: ruleImport` + `metadata.bulkCount`.
+- `api/constants.ts` — `timeouts.ts` renamed; adds `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` (250) and `RULE_IMPORT_BULK_UPDATE_CONCURRENCY` (50).
+- `api/rules/bulk_actions/route.ts`, `api/rules/export_rules/route.ts` — import path only (`timeouts` → `constants`).
 
-## Notes for your codebase map
+**Orchestrator**
+- `logic/import/import_rules.ts` — chunks at 250 and calls `detectionRulesClient.importRules` per batch. Maps successes to `{ rule_id }` only; `conflict` → 409, everything else → 400.
 
-- `bulkCreateRules` mints API keys and schedules enabled tasks **inline** per rule — no separate enable pass needed after import. That's the whole speed win vs the per-rule loop.
-- Re-pairing pattern: pre-assign a uuid as `options.id`, keep a `Map<uuid, source>`, then map alerting's `successfulIds`/`errors[].rule.id` back to `rule_id`. Reusable pattern for other bulk alerting calls.
-- Rule "source" (prebuilt vs custom) is computed via `ruleSourceImporter.calculateRuleSource` + `applyRuleDefaults`, and `params.ruleId` is the stable cross-reference between the security `rule_id` and the alerting rule.
-- Import conflict detection is a single KQL OR-list over `alert.attributes.params.ruleId` — ES caps boolean conditions per node (min 1024, heap-scaled), which is exactly why chunk size matters here.
-- The per-rule `importRule` path stays authoritative for overwrites; this PR deliberately only optimizes the *create* path.
+**Detection Rules Client**
+- `detection_rules_client.ts` / `detection_rules_client_interface.ts` — `importRule` removed; `importRules` takes `rules` + options and returns `{ successes, errors }`. After the pipeline it emits `DETECTION_RULE_IMPORT_EVENT` once per success.
+- `methods/import_rule.ts` — deleted. No remaining callers.
 
-## Review activities
+**New import pipeline (`methods/import_rules/`)**
+- `import_rules.ts` — parallel lookups, validate, split, overwrite, create; concatenates `{ successes, errors }`; outer try/catch turns throws into per-rule errors.
+- `validate_rules_to_import.ts` — version default, ML auth, exception refs, `rule_source`.
+- `split_into_groups.ts` — conflict / overwrite / create.
+- `create_rules.ts` — uuid pairing + `bulkCreateRules`; keeps `id` / `type` / `rule_source` on each success for telemetry.
+- `overwrite_rules.ts` — `pMap` + `rulesClient.update` + `toggleRuleEnabledOnUpdate`; same success shape.
+- `fetch_prebuilt_import_context.ts` / `find_installed_rules_by_rule_ids.ts` — replace `RuleSourceImporter.setup()`.
+- Helpers moved with the folder: `calculate_rule_source_for_import`, `check_rule_exception_references`, `convert_rule_to_import_to_rule_response`, `gather_referenced_exceptions`, `errors`.
 
-1. **Error-handling focused pass** over `bulk_import_rules.ts` and `import_rules.ts`. Confirmed the `try/catch` around `rulesClient.bulkCreateRules` correctly contains whole-batch pre-check throws (authz / schedule-limit / hard-limit) and converts them to per-rule errors — the main find from the prior threads is genuinely handled, and a test covers it. **Sharpened Risk #1:** the guard only wraps `bulkCreateRules`; three fallible calls run *before* it inside `bulkImportRules` — `getReferencedExceptionLists`, `await ruleSourceImporter.setup(rules)`, and `findExistingRuleIds` (`findRules`) — none guarded, and the outer chunk loop in `import_rules.ts` has no `try/catch` either. A throw from any of those in batch N still propagates through `importRules` to the route's top-level `catch`, discarding every accumulated per-rule response and leaving batches 1..N-1 committed in ES (classic chunked-write-with-no-rollback). This is the sharpest remaining error-handling gap. **Sharpened Risk #3:** the uuid re-pairing (`if (source)` / `if (!source) return`) silently drops any `successfulIds`/`bulkErrors` id not found in `inputById` — such a rule yields neither success nor error, so it disappears from results with no signal. **New Open question:** re-wrapping via `createRuleImportErrorObject({ ruleId, message })` drops the status code (`RuleImportErrorObject` only distinguishes `conflict | unknown`), so 403/429/500 failures all surface as `400`; consistent with the legacy import model, so not a regression, but flagged for a decision. Checked for missing `await`s (none — all fallible async calls are awaited) and double-reporting in the `catch` (none — `inputById` only holds successfully-built inputs, and `bulkErrors` is processed inside the `try` after the await resolves). Per-rule containment in `prepareRules` and `overwriteExisting` (`pMap` with per-item `try/catch`) is solid.
-2. **Over-engineering focused pass** over `bulk_import_rules.ts` (cross-checked against `import_rule.ts`). One real finding: in `overwriteExisting` (`bulk_import_rules.ts:314-328`), the awaited `importRuleSingle` result is cast `as RuleResponse | RuleImportErrorObject` and then guarded with `if (isRuleImportError(updated)) return updated;` — but `importRule` is typed `Promise<RuleResponse>` and only ever *throws* the error object (the sole `createRuleImportErrorObject` in `import_rule.ts:55` is a `throw`, in the `existingRule && !overwriteRules` branch), never returns it. So the resolved-value guard handles a shape the return path can't produce, and the cast exists only to make that dead branch typecheck. The real error object arrives via the `catch` at line 330. Simplify to `const updated = await importRuleSingle(...); return { rule_id: updated.rule_id };` and drop the cast. Secondary note: the catch's `if (isRuleImportError(err)) return err;` is itself unreachable *for this caller* (overwrite path passes `overwriteRules: true` on rules already known to exist, so the conflict-throw branch never fires) — but as a cross-method catch guard it's cheap belt-and-suspenders, leave it. Minor nits: `missingVersionError` and the `BulkImportRulesArgs = ImportRulesArgs` alias are each single-use, but both aid readability — not worth changing. **Non-findings:** the `try/catch` in `buildBulkInputs` and `prepareRules` guard genuinely-throwing calls (conversion of a malformed rule, `validateMlAuth`) — that per-rule isolation is the stated design, not defensiveness. Decomposing the method into `prepareRules`/`findExistingRuleIds`/`overwriteExisting`/`buildBulkInputs` is readable decomposition, not single-use-abstraction bloat.
-3. **Fixed Risk #1 (cross-batch partial persistence).** Wrapped the full `bulkImportRules` body (`bulk_import_rules.ts`) in a single `try/catch`; the `catch` builds a set of already-responded `rule_id`s and pushes an error for every input rule not in it, so the method now always resolves with a per-rule outcome and never rejects. This subsumes the old inner `try/catch` around `bulkCreateRules` (removed — the outer guard covers the same `toBulkCreate` set), and also contains throws from `getReferencedExceptionLists`, `ruleSourceImporter.setup`, and `findExistingRuleIds` that previously aborted the chunk loop. Added a regression test ("a thrown conflict lookup surfaces as per-rule errors, not a rejection") mocking `findRules` to reject; full suite 15/15 green. `import_rules.ts` loop left untouched — the guarantee lives at the source. Trimmed an over-long comment per repo style guidance.
+**Deleted**
+- `logic/import/rule_source_importer/*` — package install moved to the route; asset/installed-rule fetches inlined.
+
+**Tests**
+- New/rewritten DRC + helper + orchestrator tests. `import_rule.test.ts` and `rule_source_importer.test.ts` deleted. Route suite is still `describe.skip`.
+
+---
+
+### Flow trace
+
+1. `POST /api/detection_engine/rules/_import` parses NDJSON, imports exceptions/connectors, dedups `rule_id`s, migrates action IDs, validates actions/response actions.
+2. Route calls `ensureLatestRulesPackageInstalled` once, then `logic/import/import_rules` with `changeTracking: { action: ruleImport, metadata: { bulkCount } }`.
+3. Orchestrator chunks at 250 and calls `detectionRulesClient.importRules` per chunk.
+4. DRC `importRules` runs three lookups in parallel: referenced exception lists, prebuilt assets (`fetchLatestVersions` + `fetchDeprecatedRules` + `fetchAssetsByVersion`), installed rules via a quoted KQL OR-list on `params.ruleId`.
+5. `validateRulesToImport` per rule: prebuilt-without-version → error and skip; ML auth fail → error and skip; missing exception list → **warning error, rule still proceeds** with the dangling ref stripped; version defaults to 1; `rule_source` / `immutable` calculated.
+6. `splitIntoGroups`: unknown `rule_id` → create; existing + overwrite → update; existing + no overwrite → 409.
+7. Overwrite: `applyRuleUpdate` + `rulesClient.update` + `toggleRuleEnabledOnUpdate`, concurrency 50.
+8. Create: `applyRuleDefaults` + convert + `bulkCreateRules({ batchSize: 250 })`. Caller-generated uuids are re-paired to `rule_id`.
+9. If anything in the try throws (find, prebuilt fetch, `bulkCreateRules` pre-check), remaining `rule_id`s that aren’t already in `successes` or `errors` get that error message.
+10. Client emits `DETECTION_RULE_IMPORT_EVENT` for each success (`ruleId` is the SO `id`). Orchestrator maps successes to `{ rule_id }` and errors to `BulkError`. Route uses `successes.length` for `success_count`.
+
+---
+
+### Assumptions
+
+- `rulesClient.bulkCreateRules` from [#269340](https://github.com/elastic/kibana/pull/269340) is a faithful bulk equivalent of `rulesClient.create` for SIEM rules (API keys, task scheduling, connector secrets, change history). The create payload is copied from `createRule()`.
+- Callers always cap a single `importRules` invocation at `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` (250). That’s what keeps the KQL OR-list under ES’s 1024 `max_clause_count` floor. Only the orchestrator enforces it; the DRC method does not.
+- `findRules({ perPage: ruleIds.length })` will actually return all matches. No extra pagination.
+- In-file duplicate `rule_id`s are gone before this pipeline — `getTupleDuplicateErrorsAndUniqueRules` in the route.
+- `bulkCreateRules` echoes `options.id` in `successfulIds` / `errors[].rule.id`. Pairing depends on that. Same pattern as `bulkCreatePrebuiltRules`.
+- Route-level `RULES_API_ALL` means alerting `bulkEnsureAuthorized` won’t reject a mixed-type batch for rule-type privileges. If that’s ever not true, one unauthorized type fails the whole create batch.
+- `allowMissingConnectorSecrets` is create-only. Overwrite never passed it on `main` either.
+- Exception-list “errors” are warnings: the rule is still created/updated with the ref removed. Same as `main`.
+- FTR in #280553 / #280531 is the contract-parity net. This PR’s own checklist still has that unverified.
+
+---
+
+### Risks
+
+- **Schedule-limit throw fails the whole create batch, including disabled rules.** `bulkCreateRules` sums every **enabled** interval, then throws before any writes if the circuit breaker trips. The DRC catch then marks every remaining rule in the chunk as failed. `rulesClient.create` only checked the limit when `enabled: true`, so on `main` disabled rules in the same file still imported. A 200-disabled + 50-enabled file that overflows on the 50 can now create nothing in that chunk. Why this is risky: large enabled imports near the cluster schedule cap, and mixed enabled/disabled files.
+- **Exception-list warnings are treated as “already responded.”** `checkRuleExceptionReferences` pushes a warning **and** keeps the rule importable. The outer catch builds `responded` from every error `ruleId`. If `bulkCreateRules` later throws, that rule does not get the real failure message. The client sees “Reference has been removed” and `success_count: 0` — the warning implies the import continued. Why this is risky: dangling exception list + schedule-limit/authz throw in the same chunk.
+- **No feature flag, FTR dependency not checked off.** Create-path contract changes go out to every import on merge. Unit tests cover the new pipeline; the route suite is still `describe.skip`; the PR’s own checklist still has FTR + manual + perf matrix open.
+- **`RULE_IMPORT_BULK_CREATE_BATCH_SIZE` is provisional (250).** Raising it toward 500 without splitting the KQL find reintroduces a whole-batch ES clause failure. The helper test guards the current constant, not a future bump at the call site.
+- **Create-error pairing can drop a row.** If `successfulIds` / `errors[].rule.id` don’t match the uuid map, `createRules` skips the row and does not throw, so the outer catch won’t backfill it. Unlikely if alerting keeps echoing `options.id`; there’s no test that the map is complete after a bulk response.
+- **Per-rule conversion isolation is untested on this path.** `createRules` wraps `applyRuleDefaults` / convert in try/catch so one bad rule shouldn’t fail the batch. `bulkCreatePrebuiltRules` has a test for that; this suite doesn’t.
+
+---
+
+### Open questions
+
+- If a 250-rule create batch trips the schedule circuit breaker, is “import none of them, including the disabled ones” the contract you want? Or should disabled rules still go through, and enabled ones fail individually?
+- Should the outer catch treat exception-list warnings as non-terminal, so a later whole-batch throw still attaches the real error?
+- Is 250 locked enough to merge, or does this wait on the 100/200/250/300/500 × 1000/2000 × enabled/disabled matrix in the PR?
+- Has #280553 / #280531 actually landed on `main` and been re-run against this branch? The checklist says no.
+- The skipped route test still expects ML authz to come back as **403**; the orchestrator maps every non-conflict error to **400** (same as `main`). If that suite gets unskipped, that case will fail — is 400 the public contract?
+
+---
+
+### Notes for your codebase map
+
+- Detection-rule import is now a pipeline inside `methods/import_rules/`: lookup → validate → split → overwrite | create. The singular `importRule()` API is gone.
+- `RuleSourceImporter` is gone. Package install is a route-level `ensureLatestRulesPackageInstalled`. Asset + installed-rule fetches are plain functions (`fetchPrebuiltImportContext`, `findInstalledRulesByRuleIds`).
+- Installed-rule lookup by `rule_id` is a quoted KQL OR-list on `alert.attributes.params.ruleId`. The existing `findRules({ ruleIds })` option filters **SO** `alert.id`, not signature `rule_id` — don’t use it here. The old `fetchInstalledRulesByIds` did the same KQL without quoting; this helper is stricter.
+- `createRules` is the same shape as `bulkCreatePrebuiltRules`: caller uuid, `applyRuleDefaults`, `enabled ?? false`, re-pair `successfulIds`.
+- `bulkCreateRules` preValidate throws on authz and schedule-limit **before any ES writes**. Per-rule schema/interval failures stay in `errors`. Task-schedule failures exclude only the enabled subset.
+- Exception-list failures on import are warnings: error object + rule still created with the ref stripped. That’s older behavior, now more visible because the catch uses those errors as “already handled.”
+- Outer chunk size used to be 50 (`CHUNK_PARSED_OBJECT_SIZE` in the route). It’s now 250, shared with `bulkCreateRules`’s `batchSize`.
+
+---
+
+### Review activities
+
+1. **Local debugging: Duplicate-import race (1000 uploaded → 2000 persisted).** Pre-existing TOCTOU ([#176207](https://github.com/elastic/kibana/issues/176207#issuecomment-4903270379)), possibly aggravated here by larger batches. Checked whether this PR looks up all `rule_id`s up front (vs per-batch) and whether the h2o2 120s browser retry explains a clean 2×.
+
+- Lookup is per 250-rule chunk, not once for the whole file. `logic/import/import_rules.ts` chunks; each `methods/import_rules/import_rules.ts` call runs `findInstalledRulesByRuleIds` for that batch only.
+- The race is TOCTOU inside the batch: one find snapshot, then a long `bulkCreateRules` (API keys, tasks, SO write). `createRules` mints new `uuidv4()` SO ids; alerting uniqueness is on SO id, not `params.ruleId`.
+- Two overlapping POSTs of the same file can both see empty for the same 250 ids and both create. Sequential batches do not protect each other — batch 2 looks up different ids.
+- This is pre-existing ([#176207](https://github.com/elastic/kibana/issues/176207)): `rule_id` uniqueness is check-then-create, not enforced at persist. Old path raced per rule (`getRuleByRuleId` then `create`). This PR likely aggravated it — chunk grew 50 → 250, and one snapshot now covers a slow 250-wide insert, so a concurrent find is more likely to miss the whole batch.
+- A clean 2000 is two lockstep imports on an empty space (or a pause after find). A late retry after batch 1 committed would mix 409s with duplicates, not a full 2×.
+
+2. **Walked Maxim’s `a385ffc` refactor** (“Move rule import logic under detection rules client”) to understand intent, what moved, and leftover route wiring.
+
+- Aim was Georgii’s review, not a drive-by tidy: in-place replacement of the old import ([review summary](https://github.com/elastic/kibana/pull/275695#pullrequestreview-4663885834)), decompose the fat file into single-purpose functions ([T18](https://github.com/elastic/kibana/pull/275695#discussion_r3570188905)), reuse `importRules` ([T14](https://github.com/elastic/kibana/pull/275695#discussion_r3570058501)), drop `RuleSourceImporter` ([T19](https://github.com/elastic/kibana/pull/275695#discussion_r3570203724)).
+- **13 files / 7 modules** renamed from `logic/import/` into `detection_rules_client/methods/import_rules/`: `calculate_rule_source_for_import`, `check_rule_exception_references`, `convert_rule_to_import_to_rule_response` (from `import/converters/`), `errors`, `fetch_prebuilt_import_context`, `find_installed_rules_by_rule_ids`, `gather_referenced_exceptions`. Orchestrator `logic/import/import_rules.ts` stayed put.
+- Apart from those moves: `importRule` deleted from client/interface/mock (and `DETECTION_RULE_IMPORT_EVENT` with it); old `methods/import_rules.ts` split into `validateRulesToImport` / `splitIntoGroups` / `createRules` / `overwriteRules`; overwrite inlined to `rulesClient.update` instead of calling `importRule` (no second `getRuleByRuleId`). Tests and the constants comment retargeted. Batch size was still 100 in this commit.
+- Route `ensureLatestRulesPackageInstalled` is **not** in `a385ffc`. It landed in Steven’s [6849b48](https://github.com/elastic/kibana/commit/6849b48d224e) when `RuleSourceImporter` was removed. The old `setup()` called it once (flag-guarded) before asset lookup; the route now does that once per request so `fetchPrebuiltImportContext` / `calculateRuleSourceForImport` don’t treat every Elastic `rule_id` as custom on a cluster with no package installed.
+
+3. **Restored import telemetry and split mixed results into `{ successes, errors }`.** [f401ceb](https://github.com/elastic/kibana/commit/f401ceb919a9) — T12 / T22 / T26 / T27.
+
+- Old `importRule()` emitted `DETECTION_RULE_IMPORT_EVENT` after every successful create **and** overwrite. Payload used SO `id` as `ruleId` (not signature `rule_id`), plus `ruleType` / `isPrebuilt` / `isCustomized`. After Maxim’s refactor the pipeline only returned `{ rule_id }`, so the event disappeared.
+- Emit from `DetectionRulesClient.importRules` after the pipeline — same home as install/revert. Do **not** thread `analytics` into helpers, refetch from ES, invent a bulk event, or run `convertAlertingRuleToRuleResponse` just for telemetry (a Zod fail after a successful write would look like an import error).
+- `ImportRuleSuccess` is `{ rule_id, telemetry: RuleLifecycleTelemetryData }`. `RuleLifecycleTelemetryData` lives in `rule_lifecycle_telemetry.ts` as `Pick<RuleResponse, 'id' | 'type' | 'rule_source'>`. Create keeps the minted uuid + import `type` + calculated `ruleSource` on the pending map; overwrite uses `existingRule.id` + the same type/source. Failures/conflicts/throws emit nothing. `sendRuleLifecycleTelemetryEvent` still swallows errors.
+- Client, pipeline, `createRules`, and `overwriteRules` all return `{ successes, errors }` instead of a mixed `responses` / union array. Order does not matter — HTTP is `success_count` + an errors bag. Exception-list warnings can appear in **both** lists (warning + created rule); that matches `main`.
+- Orchestrator maps successes to `{ rule_id }` only. Public import response is unchanged. Unused `ImportRegular` / `isImportRegular` / `isBulkError` deleted from `detection_engine/routes/utils.ts`. `isCustomizedPrebuiltRule` widened to `Pick<RuleResponse, 'rule_source'>` so telemetry doesn’t need a full `RuleResponse`.
+
