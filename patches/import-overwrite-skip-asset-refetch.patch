@@ -1,0 +1,148 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
+index 9d3a45caf609..c60cd8627a9b 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
+@@ -27,6 +27,7 @@ import { createProductFeaturesServiceMock } from '../../../../product_features_s
+ import { getMockRulesAuthz } from '../../__mocks__/authz';
+ import { createRuleImportErrorObject } from './methods/import_rules/errors';
+ import { DETECTION_RULE_IMPORT_EVENT } from '../../../../telemetry/event_based/events';
++import { getPrebuiltRuleMock } from '../../../prebuilt_rules/model/rule_assets/prebuilt_rule_asset.mock';
+ 
+ jest.mock('./methods/import_rules/check_rule_exception_references');
+ jest.mock('./methods/import_rules/fetch_prebuilt_import_context');
+@@ -39,6 +40,7 @@ const emptyPrebuiltContext = () => ({
+ 
+ describe('detectionRulesClient.importRules', () => {
+   let rulesClient: ReturnType<typeof rulesClientMock.create>;
++  let savedObjectsClient: ReturnType<typeof savedObjectsClientMock.create>;
+   let subject: ReturnType<typeof createDetectionRulesClient>;
+   let analytics: AnalyticsServiceSetup;
+   const rulesAuthz = getMockRulesAuthz();
+@@ -57,7 +59,7 @@ describe('detectionRulesClient.importRules', () => {
+     });
+     analytics = { reportEvent: jest.fn() } as unknown as AnalyticsServiceSetup;
+ 
+-    const savedObjectsClient = savedObjectsClientMock.create();
++    savedObjectsClient = savedObjectsClientMock.create();
+     savedObjectsClient.find.mockResolvedValue({
+       saved_objects: [],
+       total: 0,
+@@ -211,6 +213,37 @@ describe('detectionRulesClient.importRules', () => {
+     );
+   });
+ 
++  it('overwrite of a prebuilt rule does not refetch assets', async () => {
++    const ruleToImport = { ...getImportRulesSchemaMock(), rule_id: 'existing-rule', version: 1 };
++    const existing = {
++      ...getRulesSchemaMock(),
++      rule_id: 'existing-rule',
++      id: 'existing-id',
++      immutable: true,
++      version: 1,
++    };
++    (findInstalledRulesByRuleIds as jest.Mock).mockResolvedValueOnce({
++      'existing-rule': existing,
++    });
++    (fetchPrebuiltImportContext as jest.Mock).mockResolvedValueOnce({
++      matchingAssetsByRuleId: {
++        'existing-rule': getPrebuiltRuleMock({ rule_id: 'existing-rule', version: 1 }),
++      },
++      availableRuleAssetIds: new Set(['existing-rule']),
++    });
++    rulesClient.update.mockResolvedValueOnce(
++      getRuleMock({ ...getQueryRuleParams(), ruleId: 'existing-rule' })
++    );
++
++    await subject.importRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: true,
++      rules: [ruleToImport],
++    });
++
++    expect(savedObjectsClient.search).not.toHaveBeenCalled();
++  });
++
+   it('per-row bulk error is re-paired to its source rule_id via uuid', async () => {
+     const ruleToImport = getImportRulesSchemaMock();
+     rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
+index f2ea40116aac..e6d04b805d30 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
+@@ -102,7 +102,6 @@ export async function importRules({
+         deps: {
+           actionsClient,
+           rulesClient,
+-          prebuiltRuleAssetClient: ruleAssetsClient,
+           changeTracking: importOptions.changeTracking,
+         },
+       });
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
+index 410338dfc004..15a4d7c7785e 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
+@@ -12,10 +12,9 @@ import type { SecurityRuleChangeTracking } from '../../../../../../../../common/
+ import type { RuleResponse } from '../../../../../../../../common/api/detection_engine';
+ import { SecurityRuleChangeTrackingAction } from '../../../../../../../../common/detection_engine/rule_management/rule_change_tracking';
+ import { convertRuleResponseToAlertingRule } from '../../converters/convert_rule_response_to_alerting_rule';
+-import { applyRuleUpdate } from '../../mergers/apply_rule_update';
++import { applyRuleDefaults } from '../../mergers/apply_rule_defaults';
+ import { toggleRuleEnabledOnUpdate } from '../../utils';
+ import { createRuleImportErrorObject, isRuleImportError } from './errors';
+-import type { IPrebuiltRuleAssetsClient } from '../../../../../prebuilt_rules/logic/rule_assets/prebuilt_rule_assets_client';
+ import { RULE_IMPORT_BULK_UPDATE_CONCURRENCY } from '../../../../api/constants';
+ import type {
+   ImportRuleSuccess,
+@@ -33,7 +32,6 @@ interface OverwriteRulesParams {
+ interface OverwriteRulesDeps {
+   actionsClient: ActionsClient;
+   rulesClient: RulesClient;
+-  prebuiltRuleAssetClient: IPrebuiltRuleAssetsClient;
+   changeTracking?: SecurityRuleChangeTracking;
+ }
+ 
+@@ -42,7 +40,7 @@ export async function overwriteRules({
+   existingRules,
+   deps,
+ }: OverwriteRulesParams): Promise<ImportRulesResult> {
+-  const { actionsClient, rulesClient, prebuiltRuleAssetClient, changeTracking } = deps;
++  const { actionsClient, rulesClient, changeTracking } = deps;
+   const successes: ImportRuleSuccess[] = [];
+   const errors: ImportRuleError[] = [];
+ 
+@@ -51,16 +49,25 @@ export async function overwriteRules({
+     async ({ rule, immutable, ruleSource, exceptionsList }) => {
+       try {
+         const existingRule = existingRules[rule.rule_id];
+-        let ruleWithUpdates = await applyRuleUpdate({
+-          prebuiltRuleAssetClient,
+-          existingRule,
+-          // The rule must carry the checked exceptions list with references to
+-          // non-existent exception lists removed and `id` fields pointing at
+-          // the lists installed in this cluster.
+-          ruleUpdate: { ...rule, exceptions_list: [...(exceptionsList ?? [])] },
+-        });
+-        // applyRuleUpdate prefers the existing rule's values for `rule_source` and `immutable`, but we want to use the importing rule's calculated values
+-        ruleWithUpdates = { ...ruleWithUpdates, rule_source: ruleSource, immutable };
++        // Stamp the already-calculated source; applyRuleUpdate would refetch assets per rule.
++        const ruleWithUpdates = {
++          ...applyRuleDefaults({
++            ...rule,
++            // Checked exceptions: missing lists stripped, ids remapped to this cluster.
++            exceptions_list: [...(exceptionsList ?? [])],
++            immutable,
++            rule_source: ruleSource,
++          }),
++          enabled: rule.enabled ?? existingRule.enabled,
++          version: rule.version ?? existingRule.version,
++          id: existingRule.id,
++          rule_id: existingRule.rule_id,
++          revision: existingRule.revision,
++          updated_at: existingRule.updated_at,
++          updated_by: existingRule.updated_by,
++          created_at: existingRule.created_at,
++          created_by: existingRule.created_by,
++        };
+ 
+         const updatedRule = await rulesClient.update({
+           id: existingRule.id,
