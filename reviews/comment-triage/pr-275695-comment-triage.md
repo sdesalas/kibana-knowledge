@@ -2,25 +2,27 @@
 
 **PR:** [elastic/kibana#275695](https://github.com/elastic/kibana/pull/275695) — *[Security Solution] Optimize `rules/_import` (create path) via `bulkCreateRules()`*  
 **Author:** @sdesalas; later implementation work by @maximpn  
-**Branch checked:** `optimize-rule-bulk-import-create-path` @ `e132f0064e65` (“Merge branch 'main' into optimize-rule-bulk-import-create-path”)  
-**Previous triage head:** `08f9baca78cd` (2026-08-20)  
-**Date:** 2026-09-07  
-**Review decision:** CHANGES_REQUESTED  
-**CI at previous head:** [Buildkite passed on `08f9baca78cd`](https://github.com/elastic/kibana/pull/275695#issuecomment-5355671338). No issue-comment CI result posted yet for `e132f0064e65`.
+**Branch checked:** `optimize-rule-bulk-import-create-path` @ `6db9ca36adb1` (“Inline split_into_groups to reduce boilerplate”)  
+**Previous triage head:** `e132f0064e65` (2026-09-07)  
+**Date:** 2026-09-09  
+**Review decision:** CHANGES_REQUESTED (Georgii). PR is draft (Georgii converted it 2026-09-08 while work was in progress).  
+**CI:** last posted Buildkite result was flaky on `e4b032d` ([build 498148](https://buildkite.com/elastic/kibana-pull-request/builds/498148)). No issue-comment CI result posted yet for `6db9ca36adb1`.
 
 **Method:** All 30 review threads fetched through GraphQL (`--paginate --slurp`), plus non-empty review summaries and top-level human comments. Each claim was checked against the current PR head; GitHub resolved/unresolved flags were not trusted. Local checkout is at the same SHA.
 
-**What changed since 2026-08-20:** one `main` merge (`e132f0064e65`). It does not touch the import pipeline (only unrelated test files under `rule_management`). Three new Reinaldo threads landed on 2026-08-21 ([T28](https://github.com/elastic/kibana/pull/275695#discussion_r3831923999), [T29](https://github.com/elastic/kibana/pull/275695#discussion_r3831960275), [T30](https://github.com/elastic/kibana/pull/275695#discussion_r3832002134)), and Reinaldo confirmed the telemetry gap on [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3831784495). Previously verified addressed items still hold.
+**What changed since 2026-09-07:** telemetry restored (`f401ceb`); batch size set to 200 (`6e86ef2`); `ruleAssetsClient` passed into overwrite (`e4b032d`); overwrite forwards route `changeTracking` verbatim (`d634e1413d4a`); `splitIntoGroups` inlined into `import_rules.ts` (`6db9ca36adb1`). Replies landed on T17, T18, T21, T25–T30. T12/T15/T22/T25–T27/T29 are now GitHub-resolved.
 
-**Counts (by verification, not GitHub flags):** 17 addressed · 5 informational/self-notes/nits · 4 duplicate threads for 1 real open telemetry regression · 1 partially addressed performance request · 2 design questions needing a reply · 1 small unaddressed cleanup
+**Counts (by verification, not GitHub flags):** 24 addressed · 4 informational/self-notes · 1 partially addressed performance request · 1 design question waiting on the reviewer
 
 ---
 
 ## Themes
 
-### 1. Replace the old path; remove flag and decompose implementation (7 threads)
+✅ addressed · ⚠️ waiting / partial · ❌ not addressed
 
-**Status: Addressed, except Reinaldo's conflicting design question still needs a reply**
+### ✅ 1. Replace the old path; remove flag and decompose implementation (8 threads)
+
+**Status: Addressed. T25 reply landed and the thread is resolved.**
 
 Georgii's central review direction was to update the existing import path rather than maintain two implementations:
 
@@ -31,124 +33,96 @@ Georgii's central review direction was to update the existing import path rather
 - [T15](https://github.com/elastic/kibana/pull/275695#discussion_r3570078935) — remove legacy/optimized branching.
 - [T18](https://github.com/elastic/kibana/pull/275695#discussion_r3570188905) — improve readability and decompose into single-purpose functions.
 - [T19](https://github.com/elastic/kibana/pull/275695#discussion_r3570203724) — remove the thin `RuleSourceImporter` abstraction.
+- [T25](https://github.com/elastic/kibana/pull/275695#discussion_r3689533705) — Reinaldo asked for the opposite (keep a parallel `import_rules_bulk`). [Replied 2026-09-07](https://github.com/elastic/kibana/pull/275695#discussion_r3948885238): parallel paths were rejected to avoid permanent tech debt. Thread resolved.
 
-**Verified current code (unchanged since 2026-08-20):**
+**Verified current code:**
 
 - No `bulkImportRulesEnabled` flag or old/new branching remains.
 - `DetectionRulesClient.importRules` is the single client method.
-- Constants are independently named and tunable: `RULE_IMPORT_BULK_CREATE_BATCH_SIZE = 250` and `RULE_IMPORT_BULK_UPDATE_CONCURRENCY = 50`.
+- Constants: `RULE_IMPORT_BULK_CREATE_BATCH_SIZE = 200` and `RULE_IMPORT_BULK_UPDATE_CONCURRENCY = 50`.
 - `RuleSourceImporter` and its interface/mock/tests are deleted.
-- The current pipeline is split across `validateRulesToImport`, `splitIntoGroups`, `createRules`, `overwriteRules`, `fetchPrebuiltImportContext`, and `findInstalledRulesByRuleIds`.
+- Pipeline is `validateRulesToImport` → inline create/overwrite/conflict split in `import_rules.ts` → `createRules` / `overwriteRules`, with `fetchPrebuiltImportContext` and `findInstalledRulesByRuleIds` for lookups.
 
-Reinaldo later asked for the opposite architecture in [T25](https://github.com/elastic/kibana/pull/275695#discussion_r3689533705): keep a parallel `import_rules_bulk` implementation to make parity easier to review. Current code intentionally does not do this, consistent with Georgii's changes-requested review. Still no reply on T25.
+### ✅ 2. Missing `DETECTION_RULE_IMPORT_EVENT` telemetry (4 threads)
 
-**Suggested reply on T25:** explain that keeping parallel paths was explicitly rejected to avoid permanent tech debt, while the helper-level decomposition and parity tests provide the requested review surface.
+**Status: Addressed in `f401ceb`. All four threads resolved.**
 
-### 2. Missing `DETECTION_RULE_IMPORT_EVENT` telemetry (4 threads)
+- [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939) — original telemetry-parity finding.
+- [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890) — re-raised after the feature flag was removed.
+- [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) — Reinaldo repeated it during his local pass.
+- [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) — AI re-confirmed; Reinaldo agreed.
 
-**Status: Not addressed at current head — real blocker. Human-confirmed on T27.**
+**Verified current code:** `DetectionRulesClient.importRules` emits `DETECTION_RULE_IMPORT_EVENT` per `result.successes` via `sendRuleLifecycleTelemetryEvent`. `createRules` / `overwriteRules` return `{ rule_id, telemetry }` for successes only. Unit tests cover create + overwrite emit, and no emit on conflict / failed create / thrown bulk create / thrown overwrite.
 
-Raised first by AI, acknowledged by Steven, then repeated by Reinaldo and again after the August 20 refactor:
+### ⚠️ 3. Batch-size selection, ECH/local evidence, and ES clause safety (3 threads + review summary)
 
-- [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939) — original telemetry-parity finding; Steven replied “On it.”
-- [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890) — re-raised after the feature flag was removed, making the regression unconditional.
-- [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) — Reinaldo repeated the concern during his local test/review pass.
-- [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) — AI re-confirmed against `08f9baca78cd`. **New since last triage:** Reinaldo [agreed on 2026-08-21](https://github.com/elastic/kibana/pull/275695#discussion_r3831784495) and asked whether the omission is intended.
+**Status: Functional safety addressed; performance-selection request still open with Georgii**
 
-**Current code at `e132f0064e65`:** `DetectionRulesClient.importRules` delegates to the new import pipeline and returns `{ responses }`. It does not call `sendRuleLifecycleTelemetryEvent`. No `DETECTION_RULE_IMPORT_EVENT` import remains in `detection_rules_client.ts`. Sibling `createPrebuiltRule` / `revertPrebuiltRule` still emit install/revert events. `createRules` and `overwriteRules` still return only `rule_id`.
-
-**Triage:** Treat all four threads as one issue. Fix once, reply on the latest human thread ([T27](https://github.com/elastic/kibana/pull/275695#discussion_r3831784495) / [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756)), then resolve the older duplicates.
-
-**Implementation decision needed:** telemetry expects a successful rule domain object, while the new internal result currently contains only `rule_id`. Avoid emitting events for failed `bulkCreateRules` entries. Either retain the successful rule data through `createRules`/`overwriteRules`, or emit from those helpers with the analytics dependency.
-
-### 3. Batch-size selection, ECH/local evidence, and ES clause safety (3 threads + review summary)
-
-**Status: Functional safety addressed; performance-selection request still partially addressed**
-
-No new performance comments or numbers since 2026-08-20.
-
-Georgii asked directly in [T17](https://github.com/elastic/kibana/pull/275695#discussion_r3570171000) why the value was 200 instead of 100, 250, or 500, and whether testing had established an optimum. His [changes-requested summary](https://github.com/elastic/kibana/pull/275695#pullrequestreview-4663885834) made the acceptance criteria more concrete:
+Georgii asked in [T17](https://github.com/elastic/kibana/pull/275695#discussion_r3570171000) why the value was 200 vs 100/250/500, and whether testing had established an optimum. His [changes-requested summary](https://github.com/elastic/kibana/pull/275695#pullrequestreview-4663885834) asked for:
 
 - test 2,000 enabled rules separately;
 - test 2,000 disabled rules separately;
 - compare reasonable batch sizes up to 500.
 
-Evidence already posted (unchanged):
+Evidence already posted:
 
 - [ECH comparison: 1,000 rules at 200/350/500](https://github.com/elastic/kibana/pull/275695#issuecomment-4958201347)
 - [Additional 100/150 results and local-versus-ECH context](https://github.com/elastic/kibana/pull/275695#issuecomment-4960949341)
 - [Earlier localhost 1,000-enabled result](https://github.com/elastic/kibana/pull/275695#issuecomment-4905072940)
 
-This is meaningful evidence, but it does not fulfill the explicit 2,000-rule matrix. The current code still uses 250. The PR body still calls that constant provisional.
+[Steven replied 2026-09-08](https://github.com/elastic/kibana/pull/275695#discussion_r3956633963) that performance is not the only constraint (heap + TM schedule-limit edge cases on mixed enabled/disabled batches). Code now uses **200** (`6e86ef2`). The explicit 2,000-rule matrix is still incomplete. Waiting on Georgii.
 
-ES clause-count safety from [T20](https://github.com/elastic/kibana/pull/275695#discussion_r3570233773) **is still addressed**: the outer import loop chunks at 250, each `findInstalledRulesByRuleIds` lookup sees at most that batch, and `find_installed_rules_by_rule_ids.test.ts` pins a full batch below the 1,024 floor.
+ES clause-count safety from [T20](https://github.com/elastic/kibana/pull/275695#discussion_r3570233773) **is still addressed**: the outer import loop chunks at 200, each `findInstalledRulesByRuleIds` lookup sees at most that batch, and `find_installed_rules_by_rule_ids.test.ts` pins a full batch below the 1,024 floor.
 
-Steven's earlier large-import analysis in [T4](https://github.com/elastic/kibana/pull/275695#discussion_r3504900068) is also still implemented: the route-level import loop chunks rather than imposing a new hard ceiling.
+### ✅ 4. Change-tracking payload ownership (3 threads)
 
-**Remaining performance work:** complete or explicitly defer the 2,000-rule matrix and the high-end LA/ECH versus local check. Link the follow-up performance ticket when created, then ask Georgii whether the current 250 value is acceptable for this PR.
-
-### 4. Change-tracking payload ownership (3 threads)
-
-**Status: Addressed (unchanged)**
+**Status: Addressed. Overwrite leftover fixed in `d634e1413d4a`.**
 
 - [T9](https://github.com/elastic/kibana/pull/275695#discussion_r3537192453) — author note about `bulkCount` flowing from the route.
 - [T16](https://github.com/elastic/kibana/pull/275695#discussion_r3570087843) — Georgii asked about other change-tracking parameters.
-- [T21](https://github.com/elastic/kibana/pull/275695#discussion_r3570263078) — Georgii asked for the whole payload, including `action`, to be set in the route.
+- [T21](https://github.com/elastic/kibana/pull/275695#discussion_r3570263078) — Georgii asked for the whole payload, including `action`, to be set in the route. [Replied 2026-09-09](https://github.com/elastic/kibana/pull/275695#discussion_r3965862151).
 
-**Verified current code:** the route constructs `{ action: ruleImport, metadata: { bulkCount } }` and passes it through `importRules`. `createRules` forwards the caller payload verbatim to `bulkCreateRules`. `overwriteRules` applies a `ruleImport` default and then spreads caller-provided change tracking.
+**Verified current code:** the route constructs `{ action: ruleImport, metadata: { bulkCount } }` and passes it through `importRules`. Both `createRules` and `overwriteRules` forward the caller payload verbatim. Unit tests pin both `bulkCreateRules` and `update`.
 
-The current unit suite still checks that caller change tracking is forwarded verbatim to `bulkCreateRules`.
+### ⚠️ 5. Whole-batch throws and catch shape (3 threads)
 
-### 5. Whole-batch throws and catch shape (3 threads)
+**Status: Containment addressed (T3/T5). T28 replied; waiting on Reinaldo.**
 
-**Status: Containment addressed (T3/T5). Catch-shape question from T28 is unanswered.**
+- [T3](https://github.com/elastic/kibana/pull/275695#discussion_r3503928659) / [T5](https://github.com/elastic/kibana/pull/275695#discussion_r3527416923) — contain whole-batch throws so earlier responses survive. Done.
+- [T28](https://github.com/elastic/kibana/pull/275695#discussion_r3831923999) — Reinaldo asked whether one outer catch over validation → conflicts → overwrite → create is the desired contract.
 
-- [T3](https://github.com/elastic/kibana/pull/275695#discussion_r3503928659) — a `bulkCreateRules` preflight throw could discard specific responses and misreport already-persisted overwrites.
-- [T5](https://github.com/elastic/kibana/pull/275695#discussion_r3527416923) — later-batch failure could leave earlier batches persisted while returning a generic request failure.
-- **New:** [T28](https://github.com/elastic/kibana/pull/275695#discussion_r3831923999) — Reinaldo asks whether one outer catch wrapping validation → conflicts → overwrite → create is the desired contract. An early throw stamps the same `e.message` onto every remaining `rule_id` (which may be unrelated), and an overwrite throw skips create even though those groups are independent. He asks whether the stages should have separate try/catch blocks.
+**Verified current code:** `importRules` still wraps the whole pipeline in one `try/catch`. [Steven replied 2026-09-08](https://github.com/elastic/kibana/pull/275695#discussion_r3957874512): lookups must succeed first; conflicts are mapped; overwrite failures are already swallowed in `pMap`; a create throw has no later stage. No code change. Waiting on Reinaldo.
 
-**Verified current code:** `importRules` still wraps the whole pipeline in one `try/catch`. Existing responses are preserved; any input rule without a response gets the same thrown message. `overwriteRules` still contains per-rule failures via `pMap`. The unit suite still covers “a thrown bulkCreateRules ... surfaces as per-rule errors, not a rejection.”
+### ✅ 6. Informational/self-note threads and nits (4 threads)
 
-T3/T5 asked for containment so a throw does not abort the multi-batch loop. That is done. T28 is a follow-on about whether that single catch couples independent stages too tightly. No reply, no code change.
+**Status: T30 addressed. T7–T9 and T23 are obsolete self-notes.**
 
-**Needs a reply:** say whether “same error on every unfinished rule, and overwrite failure skips create” is accepted, or split the try/catch so create still runs after an overwrite throw / lookup throw is isolated from later stages.
-
-### 6. Informational/self-note threads and nits (4 threads)
-
-**Status: No action required**
-
-- [T7](https://github.com/elastic/kibana/pull/275695#discussion_r3537178641) — old author note documenting batch size 200; outdated, current value is 250.
+- [T7](https://github.com/elastic/kibana/pull/275695#discussion_r3537178641) — old author note documenting batch size 200 as the then-new value. Now accurate again, but still just a note.
 - [T8](https://github.com/elastic/kibana/pull/275695#discussion_r3537183970) — old author note about the legacy 50-rule chunk; legacy path is gone.
-- [T23](https://github.com/elastic/kibana/pull/275695#discussion_r3593361874) — author note about moving a test; the test lives under `methods/import_rules/`.
-- **New:** [T30](https://github.com/elastic/kibana/pull/275695#discussion_r3832002134) — Reinaldo nit: fold `splitIntoGroups` into `validateRulesToImport`. Current code still keeps them separate. Optional readability change, not a closeout requirement.
+- [T23](https://github.com/elastic/kibana/pull/275695#discussion_r3593361874) — author note about moving a test.
+- [T30](https://github.com/elastic/kibana/pull/275695#discussion_r3832002134) — Reinaldo nit: fold `splitIntoGroups` into `validateRulesToImport`. Inlined into `import_rules.ts` instead (`6db9ca36adb1`). [Replied 2026-09-09](https://github.com/elastic/kibana/pull/275695#discussion_r3965946578). Safe to resolve.
 
-Resolve T7–T9 and T23 as obsolete/self-notes after the substantive threads are handled. T30 can stay open as a nit or be resolved with “leaving classification separate on purpose.”
-
-### 7. KQL safety for adversarial `rule_id` values (2 threads)
-
-**Status: Addressed by escaping plus regression coverage (unchanged)**
-
-- [T2](https://github.com/elastic/kibana/pull/275695#discussion_r3503588112) — embedded quote/backslash could break the entire lookup.
-- [T11](https://github.com/elastic/kibana/pull/275695#discussion_r3552390871) — Georgii requested either stronger escaping or adversarial regression tests for other metacharacters.
-
-**Verified current code:** `findInstalledRulesByRuleIds` wraps each value in a quoted KQL literal and uses `escapeQuotes`. Tests still cover embedded quotes, backslashes, parentheses, `*`, angle brackets, `and`/`or`/`not`, and a mixed case.
-
-### 8. Test wiring and stale tests (2 threads)
+### ✅ 7. KQL safety for adversarial `rule_id` values (2 threads)
 
 **Status: Addressed (unchanged)**
 
-- [T6](https://github.com/elastic/kibana/pull/275695#discussion_r3530801309) — old change-tracking assertion did not match the new production call.
-- [T24](https://github.com/elastic/kibana/pull/275695#discussion_r3637352453) — tests constructed the subject with a throwaway rules-client mock.
+- [T2](https://github.com/elastic/kibana/pull/275695#discussion_r3503588112) / [T11](https://github.com/elastic/kibana/pull/275695#discussion_r3552390871) — escape + adversarial regression tests.
+
+**Verified current code:** `findInstalledRulesByRuleIds` wraps each value in a quoted KQL literal and uses `escapeQuotes`. Tests still cover embedded quotes, backslashes, parentheses, `*`, angle brackets, `and`/`or`/`not`, and a mixed case.
+
+### ✅ 8. Test wiring and stale tests (2 threads)
+
+**Status: Addressed (unchanged)**
+
+- [T6](https://github.com/elastic/kibana/pull/275695#discussion_r3530801309) / [T24](https://github.com/elastic/kibana/pull/275695#discussion_r3637352453)
 
 **Verified current code:** `detection_rules_client.import_rules.test.ts` still creates one `rulesClient`, passes that instance into `createDetectionRulesClient`, stubs it, and asserts its calls.
 
-### 9. Recreate `prebuiltRuleAssetClient` in overwrite (1 thread)
+### ✅ 9. Recreate `prebuiltRuleAssetClient` in overwrite (1 thread)
 
-**Status: Not addressed**
+**Status: Addressed in `e4b032d`. Thread resolved.**
 
-**New:** [T29](https://github.com/elastic/kibana/pull/275695#discussion_r3831960275) — Reinaldo asked to pass the caller’s `ruleAssetsClient` into `overwriteRules` instead of calling `createPrebuiltRuleAssetsClient(savedObjectsClient)` again. `import_rules.ts:59` already constructs that client for `fetchPrebuiltImportContext`. `overwrite_rules.ts:42` still rebuilds it.
-
-Small, concrete, unanswered. Not a blocker; do it when touching that file.
+[T29](https://github.com/elastic/kibana/pull/275695#discussion_r3831960275) — pass the caller’s `ruleAssetsClient` into `overwriteRules`. `import_rules.ts` constructs it once and passes `prebuiltRuleAssetClient: ruleAssetsClient`. Overwrite no longer rebuilds it.
 
 ---
 
@@ -159,16 +133,20 @@ Small, concrete, unanswered. Not a blocker; do it when touching that file.
 | [T1](https://github.com/elastic/kibana/pull/275695#discussion_r3503588107) | AI | Remove/gate unconditional route concurrency cap | Concurrency tag absent |
 | [T2](https://github.com/elastic/kibana/pull/275695#discussion_r3503588112) | AI | Escape quoted `rule_id` values | `escapeQuotes` in lookup + adversarial tests |
 | [T3](https://github.com/elastic/kibana/pull/275695#discussion_r3503928659) / [T5](https://github.com/elastic/kibana/pull/275695#discussion_r3527416923) | AI | Contain whole-batch throws and preserve responses | Full inner pipeline guarded; per-rule fallback errors |
-| [T4](https://github.com/elastic/kibana/pull/275695#discussion_r3504900068) | sdesalas | Chunk large imports without hard cap | Outer loop chunks at 250 |
+| [T4](https://github.com/elastic/kibana/pull/275695#discussion_r3504900068) | sdesalas | Chunk large imports without hard cap | Outer loop chunks at 200 |
 | [T6](https://github.com/elastic/kibana/pull/275695#discussion_r3530801309) | AI | Fix stale change-tracking test | Rewritten current test suite |
 | [T10](https://github.com/elastic/kibana/pull/275695#discussion_r3552390865) | banderror | Separate create batch/update concurrency; remove legacy | Two constants; legacy removed |
 | [T11](https://github.com/elastic/kibana/pull/275695#discussion_r3552390871) | banderror | Harden or regression-test adversarial KQL IDs | Regression matrix in lookup test |
+| [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939) / [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890) / [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) / [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) | AI / jr-araque | Preserve per-success import lifecycle telemetry | `f401ceb`; emit on successes only |
 | [T13](https://github.com/elastic/kibana/pull/275695#discussion_r3569884511)–[T15](https://github.com/elastic/kibana/pull/275695#discussion_r3570078935) | banderror | Remove flag/parallel path; reuse `importRules` | Single unconditional client path |
-| [T16](https://github.com/elastic/kibana/pull/275695#discussion_r3570087843) / [T21](https://github.com/elastic/kibana/pull/275695#discussion_r3570263078) | banderror | Pass complete change-tracking payload from route | Route owns action + metadata; forwarded through pipeline |
-| [T18](https://github.com/elastic/kibana/pull/275695#discussion_r3570188905) | banderror | Decompose implementation | Focused helper modules at current head |
+| [T16](https://github.com/elastic/kibana/pull/275695#discussion_r3570087843) / [T21](https://github.com/elastic/kibana/pull/275695#discussion_r3570263078) | banderror | Pass complete change-tracking payload from route | Route owns action + metadata; create and overwrite forward verbatim (`d634e1413d4a`) |
+| [T18](https://github.com/elastic/kibana/pull/275695#discussion_r3570188905) | banderror | Decompose implementation | Focused helpers; grouping inlined in `import_rules.ts` |
 | [T19](https://github.com/elastic/kibana/pull/275695#discussion_r3570203724) | banderror | Remove anemic importer abstraction | `RuleSourceImporter` deleted |
-| [T20](https://github.com/elastic/kibana/pull/275695#discussion_r3570233773) | banderror | Bound lookup clauses on low-spec ES | 250 outer cap + 1,024-floor regression test |
+| [T20](https://github.com/elastic/kibana/pull/275695#discussion_r3570233773) | banderror | Bound lookup clauses on low-spec ES | 200 outer cap + 1,024-floor regression test |
 | [T24](https://github.com/elastic/kibana/pull/275695#discussion_r3637352453) | AI | Wire the shared rules-client mock | Subject receives the stubbed/asserted `rulesClient` |
+| [T25](https://github.com/elastic/kibana/pull/275695#discussion_r3689533705) | jr-araque | Consider parallel legacy/bulk implementations | Intentionally not adopted; replied and resolved |
+| [T29](https://github.com/elastic/kibana/pull/275695#discussion_r3831960275) | jr-araque | Pass `prebuiltRuleAssetClient` into `overwriteRules` | `e4b032d`; thread resolved |
+| [T30](https://github.com/elastic/kibana/pull/275695#discussion_r3832002134) | jr-araque | Fold grouping into validation | Inlined into `import_rules.ts` (`6db9ca36adb1`) |
 
 ---
 
@@ -176,34 +154,28 @@ Small, concrete, unanswered. Not a blocker; do it when touching that file.
 
 | Thread | Who | Ask | Current reality |
 |---|---|---|---|
-| [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939), [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890), [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756), [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) | AI / jr-araque | Preserve per-success import lifecycle telemetry | Still missing at `e132f0064e65`. Reinaldo confirmed on T27 (2026-08-21). One code issue, four threads. |
-| [T17](https://github.com/elastic/kibana/pull/275695#discussion_r3570171000) + [review summary](https://github.com/elastic/kibana/pull/275695#pullrequestreview-4663885834) | banderror | Establish optimal batch size, including separate 2,000 enabled/disabled runs | 1,000-rule ECH/local evidence exists; explicit 2,000 matrix incomplete; constant still 250 |
-| [T25](https://github.com/elastic/kibana/pull/275695#discussion_r3689533705) | jr-araque | Consider parallel legacy/bulk implementations | Intentionally not adopted; conflicts with Georgii's accepted direction; reply still needed |
-| [T28](https://github.com/elastic/kibana/pull/275695#discussion_r3831923999) | jr-araque | Is one catch over all stages the desired contract? | Unanswered. Code still uses a single try/catch. Overwrite throw skips create; leftover rules share one error message. |
-| [T29](https://github.com/elastic/kibana/pull/275695#discussion_r3831960275) | jr-araque | Pass `prebuiltRuleAssetClient` into `overwriteRules` | Not done. Overwrite still constructs its own client. |
+| [T17](https://github.com/elastic/kibana/pull/275695#discussion_r3570171000) + [review summary](https://github.com/elastic/kibana/pull/275695#pullrequestreview-4663885834) | banderror | Establish optimal batch size, including separate 2,000 enabled/disabled runs | Constant is 200. 1,000-rule ECH/local evidence exists; explicit 2,000 matrix incomplete. Steven replied 2026-09-08. Waiting on Georgii. |
+| [T28](https://github.com/elastic/kibana/pull/275695#discussion_r3831923999) | jr-araque | Is one catch over all stages the desired contract? | Replied 2026-09-08: keep the single catch. No code change. Waiting on Reinaldo. |
 
 ---
 
-## GitHub resolve-flag mismatches
+## GitHub resolve-flag review
+
+Checked 2026-09-09 after your second resolve pass. 27 resolved · 3 still open.
 
 | Threads | GitHub flag | Verified reality |
 |---|---|---|
-| T1–T6 | Resolved | Correctly addressed |
-| T10, T11, T13–T16, T18–T21, T24 | Unresolved | Addressed in current code; safe to reply/resolve |
-| T7–T9, T23, T30 | Unresolved | Obsolete informational/self-notes or optional nit |
-| T12, T22, T26, T27 | Unresolved | Correctly open; same telemetry regression |
-| T17 | Unresolved | Correctly open/partial until perf acceptance or explicit deferral |
-| T25, T28 | Unresolved | Correctly awaiting a reply |
-| T29 | Unresolved | Correctly open; small cleanup |
+| [T1](https://github.com/elastic/kibana/pull/275695#discussion_r3503588107) [T2](https://github.com/elastic/kibana/pull/275695#discussion_r3503588112) [T3](https://github.com/elastic/kibana/pull/275695#discussion_r3503928659) [T4](https://github.com/elastic/kibana/pull/275695#discussion_r3504900068) [T5](https://github.com/elastic/kibana/pull/275695#discussion_r3527416923) [T6](https://github.com/elastic/kibana/pull/275695#discussion_r3530801309) [T7](https://github.com/elastic/kibana/pull/275695#discussion_r3537178641) [T8](https://github.com/elastic/kibana/pull/275695#discussion_r3537183970) [T9](https://github.com/elastic/kibana/pull/275695#discussion_r3537192453) [T10](https://github.com/elastic/kibana/pull/275695#discussion_r3552390865) [T11](https://github.com/elastic/kibana/pull/275695#discussion_r3552390871) [T12](https://github.com/elastic/kibana/pull/275695#discussion_r3568818939) [T13](https://github.com/elastic/kibana/pull/275695#discussion_r3569884511) [T14](https://github.com/elastic/kibana/pull/275695#discussion_r3570058501) [T15](https://github.com/elastic/kibana/pull/275695#discussion_r3570078935) [T16](https://github.com/elastic/kibana/pull/275695#discussion_r3570087843) [T19](https://github.com/elastic/kibana/pull/275695#discussion_r3570203724) [T20](https://github.com/elastic/kibana/pull/275695#discussion_r3570233773) [T21](https://github.com/elastic/kibana/pull/275695#discussion_r3570263078) [T22](https://github.com/elastic/kibana/pull/275695#discussion_r3593160890) [T23](https://github.com/elastic/kibana/pull/275695#discussion_r3593361874) [T24](https://github.com/elastic/kibana/pull/275695#discussion_r3637352453) [T25](https://github.com/elastic/kibana/pull/275695#discussion_r3689533705) [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3821062056) [T29](https://github.com/elastic/kibana/pull/275695#discussion_r3831960275) [T30](https://github.com/elastic/kibana/pull/275695#discussion_r3832002134) | Resolved | Correctly addressed |
+| [T18](https://github.com/elastic/kibana/pull/275695#discussion_r3570188905) | Unresolved | Addressed in current code; safe to resolve |
+| [T17](https://github.com/elastic/kibana/pull/275695#discussion_r3570171000) | Unresolved | Correctly open until Georgii accepts 200 or the 2,000 matrix |
+| [T28](https://github.com/elastic/kibana/pull/275695#discussion_r3831923999) | Unresolved | Correctly awaiting Reinaldo's reply |
 
 ---
 
 ## Priority punch list
 
-1. **Restore successful-import lifecycle telemetry** and add create + overwrite tests that prove failures do not emit events. Reply on [T27](https://github.com/elastic/kibana/pull/275695#discussion_r3831784495) / [T26](https://github.com/elastic/kibana/pull/275695#discussion_r3689831756) and close all four duplicates.
-2. **Decide the performance acceptance boundary with Georgii.** Either run the requested 2,000 enabled/disabled matrix or link a follow-up ticket and get explicit acceptance of 250 for this PR.
-3. **Reply to Reinaldo on T25:** no parallel implementation because Georgii requested in-place replacement; point him at the helper-level decomposition.
-4. **Reply to Reinaldo on T28:** accept the single catch, or split stages so an overwrite/lookup throw does not skip create / stamp the same message on unrelated `rule_id`s.
-5. **Pass `ruleAssetsClient` into `overwriteRules` (T29)** when next touching that file.
-6. **Resolve addressed stale threads** T10, T11, T13–T16, T18–T21, and T24 after concise evidence replies.
-7. **Resolve obsolete author notes** T7–T9 and T23. T30 is optional.
+1. **Decide the performance acceptance boundary with Georgii (T17).** Constant is 200. Either run the requested 2,000 enabled/disabled matrix or get explicit acceptance of 200 for this PR.
+2. **Wait on Reinaldo for T28**, or resolve if the 2026-09-08 reply is treated as closed.
+3. **Resolve addressed stale threads** T10, T11, T13, T14, T16, T18–T21, T24, and T30.
+4. **Resolve obsolete author notes** T7–T9 and T23.
+5. **Mark the PR ready for review** once T17 is settled (Georgii drafted it on 2026-09-08).
