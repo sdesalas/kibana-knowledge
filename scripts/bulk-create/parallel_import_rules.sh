@@ -16,7 +16,7 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/.env.sh}"
-IMPORT_FILE="${IMPORT_FILE:-${SCRIPT_DIR}/../../data/rules-import/1000disabled-rules.ndjson}"
+IMPORT_FILE="${IMPORT_FILE:-${SCRIPT_DIR}/../../data/rules-import/1000enabled-rules.ndjson}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "env file not found: ${ENV_FILE}" >&2
@@ -43,13 +43,10 @@ fi
 DELETE_PATH="/api/detection_engine/rules/_bulk_action?dry_run=false"
 DELETE_BODY='{"action":"delete","query":""}'
 DELETE_API_VERSION='2023-10-31'
-DELETE_BUILD_NUMBER='102774'
 
 IMPORT_PATH="/api/detection_engine/rules/_import?overwrite=true&overwrite_exceptions=true&overwrite_action_connectors=true"
 IMPORT_API_VERSION='2023-10-31'
-IMPORT_BUILD_NUMBER='102936'
 
-KBN_VERSION='9.6.0-SNAPSHOT'
 POST_DELETE_WAIT_SECS=10
 
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
@@ -75,8 +72,7 @@ hit_json() {
   local path_suffix="$4"
   local body="$5"
   local api_version="$6"
-  local build_number="$7"
-  local summary_file="$8"
+  local summary_file="$7"
 
   if [[ -z "$url" || "$url" == ".." ]]; then
     echo "[$label] SKIPPED (URL not configured)"
@@ -104,8 +100,7 @@ hit_json() {
     -H 'accept-language: en-US,en;q=0.9,es;q=0.8' \
     -H 'content-type: application/json' \
     -H "elastic-api-version: ${api_version}" \
-    -H "kbn-build-number: ${build_number}" \
-    -H "kbn-version: ${KBN_VERSION}" \
+    -H 'kbn-xsrf: true' \
     -H "origin: ${origin}" \
     -H 'priority: u=1, i' \
     -H "referer: ${referer}" \
@@ -171,8 +166,7 @@ hit_import() {
     -H 'accept: */*' \
     -H 'accept-language: en-US,en;q=0.9,es;q=0.8' \
     -H "elastic-api-version: ${IMPORT_API_VERSION}" \
-    -H "kbn-build-number: ${IMPORT_BUILD_NUMBER}" \
-    -H "kbn-version: ${KBN_VERSION}" \
+    -H 'kbn-xsrf: true' \
     -H "origin: ${origin}" \
     -H 'priority: u=1, i' \
     -H "referer: ${referer}" \
@@ -229,7 +223,7 @@ run_delete_in_parallel() {
 
     hit_json "$label" "$url" "$auth" \
       "$DELETE_PATH" "$DELETE_BODY" \
-      "$DELETE_API_VERSION" "$DELETE_BUILD_NUMBER" "$sf" &
+      "$DELETE_API_VERSION" "$sf" &
     pids+=($!)
   done
 

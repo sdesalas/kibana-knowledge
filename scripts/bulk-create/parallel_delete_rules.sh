@@ -35,9 +35,6 @@ fi
 DELETE_PATH="/api/detection_engine/rules/_bulk_action?dry_run=false"
 DELETE_BODY='{"action":"delete","query":""}'
 DELETE_API_VERSION='2023-10-31'
-DELETE_BUILD_NUMBER='102774'
-
-KBN_VERSION='9.6.0-SNAPSHOT'
 
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
 
@@ -86,8 +83,7 @@ hit_delete() {
     -H 'accept-language: en-US,en;q=0.9,es;q=0.8' \
     -H 'content-type: application/json' \
     -H "elastic-api-version: ${DELETE_API_VERSION}" \
-    -H "kbn-build-number: ${DELETE_BUILD_NUMBER}" \
-    -H "kbn-version: ${KBN_VERSION}" \
+    -H 'kbn-xsrf: true' \
     -H "origin: ${origin}" \
     -H 'priority: u=1, i' \
     -H "referer: ${referer}" \
