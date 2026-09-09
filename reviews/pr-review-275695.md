@@ -69,7 +69,7 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 - `logic/import/rule_source_importer/*` — package install moved to the route; asset/installed-rule fetches inlined.
 
 **Tests**
-- New/rewritten DRC + helper + orchestrator tests. `import_rule.test.ts` and `rule_source_importer.test.ts` deleted. Route suite is still `describe.skip`.
+- New/rewritten DRC + helper + orchestrator tests. `import_rule.test.ts` and `rule_source_importer.test.ts` deleted. Route suite rewritten and unskipped in [c906dd4](https://github.com/elastic/kibana/commit/c906dd4cbb2b) — five tests, `route.ts` wiring only. See review activity 9.
 
 ---
 
@@ -106,7 +106,7 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 
 1. **Whole-batch schedule-limit fail.** `bulkCreateRules` sums every **enabled** interval, then throws before any writes if the circuit breaker trips — the whole chunk fails, including disabled rules in that chunk. Mixed files are possible. Customer fix is the same as today’s cap hit: delete the uploaded rules in the space, disable some, re-upload. LOW PRIORITY. Extra engineering (split/retry/alerting) has questionable ROI. Instead, dropping the batch 250->200 (already wanted) mitigates the blast radius. See review activity 5.
 2. **Exception-list warnings hide the real error.** `checkRuleExceptionReferences` pushes a warning **and** keeps the rule importable. The outer catch builds `responded` from every error `ruleId`. If `bulkCreateRules` later throws, that rule does not get the real failure message. The client sees “Reference has been removed” and `success_count: 0` — the warning implies the import continued. Why this is risky: dangling exception list + schedule-limit/authz throw in the same chunk.
-3. ~~**No feature flag, FTR dependency not checked off.** Create-path contract changes go out to every import on merge. Unit tests cover the new pipeline; the route suite is still `describe.skip`; the PR’s own checklist still has FTR + manual + perf matrix open.~~ STALE — FTR ([#280553](https://github.com/elastic/kibana/pull/280553)) landed 2026-07-27, is on this branch, and has been running in CI. See review activity 4.
+3. ~~**No feature flag, FTR dependency not checked off.** Create-path contract changes go out to every import on merge. Unit tests cover the new pipeline; the PR’s own checklist still has FTR + manual + perf matrix open.~~ STALE — FTR ([#280553](https://github.com/elastic/kibana/pull/280553)) landed 2026-07-27, is on this branch, and has been running in CI. See review activity 4.
 4. **`RULE_IMPORT_BULK_CREATE_BATCH_SIZE` is provisional (200).** Raising it toward 500 without splitting the KQL find reintroduces a whole-batch ES clause failure. The helper test guards the current constant, not a future bump at the call site.
 5. **Create-error pairing can drop a row.** If `successfulIds` / `errors[].rule.id` don’t match the uuid map, `createRules` skips the row and does not throw, so the outer catch won’t backfill it. Unlikely if alerting keeps echoing `options.id`; there’s no test that the map is complete after a bulk response.
 6. **Per-rule conversion isolation is untested on this path.** `createRules` wraps `applyRuleDefaults` / convert in try/catch so one bad rule shouldn’t fail the batch. `bulkCreatePrebuiltRules` has a test for that; this suite doesn’t.
@@ -120,7 +120,7 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 2. **(Risk 2)** Should the outer catch treat exception-list warnings as non-terminal, so a later whole-batch throw still attaches the real error?
 3. **(Risk 4)** Is 200 locked enough to merge, or does this wait on the 100/200/250/300/500 × 1000/2000 × enabled/disabled matrix in the PR?
 4. ~~**(Risk 3)** Has [#280553](https://github.com/elastic/kibana/pull/280553) / [#280531](https://github.com/elastic/kibana/issues/280531) actually landed on `main` and been re-run against this branch? The checklist says no.~~ STALE — yes, landed, merged into this branch, running in CI.
-5. The skipped route test still expects ML authz to come back as **403**; the orchestrator maps every non-conflict error to **400** (same as `main`). If that suite gets unskipped, that case will fail — is 400 the public contract?
+5. ~~The skipped route test still expects ML authz to come back as **403**; the orchestrator maps every non-conflict error to **400** (same as `main`). If that suite gets unskipped, that case will fail — is 400 the public contract?~~ Closed — 400 is the live contract (since #212761). FTR `import_rules_ess.ts` asserts it. See review activity 9.
 
 ---
 
@@ -161,7 +161,7 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 - Client, pipeline, `createRules`, and `overwriteRules` all return `{ successes, errors }` instead of a mixed `responses` / union array. Order does not matter — HTTP is `success_count` + an errors bag. Exception-list warnings can appear in **both** lists (warning + created rule); that matches `main`.
 - Orchestrator maps successes to `{ rule_id }` only. Public import response is unchanged. Unused `ImportRegular` / `isImportRegular` / `isBulkError` deleted from `detection_engine/routes/utils.ts`. `isCustomizedPrebuiltRule` widened to `Pick<RuleResponse, 'rule_source'>` so telemetry doesn’t need a full `RuleResponse`.
 
-4. **Risk 3 — FTR checkbox is a stale PR description.** [#280553](https://github.com/elastic/kibana/pull/280553) merged 2026-07-27 (`1e717b1aee01`); [#280531](https://github.com/elastic/kibana/issues/280531) is the closed audit issue, not a second PR. Both are on `main` and already in this branch (ancestor of HEAD; last merge from `main` today). The import FTR files (`import_rules_at_batch_boundary`, overwrite-at-boundary, concurrent, by-type, identity) are here. The unchecked “Land / verify FTR…” box is leftover. Manual + perf checkboxes are still open; route Jest suite is still `describe.skip`.
+4. **Risk 3 — FTR checkbox is a stale PR description.** [#280553](https://github.com/elastic/kibana/pull/280553) merged 2026-07-27 (`1e717b1aee01`); [#280531](https://github.com/elastic/kibana/issues/280531) is the closed audit issue, not a second PR. Both are on `main` and already in this branch (ancestor of HEAD; last merge from `main` today). The import FTR files (`import_rules_at_batch_boundary`, overwrite-at-boundary, concurrent, by-type, identity) are here. The unchecked “Land / verify FTR…” box is leftover. Manual + perf checkboxes are still open. Route Jest suite is no longer skipped — see review activity 9.
 
 5. **Risk 1 — mixed files, customer remediation, don’t over-build.**
 
@@ -189,8 +189,16 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 - Confirmed **Risk 5** — no test that `successfulIds` / `errors[].rule.id` miss the uuid map (row dropped, catch does not backfill). [`create_rules.ts`](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/create_rules.ts) 106–125.
 - Confirmed **Risk 6** — no conversion-isolation test on this path. Sibling [`bulk_create_prebuilt_rules.test.ts:367`](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.bulk_create_prebuilt_rules.test.ts) has one.
 - **Risk 2** has no regression: exception warning then `bulkCreateRules` throw is untested, so the catch treating the warning as “already handled” is unchecked.
-- Route suite still `describe.skip` ([`route.test.ts:48`](x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.test.ts)); even unskipped it mocks `importRules`, so new route wiring (`ensureLatestRulesPackageInstalled`, `changeTracking`, `success_count`) has no unit test. **Q5** still live. FTR is the HTTP net.
 - No unit for overwrite `toggleRuleEnabledOnUpdate`. FTR `import_rules_with_overwrite.ts` covers it.
 - `allowMissingConnectorSecrets` is never asserted on the `bulkCreateRules` call.
 - Test name “prebuilt rule without a version is rejected before any lookup” is wrong — find/prebuilt already ran; it only skips create.
 
+9. **Route suite rewrite + ML-authz is 400, not 403.** [c906dd4](https://github.com/elastic/kibana/commit/c906dd4cbb2b). [PR comment on the deleted `describe.skip`](https://github.com/elastic/kibana/pull/275695#discussion_r3967795257).
+
+- Old skipped test swapped `importRule` throwing `HttpAuthzError` for `importRules` resolving `{ errors: [createRuleImportErrorObject(...)] }`. `importRule` is gone. `validateRulesToImport` catches `HttpAuthzError` and returns a per-rule error with no status (same swallow already on `main`). Orchestrator maps conflict → 409, everything else → **400**. Create/update/patch stay 403 because those routes let `HttpAuthzError` escape.
+- Pre-#212761 (`importRulesLegacy` → throw) produced per-rule **403**. Current path (FF on since March 2025, still `main`) is **400**. The skipped test’s 403 was leftover from `transformBulkError` reading `err.statusCode`. Restoring 403 would be a contract change. **Q5** closed.
+- Suite was skipped in [#212761](https://github.com/elastic/kibana/pull/212761) (Maxim) when the prebuilt-customization path became the default. It mocked `detectionRulesClient.importRules` plus Alerting `rulesClient`, Actions, ES, and ML authz. Conflict / overwrite / ML cases never left `security_solution` — they asserted mock output. Real code that ran was `route.ts` plus stream parse / dedupe / schema.
+- Unskip experiment: 14 failed / 3 passed. Passes never hit the new route wiring. Rewrote to five route-only unit tests: `.html` → 400; collaborator throw → 500; package install + `changeTracking` / overwrite / response shape; `allowMissingConnectorSecrets`; error-bucket concat. Jest **5 passed**.
+- Deleted cases mapped to existing FTR in `rule_import_export/` (and one prebuilt missing-`rule_id` FTR). Gaps: no 9999 FTR (10 + 8000 instead); custom missing `rule_id` message is now Zod, not `Required`; 3-rule overwrite-true batch is close, not exact. Exceptions/connectors envelope is in trial `import_rules.ts` — `returns the full import response shape on success`.
+- Added FTR `import_rules_ess.ts` — hunter imports ML + query; HTTP 200, ML `status_code: 400`, query still created. FTR **1 passing**.
+- Comment framing: saying the old suite “went beyond unit-test coverage of `route.ts`” overstates it. It *looked* like a pipeline suite. It tested mocks. FTR is the real multi-layer coverage.
