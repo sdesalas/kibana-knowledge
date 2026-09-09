@@ -3,7 +3,7 @@
 **Date:** 2026-09-08  
 **Focus:** `rulesClient.bulkCreateRules` (enabled-rule create / import create path). Not `bulkUpdateRules`.  
 **Context:** Local grant timing + whether we still need [elastic/elasticsearch#157410](https://github.com/elastic/elasticsearch/pull/157410) (`_bulk_grant`).  
-**Related:** [elastic/kibana#273675](https://github.com/elastic/kibana/issues/273675).
+**Related:** [elastic/kibana#273675](https://github.com/elastic/kibana/issues/273675).  
 
 **Comments this note cross-checks:**
 
@@ -36,7 +36,7 @@ bulkCreateRules.runBatch
   → bulkCreateRulesSo
 ```
 
-`pMap` site (the one linked in the 2026-09-08 comment):
+[`pMap` site](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts#L283-L300) (the one linked in the 2026-09-08 comment):
 
 ```283:300:x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
   await withSpan({ name: 'bulkCreateRules.runBatch.pMap.prepareRule', type: 'rules' }, () =>
@@ -51,11 +51,11 @@ bulkCreateRules.runBatch
   );
 ```
 
-`API_KEY_GENERATE_CONCURRENCY = 50` in `alerting/.../rules_client/common/constants.ts`.
+[`API_KEY_GENERATE_CONCURRENCY = 50`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/rules_client/common/constants.ts#L25) in `alerting/.../rules_client/common/constants.ts`.
 
-Disabled rules skip grant (`prepareRule` only calls `createNewAPIKeySet` when `data.enabled`).
+Disabled rules skip grant ([`prepareRule`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts#L74-L81) only calls [`createNewAPIKeySet`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/create_new_api_key_set.ts#L14-L45) when `data.enabled`).
 
-Factory does not pass `refresh`:
+Factory does not pass `refresh` ([`createAPIKey`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.ts#L446-L450)):
 
 ```ts
 // alerting/.../rules_client_factory.ts
@@ -72,7 +72,7 @@ JS client: `refresh` is an optional query param on `SecurityGrantApiKeyRequest`.
 
 ## ES default when `refresh` is omitted
 
-`RestGrantApiKeyAction.innerPrepareRequest`:
+[`RestGrantApiKeyAction.innerPrepareRequest`](https://github.com/elastic/elasticsearch/blob/76f071d9bbcbd93cbabc782bc4d886eb1e7e268d/x-pack/plugin/security/src/main/java/org/elasticsearch/xpack/security/rest/action/apikey/RestGrantApiKeyAction.java#L126-L130):
 
 ```java
 final String refresh = request.param("refresh");
@@ -82,6 +82,8 @@ if (refresh != null) {
     grantRequest.setRefreshPolicy(ApiKeyService.defaultCreateDocRefreshPolicy(settings));
 }
 ```
+
+[`ApiKeyService.defaultCreateDocRefreshPolicy`](https://github.com/elastic/elasticsearch/blob/76f071d9bbcbd93cbabc782bc4d886eb1e7e268d/x-pack/plugin/security/src/main/java/org/elasticsearch/xpack/security/authc/ApiKeyService.java#L2885-L2887):
 
 ```
 // ApiKeyService.defaultCreateDocRefreshPolicy
@@ -101,6 +103,8 @@ Working-tree only, not staged:
 
 ```ts
 // security/.../authentication/api_keys/api_keys.ts  grantAsInternalUser
+// local probe only — main still calls grantApiKey(params) with no refresh:
+// https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.ts#L329
 this.clusterClient.asInternalUser.security.grantApiKey({
   ...params,
   refresh: false,
@@ -150,6 +154,8 @@ TM will not fail. Not because we must wait 1s — because **auth never needed th
 
 ### Auth is GET, not search
 
+[`ApiKeyService.loadApiKeyDoc`](https://github.com/elastic/elasticsearch/blob/76f071d9bbcbd93cbabc782bc4d886eb1e7e268d/x-pack/plugin/security/src/main/java/org/elasticsearch/xpack/security/authc/ApiKeyService.java#L1289):
+
 ```java
 // ApiKeyService.loadApiKeyDoc
 final GetRequest getRequest = client.prepareGet(SECURITY_MAIN_ALIAS, docId)
@@ -163,7 +169,7 @@ Refresh only matters for query/list API keys, invalidate-by-query, anything that
 
 ### First TM fire on bulk create
 
-`bulkCreateRules` → `bulkScheduleTask` → `taskManager.bulkSchedule`. Alerting does **not** set `runAt`. TM does:
+`bulkCreateRules` → [`bulkScheduleTask`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts#L321) → [`taskManager.bulkSchedule`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts#L170-L176). Alerting does **not** set `runAt`. TM does:
 
 ```ts
 // task_manager/.../task_scheduling.ts  bulkSchedule
@@ -176,6 +182,8 @@ if (enabled) {
       : addJitter(modifiedTask.schedule?.interval) ?? {};
 }
 ```
+
+[`addJitter`](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts#L426-L437):
 
 ```ts
 const addJitter = (interval?: string) => {
@@ -207,7 +215,7 @@ That is the “random within 5 minute span” / “more like 5–10s” in the 2
 
 ---
 
-## Implications for `#157410`
+## Implications for [elasticsearch#157410](https://github.com/elastic/elasticsearch/pull/157410)
 
 For `bulkCreateRules` / import create of enabled rules:
 
@@ -222,13 +230,13 @@ A proper Kibana change would pass `refresh` through `grantAsInternalUser` (or on
 
 ## Files
 
-| What | Where |
+| What | Where (pinned to latest `main`) |
 | --- | --- |
-| `pMap` 50 + `prepareRule` | `alerting/.../bulk_create/bulk_create_rules.ts` |
-| Grant if enabled | `alerting/.../bulk_create/utils.ts` `prepareRule` |
-| Key mint | `alerting/.../rules_client/lib/create_new_api_key_set.ts` |
-| `createAPIKey` → grant | `alerting/.../rules_client_factory.ts` |
-| ES grant call | `security/.../authentication/api_keys/api_keys.ts` |
-| TM jitter | `task_manager/.../task_scheduling.ts` `bulkSchedule` / `addJitter` |
-| ES REST default refresh | `elasticsearch/.../RestGrantApiKeyAction.java` |
-| ES policy + auth GET | `elasticsearch/.../ApiKeyService.java` (`defaultCreateDocRefreshPolicy`, `loadApiKeyDoc`) |
+| `pMap` 50 + `prepareRule` | [bulk_create_rules.ts#L283-L300](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts#L283-L300) |
+| Grant if enabled | [utils.ts#L74-L81](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts#L74-L81) |
+| Key mint | [create_new_api_key_set.ts#L14-L45](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/create_new_api_key_set.ts#L14-L45) |
+| `createAPIKey` → grant | [rules_client_factory.ts#L446-L450](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/alerting/server/rules_client_factory.ts#L446-L450) |
+| ES grant call (no `refresh`) | [api_keys.ts#L329](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/security/server/authentication/api_keys/api_keys.ts#L329) |
+| TM jitter | [bulkSchedule#L170-L176](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts#L170-L176), [addJitter#L426-L437](https://github.com/elastic/kibana/blob/979640f7101572147245e9893aadd5fb07163d9f/x-pack/platform/plugins/shared/task_manager/server/task_scheduling.ts#L426-L437) |
+| ES REST default refresh | [RestGrantApiKeyAction.java#L126-L130](https://github.com/elastic/elasticsearch/blob/76f071d9bbcbd93cbabc782bc4d886eb1e7e268d/x-pack/plugin/security/src/main/java/org/elasticsearch/xpack/security/rest/action/apikey/RestGrantApiKeyAction.java#L126-L130) |
+| ES policy + auth GET | [defaultCreateDocRefreshPolicy#L2885-L2887](https://github.com/elastic/elasticsearch/blob/76f071d9bbcbd93cbabc782bc4d886eb1e7e268d/x-pack/plugin/security/src/main/java/org/elasticsearch/xpack/security/authc/ApiKeyService.java#L2885-L2887), [loadApiKeyDoc#L1289](https://github.com/elastic/elasticsearch/blob/76f071d9bbcbd93cbabc782bc4d886eb1e7e268d/x-pack/plugin/security/src/main/java/org/elasticsearch/xpack/security/authc/ApiKeyService.java#L1289) |
