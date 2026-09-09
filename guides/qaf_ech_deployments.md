@@ -43,9 +43,25 @@ Flags and env vars are the same knobs. `create --help` shows the mapping (`--pla
 One-time, from the upstream install guide:
 
 - Python 3.11 and `qaf` on `PATH` (`uv tool install --python 3.11 git+https://github.com/elastic/qaf`). Check with `qaf version`.
-- Vault: `export VAULT_ADDR=https://secrets.elastic.co` then `vault login -method oidc`.
-- Elastic Cloud API keys in `~/.elastic/cloud.json` (or `EC_SECRETS_FILE`). You need a key for the environment you will use (`production`, `staging`, or `qa`).
+- Auth: Vault login **and** Elastic Cloud API keys (see below). The user runs these; an agent only suggests the steps if something fails.
 - A plan file at `~/.qaf/config/cloud_plans/<plan>.yml`. QAF loads `EC_PLAN=foo` as `foo.yml`.
+
+### Auth — user runs it, agent suggests it
+
+Two separate credentials. Logging into Vault does **not** refresh Cloud API keys. QAF locally reads `~/.elastic/cloud.json` (or `EC_SECRETS_FILE`); it does not use the Vault token for ECH calls. `qaf vault` preload will also skip if `cloud.json` already exists, so it will not fix a stale key.
+
+The user does both of these in their own terminal / editor. If an agent hits a 401 or missing secrets, it **tells the user these steps** and waits — it must not read Vault, copy tokens, write `cloud.json`, or pass `EC_API_KEY` around.
+
+1. Vault (OIDC in a real terminal; it opens a browser):
+
+```bash
+export VAULT_ADDR=https://secrets.elastic.co
+vault login -method oidc
+```
+
+2. Elastic Cloud API keys in `~/.elastic/cloud.json`. You need a key for the environment you will use (`production`, `staging`, or `qa`). Create / copy a production key from [cloud.elastic.co/organization/keys](https://cloud.elastic.co/organization/keys) and put it under `api_key.production`.
+
+If `qaf elastic-cloud deployments list` 401s (`The supplied authentication is invalid`), the key in `cloud.json` is stale. Same fix: suggest the user update it from that page, then retry `list`. Do not treat a 401 as “the deployment is gone” — gone is a 410 on `describe`.
 
 QAF defaults that will surprise you if you omit them:
 
@@ -204,7 +220,12 @@ qaf elastic-cloud deployments describe <deployment_name>
 qaf elastic-cloud deployments manage <deployment_name>
 ```
 
-`describe` is enough to grab the Kibana URL and confirm the build hash matches the image you asked for. If `list` still shows a name but `describe` fails, QAF’s register is stale — the cluster was already shut down in ECH (or never finished creating).
+`describe` is enough to grab the Kibana URL and confirm the build hash matches the image you asked for.
+
+| What you see | Meaning |
+| --- | --- |
+| `list` / `describe` 401 (`supplied authentication is invalid`) | Stale Cloud API key. Suggest the Auth steps above; wait for the user. Not a deleted cluster. |
+| `list` shows the name, `describe` 410 (`Deleted resource`) or “not healthy” with version `?` | QAF register is stale — already shut down in ECH (or never finished creating). |
 
 ### Finished with a live cluster
 
