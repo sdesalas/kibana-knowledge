@@ -5,6 +5,29 @@
       {
         "command": "./hooks/before-mcp-intent.sh",
         "failClosed": false
+      },
+      {
+        "command": "./hooks/permission-tink.sh",
+        "failClosed": false
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "./hooks/permission-tink.sh",
+        "failClosed": false
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "./hooks/permission-tink.sh",
+        "matcher": "Shell|WebSearch|WebFetch|CallDynamicTool|FetchMcpResource|GenerateImage",
+        "failClosed": false
+      }
+    ],
+    "stop": [
+      {
+        "command": "./hooks/stop-tink.sh",
+        "failClosed": false
       }
     ]
   }
