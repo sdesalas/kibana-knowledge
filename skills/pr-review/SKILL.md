@@ -151,7 +151,7 @@ What this code assumes that isn't visible in the diff. Be concrete. Categories t
 One bullet per assumption. Only list real ones — don't pad.
 
 ### Risks
-What's most likely to break, ordered by severity. Give each a one-line "why this is risky" justification. Categories that deserve extra scrutiny: schema migrations, shared utility changes, authentication/authorization, anything touching persisted state, anything removing validation, anything changing public API.
+What's most likely to break, numbered and ordered by severity. Give each a one-line "why this is risky" justification. Categories that deserve extra scrutiny: schema migrations, shared utility changes, authentication/authorization, anything touching persisted state, anything removing validation, anything changing public API.
 
 ### Open questions
 Things you are uncertain about after reading the diff *and* the surrounding code — phrased as questions the user could ask the PR author. These should be questions a thoughtful reviewer would genuinely want answered, not formalities. If there are none, say so.
@@ -159,8 +159,8 @@ Things you are uncertain about after reading the diff *and* the surrounding code
 ### Notes for your codebase map
 A short summary (3–6 bullets) of what this PR reveals about how the codebase works — architectural patterns, conventions, quirks, or the role of specific components. Written so the user can paste it into their running notes doc. Focus on what's *newly learned*, not a recap of the PR.
 
-### Review activities
-This is a running log populated during the review session — not written upfront. Leave this section **empty** in the initial output, unless some investigation work has been carried out in the current session (see Follow-up investigations).
+### Follow-up Review Activities
+The reviewer's log, not the agent's. Leave this section **empty** in the initial output. Only append when the user asks you investigate something further (see Follow-up investigations).
 
 ## Tone and calibration
 
@@ -185,11 +185,13 @@ Where `<number>` is the PR number (e.g. `pr-review-1234.md`). If the PR has no n
 
 ## Follow-up investigations
 
-When the user asks you to dig further into something related to a review already saved to file — checking a code path, verifying an assumption, confirming a local test result, exploring a risk — append a new numbered entry to the **Review activities** section of that review file.
+When the user asks you to dig further into something related to a review already saved to file — checking a code path, verifying an assumption, confirming a local test result, exploring a risk — append a new numbered entry to the **Follow-up Review Activities** section of that review file.
 
 Each entry should be a short paragraph followed by bulletpoints: what was investigated and what was found (or confirmed). Do not rewrite or reorganise existing entries.
 
 This keeps a faithful log of what was actually explored during the session, so the review file reflects not just the initial analysis but the full conversation.
+
+You may cross out risks or open questions by striking them through following a single word status in caps. Ie (STALE) or (LOW PRIORITY).
 
 ## Anti-patterns
 
@@ -221,14 +223,14 @@ For a small PR that adds rate-limiting middleware to an API endpoint:
 >
 > **Assumptions:** Redis is available at request time — there's no fallback if the limiter raises. The existing `RateLimiter` key scheme uses client IP from `X-Forwarded-For`, so this assumes the upstream proxy is setting that header correctly (verified in `middleware/proxy_headers.py`).
 >
-> **Risks:** If Redis is down, all webhook POSTs will 500 rather than degrading open. Worth asking whether that's intentional — other endpoints using `RateLimiter` appear to `try/except` around it.
+> **Risks:**
+>
+> 1. If Redis is down, all webhook POSTs will 500 rather than degrading open. Worth asking whether that's intentional — other endpoints using `RateLimiter` appear to `try/except` around it.
 >
 > **Open questions:** Is 100/min the right number? Couldn't find prior discussion in commit history. Should failed-open vs failed-closed behavior match other endpoints?
 >
 > **Notes for your codebase map:** Rate limiting is centralized in `RateLimiter` (Redis-backed). Configured per-route in `config/rate_limits.py`. Existing convention is to fail open on Redis errors — this PR diverges from that.
 >
-> **Review activities:**
+> **Follow-up Review Activities:**
 >
-> 1. **Checked Redis failure behavior.** Read `RateLimiter.__call__` in `middleware/rate_limiter.py:42–67` — no `try/except` around the Redis call, confirming the PR will 500 on Redis errors. Checked three other endpoints using `RateLimiter` — all three wrap it in `try/except` and return `200`. This PR diverges from the convention; raised in Open questions.
->
-> 2. **Verified `X-Forwarded-For` handling.** Traced the header through `middleware/proxy_headers.py:23` — reads the leftmost IP, falling back to `request.remote_addr` when the header is absent (direct connections). Assumption in main analysis holds.
+> -- LEFT EMPTY INTENTIONALLY --
