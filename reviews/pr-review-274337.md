@@ -69,7 +69,7 @@ The plan’s main path, checked against the code:
 
 ### Open questions
 
-- Should the auto-select and +N-badge scenarios be rewritten to the shipped UI (first diffable item; “N changes” count, no field badges), or is the UI still supposed to change before 9.5?
+- ~~Should the auto-select and +N-badge scenarios be rewritten to the shipped UI (first diffable item; “N changes” count, no field badges), or is the UI still supposed to change before 9.5?~~ (STALE) 9.5 GA’d — shipped UI is the source of truth.
 - Is restore of `enabled` intentionally excluded? If yes, the restore Gherkin should say “all fields except `enabled`” (and deleted recreate stays disabled).
 - When you say “restore to a non-existent revision,” do you mean unknown `changeId` (that’s the 404 the API already has) or a `revision` number that isn’t in history (that’s not how the API works)?
 - Are pre-tracking-rule cases still a 9.5 must-test, or only an upgrade-from-pre-9.5 concern? They’re a large chunk of the plan and I didn’t find existing tests for them.
@@ -88,3 +88,19 @@ The plan’s main path, checked against the code:
 - Test-plan home: `docs/testing/test_plans/`, owned per subdomain in CODEOWNERS. This one sits with rule management.
 
 ### Follow-up Review Activities
+
+1. **Compared the plan to what’s coded now that 9.5 has GA’d.** Backend mostly matches shipped code and is already covered by FTR. Leftover delta: stale UI/Gherkin plus e2e the plan still asks for. No Scout/Cypress for the History page.
+
+2. **Inline comments** (pending review [5181813426](https://github.com/elastic/kibana/pull/274337#pullrequestreview-5181813426)):
+
+   1. L580 — add edge-case: unreadable snapshot skipped, rest of history still loads
+   2. L290 — row shows an "N changes" count, not field names
+   3. L293–L307 — auto-select the first diffable item, not the newest row
+   4. L348–L359 — rewrite the `+N` badge scenario to an "N changes" count
+   5. L383 — add: enabled state should be unchanged
+   6. L453 — restore identity is `changeId`; 404 is a missing changeId
+   7. L459 — When-clause: restore with a changeId not in history
+   8. L473 — recreate from the historical snapshot as disabled, and return 200
+   9. L531 — typo: `captures` → `captured`
+   10. L532 — feature-off also 403s restore
+   11. L722–L737 — restore should not require the enable/disable privilege; drop that sentence and the `enabled` row
