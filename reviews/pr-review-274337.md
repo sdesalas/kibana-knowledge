@@ -56,26 +56,26 @@ The plan’s main path, checked against the code:
 
 ### Risks
 
-- **Restore success criteria over-claim “full snapshot”.** `restore_rule_state.ts` sets `enabled: existingRule.enabled`. `restore_deleted_rule.ts` always creates `enabled: false`. The Gherkin “current configuration should match that revision’s snapshot” will fail if someone asserts `enabled`.
-- **Auto-select scenario is wrong.** Plan: newest item is auto-selected. Code + Jest: first *diffable* item; a timeline of only `rule_enable` / `rule_disable` leaves nothing selected (`changes_history.test.tsx`).
-- **Timeline row UI doesn’t match the plan.** Plan wants changed-field name badges plus a “+N” overflow, and “each row should show … changed field names.” Shipped row shows date, user, a “N changes” count, and the action/revision/version badge. I couldn’t find a +N field-badge in the timeline components. Likely leftover from an older Figma.
-- **Feature-off scenario is incomplete.** Disabled advanced setting also 403s restore (already tested in `change_tracking_disabled.ts`). The UI is double-gated by the experimental flag, which the plan never mentions.
-- **Upgrade / forwards-backwards compat is out of scope with no reason.** History is a persisted data stream; snapshots are stored as unmapped JSON and never migrated (`get_rule_history.ts` comments exactly this risk). Worth either a deliberate “we accept silent drop of unhydratable snapshots” note or a small upgrade scenario.
+- ~~**Restore success criteria over-claim “full snapshot”.** `restore_rule_state.ts` sets `enabled: existingRule.enabled`. `restore_deleted_rule.ts` always creates `enabled: false`. The Gherkin “current configuration should match that revision’s snapshot” will fail if someone asserts `enabled`.~~ (ADDRESSED) Maxim added “enabled state should be unchanged” and “recreate … as disabled”.
+- ~~**Auto-select scenario is wrong.** Plan: newest item is auto-selected. Code + Jest: first *diffable* item; a timeline of only `rule_enable` / `rule_disable` leaves nothing selected (`changes_history.test.tsx`).~~ (ADDRESSED) Rewritten to newest *diffable* item.
+- ~~**Timeline row UI doesn’t match the plan.** Plan wants changed-field name badges plus a “+N” overflow, and “each row should show … changed field names.” Shipped row shows date, user, a “N changes” count, and the action/revision/version badge. I couldn’t find a +N field-badge in the timeline components. Likely leftover from an older Figma.~~ (ADDRESSED) Rows and the many-fields scenario now say “N changes”.
+- **Feature-off scenario is incomplete.** Disabled advanced setting also 403s restore (already tested in `change_tracking_disabled.ts`). ~~The restore 403 is missing from the plan.~~ (ADDRESSED) The UI is still double-gated by the experimental flag, which the plan never mentions.
+- ~~**Upgrade / forwards-backwards compat is out of scope with no reason.** History is a persisted data stream; snapshots are stored as unmapped JSON and never migrated (`get_rule_history.ts` comments exactly this risk). Worth either a deliberate “we accept silent drop of unhydratable snapshots” note or a small upgrade scenario.~~ (ADDRESSED) New unreadable-snapshot skip scenario. Compat stays out of scope.
 - **API automation looks like net-new work, but most of it already exists** in `change_tracking.ts`, `change_tracking_disabled.ts`, and `restore_rule_from_changes_history.ts` (create/update/import/install/upgrade/duplicate/revert, pagination + `old_values` lookback, deleted-rule history, restore custom/prebuilt, 409 races, 404 missing changeId, write-privilege 403). Writing these again is wasted effort. The real hole is e2e/Scout — I found none.
 - **Capture table skips alerting actions** that terminology and the UI already treat as first-class (`rule_enable`, `rule_disable`, `rule_snooze`, `rule_unsnooze`, `rule_update_api_key`, `rule_delete`). There’s no “enable/disable is captured and shows the right badge” scenario.
 - **“Bulk edit” is underspecified.** Existing tests cover bulk *import / install / upgrade / duplicate* (`metadata.bulk_count`). I didn’t find a bulk-edit-tags/index-patterns/schedule capture test. If “bulk edit” means the Rule Management bulk actions, that’s still an open gap; if it means those other bulks, the wording will send people the wrong way.
 - **Deleted-rule restore is API-only in the plan.** No UI path is specified (and Rule Details is gone after delete), so an e2e for “Restoring a deleted rule” would be inventing a surface.
-- **Field-level RBAC scenario is accurate** — `validateFieldWritePermissions` treats a non-null `enabled` as gated, and restore always passes `enabled`. Good. Just don’t also claim restore writes the snapshot’s enabled value (it doesn’t).
+- ~~**Field-level RBAC scenario is accurate** — `validateFieldWritePermissions` treats a non-null `enabled` as gated, and restore always passes `enabled`. Good. Just don’t also claim restore writes the snapshot’s enabled value (it doesn’t).~~ (ADDRESSED) Intended-contract comment landed: enable/disable privilege sentence and `enabled` row removed. Shipped API may still pass `enabled` — that’s a product/API follow-up, not a plan miss anymore.
 
 ### Open questions
 
-- ~~Should the auto-select and +N-badge scenarios be rewritten to the shipped UI (first diffable item; “N changes” count, no field badges), or is the UI still supposed to change before 9.5?~~ (STALE) 9.5 GA’d — shipped UI is the source of truth.
-- Is restore of `enabled` intentionally excluded? If yes, the restore Gherkin should say “all fields except `enabled`” (and deleted recreate stays disabled).
-- When you say “restore to a non-existent revision,” do you mean unknown `changeId` (that’s the 404 the API already has) or a `revision` number that isn’t in history (that’s not how the API works)?
+- ~~Should the auto-select and +N-badge scenarios be rewritten to the shipped UI (first diffable item; “N changes” count, no field badges), or is the UI still supposed to change before 9.5?~~ (STALE) 9.5 GA’d — shipped UI is the source of truth. Maxim applied the rewrite.
+- ~~Is restore of `enabled` intentionally excluded? If yes, the restore Gherkin should say “all fields except `enabled`” (and deleted recreate stays disabled).~~ (ADDRESSED)
+- ~~When you say “restore to a non-existent revision,” do you mean unknown `changeId` (that’s the 404 the API already has) or a `revision` number that isn’t in history (that’s not how the API works)?~~ (ADDRESSED)
 - Are pre-tracking-rule cases still a 9.5 must-test, or only an upgrade-from-pre-9.5 concern? They’re a large chunk of the plan and I didn’t find existing tests for them.
-- Should Feature availability also cover the experimental flag off, and restore-403 when the advanced setting is off?
+- ~~Should Feature availability also cover the experimental flag off, and restore-403 when the advanced setting is off?~~ (PARTIAL) Restore 403 is in. Experimental flag still unmentioned.
 - Do you want this plan to *index* existing integration tests (so “Implement tests” on the epic means e2e + the actual gaps), or is the intent to re-express everything from scratch?
-- Forwards/backwards compat: accept silent empty/partial history after snapshot-schema drift, or add a scenario?
+- ~~Forwards/backwards compat: accept silent empty/partial history after snapshot-schema drift, or add a scenario?~~ (ADDRESSED) Skip-unreadable-snapshot scenario added.
 
 ### Notes for your codebase map
 
@@ -104,3 +104,14 @@ The plan’s main path, checked against the code:
    9. L531 — typo: `captures` → `captured`
    10. L532 — feature-off also 403s restore
    11. L722–L737 — restore should not require the enable/disable privilege; drop that sentence and the `enabled` row
+
+3. **Maxim’s 2026-09-14 response.** PR comment: “thanks for your review — I've applied your suggestions.” No inline replies. New commit [`53fac08c`](https://github.com/elastic/kibana/pull/274337/commits/53fac08c8cf2d50a1b2a22987e409360205551bf) (`address feedback comments`, +59/−26, same markdown file). Earlier commits were rebased the same morning (`63ca27aa` add plan, `246cd4d7` July feedback).
+
+   Every Sept 11 comment is in the file. Applied verbatim: unreadable-snapshot skip; “N changes” row + rewrite of `+N`; auto-select newest *diffable*; enabled unchanged; restore identity is `changeId`; deleted recreate as disabled; `captures` → `captured`; feature-off restore 403; drop enable/disable privilege sentence + `enabled` row; restore only on diffable items; display name (not login); 409 conflict modal.
+
+   Leftovers:
+   - Unreadable-snapshot Gherkin has a leading space on every step (paste from the diff fence).
+   - Auto-select still says `When a user open a rule edit page` (July bot comment; still there).
+   - Threads #9 (N changes), #12 (enabled), #20 (display name) are applied but left unresolved. #12 is still current on L382.
+   - June performance/OOM thread still open/outdated — not in this commit, and you already said it doesn’t belong in a functional plan.
+   - Bot follow-up (after Maxim pushed): duplicate scenario should assert *exactly one* change item (phantom-entry regression from #275559). Not yours.
