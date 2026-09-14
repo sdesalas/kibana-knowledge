@@ -1,0 +1,27 @@
+diff --git a/x-pack/platform/plugins/shared/nightshift_investigations/kibana.jsonc b/x-pack/platform/plugins/shared/nightshift_investigations/kibana.jsonc
+index 0e9670218b05..17e0b1b409ac 100644
+--- a/x-pack/platform/plugins/shared/nightshift_investigations/kibana.jsonc
++++ b/x-pack/platform/plugins/shared/nightshift_investigations/kibana.jsonc
+@@ -11,6 +11,7 @@
+     "server": true,
+     "configPath": ["xpack", "nightshift_investigations"],
+     "requiredPlugins": [
++      "kibanaReact",
+       "taskManager"
+     ],
+     "optionalPlugins": [
+diff --git a/x-pack/solutions/observability/plugins/observability_alerting/kibana.jsonc b/x-pack/solutions/observability/plugins/observability_alerting/kibana.jsonc
+index 1526d44402e0..1a8f168daa1b 100644
+--- a/x-pack/solutions/observability/plugins/observability_alerting/kibana.jsonc
++++ b/x-pack/solutions/observability/plugins/observability_alerting/kibana.jsonc
+@@ -9,8 +9,8 @@
+     "id": "observabilityAlerting",
+     "browser": true,
+     "server": false,
+-    "requiredPlugins": ["alertingVTwo", "triggersActionsUi"],
++    "requiredPlugins": ["alertingVTwo", "kibanaReact", "triggersActionsUi"],
+     "optionalPlugins": [],
+-    "requiredBundles": ["alertingVTwo"]
++    "requiredBundles": []
+   }
+ }
