@@ -55,10 +55,10 @@ The audit script:
 3. **Reports filenames, line numbers, and context** so you can review quickly
 4. **Suggests remediation** (delete, redact, move to `.gitignore`, rotate credentials)
 
-## Usage
+## During usage
 
 ```bash
-/check-sensitive-info
+check-sensitive-info.sh
 ```
 
 Output is a categorized report:
@@ -67,6 +67,10 @@ Output is a categorized report:
 - **LOW RISK findings** (naming conventions, other odd exposures) — for awareness
 
 Findings that require authentication to access (Slack, Google Docs) show lower risk, but are still worth reviewing.
+
+Please process script output and research each result further to find out if its genuine or a false positive. Do not skip this step. Note that files in .gitignore are unlikely to be committed.
+
+Once you complete your research, show list the number of files affected in a table of categories such as the one below. Discard false positives.
 
 ## Common findings and fixes
 
@@ -82,11 +86,7 @@ Findings that require authentication to access (Slack, Google Docs) show lower r
 
 ## If you find HIGH RISK items
 
-1. **Stop.** Do not push or merge.
-2. **Identify the commit(s)** that added them.
-3. **Remove or redact** the sensitive data.
-4. **If already pushed to main:** Consider the secret compromised. Rotate it (API key, token, password, etc.).
-5. **Do not rely on git history as a redaction.** Anyone can clone and see old commits. Use `git filter-repo` or BFG to rewrite history if needed.
+Let the user know.
 
 ## Notes
 
