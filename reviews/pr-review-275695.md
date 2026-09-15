@@ -40,29 +40,30 @@ The issue originally mentioned a `bulkCreateRulesEnabled` feature flag and a sam
 
 New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunks of 200, with no feature flag. Existing `rule_id`s still update one-by-one. The old `importRule()` method and `RuleSourceImporter` class are gone; their jobs live in a new `methods/import_rules/` folder (validate → split → overwrite / create). HTTP response shape is still `{ rule_id, status_code }` / per-rule errors. Stated intent matches the diff. The extra surface is the folder split and deleting the singular import API, not a second feature.
 
+Georgii approved 2026-09-14 after a local review of the create path. Two findings from that pass were filed as follow-ups so this PR can merge: [#290911](https://github.com/elastic/kibana/issues/290911) (prebuilt install, not import) and [#290918](https://github.com/elastic/kibana/issues/290918) (raise the 10 MB import payload cap after overwrite is bulk). Next highest-impact work is overwrite via `bulkUpdate` ([#275204](https://github.com/elastic/kibana/issues/275204)). See review activities 10–12.
+
 ---
 
 ### Files touched
 
 **Route + constants**
-- `api/rules/import_rules/route.ts` — drops the 50-rule chunk and `RuleSourceImporter`; installs the prebuilt package once; forwards `changeTracking.action: ruleImport` + `metadata.bulkCount`.
+- `api/rules/import_rules/route.ts` — drops the 50-rule chunk and `RuleSourceImporter`; installs the prebuilt package once; forwards `changeTracking.action: ruleImport` + `metadata.bulkCount`; calls `detectionRulesClient.importRules` directly (no orchestrator).
 - `api/constants.ts` — `timeouts.ts` renamed; adds `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` (200) and `RULE_IMPORT_BULK_UPDATE_CONCURRENCY` (50).
 - `api/rules/bulk_actions/route.ts`, `api/rules/export_rules/route.ts` — import path only (`timeouts` → `constants`).
 
 **Orchestrator**
-- `logic/import/import_rules.ts` — chunks at 200 and calls `detectionRulesClient.importRules` per batch. Maps successes to `{ rule_id }` only; `conflict` → 409, everything else → 400.
+- `logic/import/import_rules.ts` — **deleted** in [9452e6a](https://github.com/elastic/kibana/commit/9452e6a009a3). Chunking now lives in DRC `importRules`. Route maps `ImportRuleError` to HTTP 400/409.
 
 **Detection Rules Client**
 - `detection_rules_client.ts` / `detection_rules_client_interface.ts` — `importRule` removed; `importRules` takes `rules` + options and returns `{ successes, errors }`. After the pipeline it emits `DETECTION_RULE_IMPORT_EVENT` once per success.
 - `methods/import_rule.ts` — deleted. No remaining callers.
 
 **New import pipeline (`methods/import_rules/`)**
-- `import_rules.ts` — parallel lookups, validate, split, overwrite, create; concatenates `{ successes, errors }`; outer try/catch turns throws into per-rule errors.
+- `import_rules.ts` — outer chunk at 200; parallel lookups, validate, split, overwrite, create; concatenates `{ successes, errors }`; per-chunk try/catch turns throws into per-rule errors. Comment that outer batching should move to `route.ts` if file-level streaming is attempted ([3f244b7](https://github.com/elastic/kibana/commit/3f244b7b3e672c780b0be19d7400f0ef3e0eba27)).
 - `validate_rules_to_import.ts` — version default, ML auth, exception refs, `rule_source`.
-- `split_into_groups.ts` — conflict / overwrite / create.
 - `create_rules.ts` — uuid pairing + `bulkCreateRules`; keeps `id` / `type` / `rule_source` on each success for telemetry.
 - `overwrite_rules.ts` — `pMap` + `rulesClient.update` + `toggleRuleEnabledOnUpdate`; same success shape.
-- `fetch_prebuilt_import_context.ts` / `find_installed_rules_by_rule_ids.ts` — replace `RuleSourceImporter.setup()`.
+- `fetch_prebuilt_import_context.ts` / `find_installed_rules_by_signature_ids.ts` — replace `RuleSourceImporter.setup()`.
 - Helpers moved with the folder: `calculate_rule_source_for_import`, `check_rule_exception_references`, `convert_rule_to_import_to_rule_response`, `gather_referenced_exceptions`, `errors`.
 
 **Deleted**
@@ -76,22 +77,21 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 ### Flow trace
 
 1. `POST /api/detection_engine/rules/_import` parses NDJSON, imports exceptions/connectors, dedups `rule_id`s, migrates action IDs, validates actions/response actions.
-2. Route calls `ensureLatestRulesPackageInstalled` once, then `logic/import/import_rules` with `changeTracking: { action: ruleImport, metadata: { bulkCount } }`.
-3. Orchestrator chunks at 250 and calls `detectionRulesClient.importRules` per chunk.
-4. DRC `importRules` runs three lookups in parallel: referenced exception lists, prebuilt assets (`fetchLatestVersions` + `fetchDeprecatedRules` + `fetchAssetsByVersion`), installed rules via a quoted KQL OR-list on `params.ruleId`.
-5. `validateRulesToImport` per rule: prebuilt-without-version → error and skip; ML auth fail → error and skip; missing exception list → **warning error, rule still proceeds** with the dangling ref stripped; version defaults to 1; `rule_source` / `immutable` calculated.
-6. `splitIntoGroups`: unknown `rule_id` → create; existing + overwrite → update; existing + no overwrite → 409.
-7. Overwrite: `applyRuleUpdate` + `rulesClient.update` + `toggleRuleEnabledOnUpdate`, concurrency 50.
-8. Create: `applyRuleDefaults` + convert + `bulkCreateRules({ batchSize: 200 })`. Caller-generated uuids are re-paired to `rule_id`.
-9. If anything in the try throws (find, prebuilt fetch, `bulkCreateRules` pre-check), remaining `rule_id`s that aren’t already in `successes` or `errors` get that error message.
-10. Client emits `DETECTION_RULE_IMPORT_EVENT` for each success (`ruleId` is the SO `id`). Orchestrator maps successes to `{ rule_id }` and errors to `BulkError`. Route uses `successes.length` for `success_count`.
+2. Route calls `ensureLatestRulesPackageInstalled` once, then `detectionRulesClient.importRules` with `changeTracking: { action: ruleImport, metadata: { bulkCount } }`. Maps `conflict` → 409, everything else → 400.
+3. DRC `importRules` chunks at 200 (`batchSize` default `RULE_IMPORT_BULK_CREATE_BATCH_SIZE`) and runs three lookups per chunk: referenced exception lists, prebuilt assets (`fetchLatestVersions` + `fetchDeprecatedRules` + `fetchAssetsByVersion`), installed rules via a quoted KQL OR-list on `params.ruleId`.
+4. `validateRulesToImport` per rule: prebuilt-without-version → error and skip; ML auth fail → error and skip; missing exception list → **warning error, rule still proceeds** with the dangling ref stripped; version defaults to 1; `rule_source` / `immutable` calculated.
+5. Split: unknown `rule_id` → create; existing + overwrite → update; existing + no overwrite → 409. (`split_into_groups` was inlined.)
+6. Overwrite: `applyRuleUpdate` + `rulesClient.update` + `toggleRuleEnabledOnUpdate`, concurrency 50.
+7. Create: `applyRuleDefaults` + convert + `bulkCreateRules({ batchSize: 200 })`. Caller-generated uuids are re-paired to `rule_id`.
+8. If anything in the try throws (find, prebuilt fetch, `bulkCreateRules` pre-check), remaining `rule_id`s that aren’t already in `successes` or `errors` get that error message.
+9. Client emits `DETECTION_RULE_IMPORT_EVENT` for each success (`ruleId` is the SO `id`). Route maps successes to `{ rule_id }` and errors to `BulkError`, then uses `successes.length` for `success_count`.
 
 ---
 
 ### Assumptions
 
 - `rulesClient.bulkCreateRules` from [#269340](https://github.com/elastic/kibana/pull/269340) is a faithful bulk equivalent of `rulesClient.create` for SIEM rules (API keys, task scheduling, connector secrets, change history). The create payload is copied from `createRule()`.
-- Callers always cap a single `importRules` invocation at `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` (200). That’s what keeps the KQL OR-list under ES’s 1024 `max_clause_count` floor. Only the orchestrator enforces it; the DRC method does not.
+- Outer and inner batch size share `RULE_IMPORT_BULK_CREATE_BATCH_SIZE` (200). DRC encapsulates the outer chunk; the route does not. Leftover chunks still pass `batchSize: 200`, not the leftover count, so alerting’s 10–500 `batchSize` range is satisfied. See review activity 12.
 - `findRules({ perPage: ruleIds.length })` will actually return all matches. No extra pagination.
 - In-file duplicate `rule_id`s are gone before this pipeline — `getTupleDuplicateErrorsAndUniqueRules` in the route.
 - `bulkCreateRules` echoes `options.id` in `successfulIds` / `errors[].rule.id`. Pairing depends on that. Same pattern as `bulkCreatePrebuiltRules`.
@@ -105,10 +105,10 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 ### Risks
 
 1. **Whole-batch schedule-limit fail.** `bulkCreateRules` sums every **enabled** interval, then throws before any writes if the circuit breaker trips — the whole chunk fails, including disabled rules in that chunk. Mixed files are possible. Customer fix is the same as today’s cap hit: delete the uploaded rules in the space, disable some, re-upload. LOW PRIORITY. Extra engineering (split/retry/alerting) has questionable ROI. Instead, dropping the batch 250->200 (already wanted) mitigates the blast radius. See review activity 5.
-2. **Exception-list warnings hide the real error.** `checkRuleExceptionReferences` pushes a warning **and** keeps the rule importable. The outer catch builds `responded` from every error `ruleId`. If `bulkCreateRules` later throws, that rule does not get the real failure message. The client sees “Reference has been removed” and `success_count: 0` — the warning implies the import continued. Why this is risky: dangling exception list + schedule-limit/authz throw in the same chunk.
+2. **Exception-list warnings hide the real error.** `checkRuleExceptionReferences` pushes a warning **and** keeps the rule importable. The outer catch builds `responded` from every error `ruleId`. If `bulkCreateRules` later throws, that rule does not get the real failure message. The client sees “Reference has been removed” and `success_count: 0` — the warning implies the import continued. Why this is risky: dangling exception list + schedule-limit/authz throw in the same chunk. **Same hole, extra case (activity 13):** `createRules` conversion errors never return when `bulkCreateRules` throws, so those rules also get the throw message instead of the conversion one. Sibling `bulkCreatePrebuiltRules` already catches locally and backfills every pending id — this path relies on the outer catch instead.
 3. ~~**No feature flag, FTR dependency not checked off.** Create-path contract changes go out to every import on merge. Unit tests cover the new pipeline; the PR’s own checklist still has FTR + manual + perf matrix open.~~ STALE — FTR ([#280553](https://github.com/elastic/kibana/pull/280553)) landed 2026-07-27, is on this branch, and has been running in CI. See review activity 4.
 4. **`RULE_IMPORT_BULK_CREATE_BATCH_SIZE` is provisional (200).** Raising it toward 500 without splitting the KQL find reintroduces a whole-batch ES clause failure. The helper test guards the current constant, not a future bump at the call site.
-5. **Create-error pairing can drop a row.** If `successfulIds` / `errors[].rule.id` don’t match the uuid map, `createRules` skips the row and does not throw, so the outer catch won’t backfill it. Unlikely if alerting keeps echoing `options.id`; there’s no test that the map is complete after a bulk response.
+5. **Create-error pairing can drop a row.** If `successfulIds` / `errors[].rule.id` don’t match the uuid map, `createRules` skips the row and does not throw, so the outer catch won’t backfill it. Unlikely if alerting keeps echoing `options.id` (verified against source — activity 14); there’s no test that the map is complete after a bulk response. **(Clarified — activity 13)** A silent drop with no prior warning can make the HTTP envelope `success: true` while `success_count < rules_count`.
 6. **Per-rule conversion isolation is untested on this path.** `createRules` wraps `applyRuleDefaults` / convert in try/catch so one bad rule shouldn’t fail the batch. `bulkCreatePrebuiltRules` has a test for that; this suite doesn’t.
 7. **Duplicate-import race (TOCTOU), possibly worse.** `rule_id` uniqueness is still check-then-create. Lookup is per 200-chunk, then a long `bulkCreateRules`. Two overlapping POSTs of the same file can both see empty and both create. Pre-existing ([#176207](https://github.com/elastic/kibana/issues/176207)); this PR likely makes it easier (chunk 50 → 200, one snapshot covers a slow 200-wide insert). See review activity 1.
 
@@ -117,8 +117,8 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 ### Open questions
 
 1. ~~**(Risk 1)** For an all-enabled file that overflows the schedule cap, is “fail the whole 200-chunk” the contract you want, or “import until the cap, fail the rest” (today’s per-rule `create`)? Mixed enabled/disabled is not a real upload shape.~~ Accepted — mixed is possible; customer already deletes-and-reuploads on a cap hit; don’t go over and above. Batch 200 mitigates. See review activity 5.
-2. **(Risk 2)** Should the outer catch treat exception-list warnings as non-terminal, so a later whole-batch throw still attaches the real error?
-3. **(Risk 4)** Is 200 locked enough to merge, or does this wait on the 100/200/250/300/500 × 1000/2000 × enabled/disabled matrix in the PR?
+2. **(Risk 2)** Should the outer catch treat exception-list warnings as non-terminal, so a later whole-batch throw still attaches the real error? Alternative that also keeps conversion errors: catch inside `createRules` the way `bulkCreatePrebuiltRules` already does (activity 13–14).
+3. ~~**(Risk 4)** Is 200 locked enough to merge, or does this wait on the 100/200/250/300/500 × 1000/2000 × enabled/disabled matrix in the PR?~~ Accepted — Georgii: keep 200 for this PR; further batch-size work lives in [#273514](https://github.com/elastic/kibana/issues/273514). See review activity 11.
 4. ~~**(Risk 3)** Has [#280553](https://github.com/elastic/kibana/pull/280553) / [#280531](https://github.com/elastic/kibana/issues/280531) actually landed on `main` and been re-run against this branch? The checklist says no.~~ STALE — yes, landed, merged into this branch, running in CI.
 5. ~~The skipped route test still expects ML authz to come back as **403**; the orchestrator maps every non-conflict error to **400** (same as `main`). If that suite gets unskipped, that case will fail — is 400 the public contract?~~ Closed — 400 is the live contract (since #212761). FTR `import_rules_ess.ts` asserts it. See review activity 9.
 
@@ -128,11 +128,11 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 
 - Detection-rule import is now a pipeline inside `methods/import_rules/`: lookup → validate → split → overwrite | create. The singular `importRule()` API is gone.
 - `RuleSourceImporter` is gone. Package install is a route-level `ensureLatestRulesPackageInstalled`. Asset + installed-rule fetches are plain functions (`fetchPrebuiltImportContext`, `findInstalledRulesByRuleIds`).
-- Installed-rule lookup by `rule_id` is a quoted KQL OR-list on `alert.attributes.params.ruleId`. The existing `findRules({ ruleIds })` option filters **SO** `alert.id`, not signature `rule_id` — don’t use it here. The old `fetchInstalledRulesByIds` did the same KQL without quoting; this helper is stricter.
+- Installed-rule lookup by `rule_id` is a quoted KQL OR-list on `alert.attributes.params.ruleId`. The existing `findRules({ ruleIds })` option filters **SO** `alert.id`, not signature `rule_id` — don’t use it here. The old `fetchInstalledRulesByIds` did the same KQL without quoting; this helper is stricter (`findInstalledRulesBySignatureIds`).
 - `createRules` is the same shape as `bulkCreatePrebuiltRules`: caller uuid, `applyRuleDefaults`, `enabled ?? false`, re-pair `successfulIds`.
 - `bulkCreateRules` preValidate throws on authz and schedule-limit **before any ES writes**. Per-rule schema/interval failures stay in `errors`. Task-schedule failures exclude only the enabled subset.
 - Exception-list failures on import are warnings: error object + rule still created with the ref stripped. That’s older behavior, now more visible because the catch uses those errors as “already handled.”
-- Outer chunk size used to be 50 (`CHUNK_PARSED_OBJECT_SIZE` in the route). It’s now 200, shared with `bulkCreateRules`’s `batchSize`.
+- Outer chunk size used to be 50 (`CHUNK_PARSED_OBJECT_SIZE` in the route). It’s now 200 inside DRC `importRules`, shared with `bulkCreateRules`’s `batchSize`. Route still reads the whole NDJSON up front.
 
 ---
 
@@ -202,3 +202,43 @@ New rules on `rules/_import` go through `rulesClient.bulkCreateRules()` in chunk
 - Deleted cases mapped to existing FTR in `rule_import_export/` (and one prebuilt missing-`rule_id` FTR). Gaps: no 9999 FTR (10 + 8000 instead); custom missing `rule_id` message is now Zod, not `Required`; 3-rule overwrite-true batch is close, not exact. Exceptions/connectors envelope is in trial `import_rules.ts` — `returns the full import response shape on success`.
 - Added FTR `import_rules_ess.ts` — hunter imports ML + query; HTTP 200, ML `status_code: 400`, query still created. FTR **1 passing**.
 - Comment framing: saying the old suite “went beyond unit-test coverage of `route.ts`” overstates it. It *looked* like a pipeline suite. It tested mocks. FTR is the real multi-layer coverage.
+
+10. **Georgii’s 14 Sep review — create path good; two unrelated follow-ups filed.** [Review comment](https://github.com/elastic/kibana/pull/275695#issuecomment-5663697131). [APM](https://github.com/elastic/kibana/pull/275695#issuecomment-5663963876). [Steven’s reply + tickets](https://github.com/elastic/kibana/pull/275695#issuecomment-5665565254).
+
+- ~20 prebuilt export/import sets (100 → all rules), empty space and already-populated. Create path (a few `bulkCreateRules` under the hood) was noticeably faster than `main`. APM on new-rule import looks clean.
+- Overwrite (`overwrite: true`) is still the unoptimized path. APM: ~5000 outgoing ES requests per ~1100 rules over ~25s. At 300 spaces in parallel that could saturate the cluster. Same residual as the summary: next work is [#275204](https://github.com/elastic/kibana/issues/275204).
+- Unrelated to this PR: installing AWS-tagged prebuilts (`Data Source: AWS`) immediately showed upgrades. Reproduced as `SPECIFIC_RULES` + a tag the latest asset dropped. Filed [#290911](https://github.com/elastic/kibana/issues/290911), edited after creation, linked from the PR comment. Raised in [#security-detection-engineering-experience-dex](https://elastic.slack.com/archives/C09S1NKF8HX/p1789400933455199) to prioritize (FYI Yara; Kseniia agreed it needs fixing).
+- Also unrelated: import 400 after ~1050–1150 rules. `maxRuleImportPayloadBytes` default 10 MB ([`config.ts`](https://github.com/elastic/kibana/blob/afaff8e5cff2eb70013664badebdcd5eff0ce4ea/x-pack/solutions/security/plugins/security_solution/server/config.ts#L26-L27); Hapi `maxBytes` in [`route.ts`](https://github.com/elastic/kibana/blob/afaff8e5cff2eb70013664badebdcd5eff0ce4ea/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts#L54-L58)). Full prebuilt export cannot be re-imported. Filed [#290918](https://github.com/elastic/kibana/issues/290918), edited after creation, linked from the PR comment, parented under [#273509](https://github.com/elastic/kibana/issues/273509). Do it after [#275204](https://github.com/elastic/kibana/issues/275204).
+
+11. **Georgii APPROVED with nits (14 Sep).** [Review](https://github.com/elastic/kibana/pull/275695#pullrequestreview-5198828473). Create-path numbers LGTM (especially with `refresh=false`). Nits, not merge blockers:
+
+- Keep batch size 200 here; further tuning in [#273514](https://github.com/elastic/kibana/issues/273514). Perf testing needs to get cheaper because we’ll do it regularly. [constants.ts](https://github.com/elastic/kibana/pull/275695#discussion_r4006016697).
+- Encapsulate outer batching in `detectionRulesClient.importRules` (optional `batchSize`, default `RULE_IMPORT_BULK_CREATE_BATCH_SIZE`), pass it through to `createRules`, comment why outer and inner share the size. [import_rules.ts orchestrator](https://github.com/elastic/kibana/pull/275695#discussion_r4007156002).
+- Inject the prebuilt rule assets client; don’t construct it in the import method. [import_rules.ts](https://github.com/elastic/kibana/pull/275695#discussion_r4007324234).
+- Comment each `PrebuiltImportContext` property. [fetch_prebuilt_import_context.ts](https://github.com/elastic/kibana/pull/275695#discussion_r4007355144).
+- Rename `findInstalledRulesByRuleIds` → `findInstalledRulesBySignatureIds`, typed `RuleSignatureId[]`. [find_installed_rules_by_rule_ids.ts](https://github.com/elastic/kibana/pull/275695#discussion_r4007370181).
+- Liked the route-test rewrite comment. [route.test.ts](https://github.com/elastic/kibana/pull/275695#discussion_r4006133276).
+
+Nits were addressed the next day and pushed as [9452e6a](https://github.com/elastic/kibana/commit/9452e6a009a3) (including deleting the leftover `logic/import/import_rules.ts` pass-through so the route calls the DRC method directly).
+
+12. **Keep DRC batching so #275695 can merge (15 Sep).** [DM](https://elastic.slack.com/archives/D09DQRW6Z88/p1789463332737809?thread_ts=1789374469.548209). [Comment](https://github.com/elastic/kibana/commit/3f244b7b3e672c780b0be19d7400f0ef3e0eba27). Patch parked at `.knowledge/patches/import_rules.batching.surfaced.to.route.ts.patch`.
+
+- After 9452e6a, Steven wanted to reverse Georgii’s encapsulate-batching nit: chunk in `route.ts` so a later change can stream the file instead of holding every rule in memory. Route still fully parses NDJSON first (exceptions/connectors sit at the end of the file), so that move would not stream today — it only sets the layering.
+- `create_rules` forwards the 200 constant as `bulkCreateRules` `batchSize`, including leftover chunks of 1–9. Alerting requires `batchSize` in 10–500; 200 is inside that. We need to be careful not to pass `bulkInputs.length` in the future, because alerting `bulkCreateRules()` throws below 10 and 400s those leftover rules via the outer catch. That code is not on the PR so not a problem.
+- Georgii: current import NDJSON is not streamable (mixed entity types with cross-deps); massive imports belong in a future async API. ([reply](https://elastic.slack.com/archives/D09DQRW6Z88/p1789465442495409))
+- Steven parked the route-chunking patch, added a DRC comment that outer batching should move to `route.ts` if file-level streaming is attempted ([3f244b7](https://github.com/elastic/kibana/commit/3f244b7b3e672c780b0be19d7400f0ef3e0eba27)), and will merge when CI passes. Batching stays inside DRC as Georgii asked.
+
+13. **Focused review: error handling.** Layer-boundary pass over the import pipeline (`import_rules` → validate / overwrite / create → route). Confirmed **Risk 2** (raised again below) and refined **Risk 5**. One new mechanism on Risk 2, no new risk number.
+
+- `importRules` is a per-item-partial-success API with one whole-batch escape hatch: the per-chunk `catch` stamps remaining `rule_id`s. `responded` includes exception-list warnings, so a later A2/A3 throw leaves those rules on “Reference has been removed” (**Risk 2**, **Q2** still open).
+- `createRules` accumulates conversion errors, then `await bulkCreateRules` with no local catch. A throw discards those local errors — the outer catch overwrites them with the throw message. Sibling `bulkCreatePrebuiltRules` (lines 55–91) already catches and backfills every pending id; adopting that here would also stop warnings from hiding the real error.
+- Pairing miss after a *returned* bulk result does not throw, so the outer catch never backfills (**Risk 5**). HTTP `success` is `errors.length === 0`, so a silent drop can report `success: true` with `success_count` short.
+- Overwrite `update` then `toggleRuleEnabledOnUpdate`: toggle fail reports an error after the SO write. Same as `main`. Not new.
+- Route maps conflict → 409, everything else → 400; `importRules` itself should not reject. Package-install throw is still a route 500 after exceptions/connectors already imported — same as the old `RuleSourceImporter.setup()` placement.
+
+14. **Focused review: solution-integration.** Read `bulkCreateRules` (`bulk_create_rules.ts`) against what this caller assumes.
+
+- **Throw vs return, verified.** A1 (schema/interval/registry) → per-item `errors`. A2 `bulkEnsureAuthorized` → **throws**. A3 schedule-limit → **throws**. B1 prepare / B2 task-schedule / B3 SO (including a whole-call `bulkCreateRulesSo` throw) → **returns** `{ successfulIds, errors }`. Outer catch only fires for A2/A3 (plus find/prebuilt/lookup throws). B3 key-invalidation on a mid-index SO throw is still alerting [#264892](https://github.com/elastic/kibana/issues/264892) — caller pairing works because B3 does not propagate.
+- **Id echo holds.** `options.id` is the id used in A1 errors, B-phase errors, and `successfulIds` (`so.id`). Pairing assumption is good; the skip-if-null is the leftover hole (**Risk 5**).
+- **Sibling already solved the throw.** `bulkCreatePrebuiltRules` localizes A2/A3 to the create inputs. Import leaves that to the outer catch, which is why warnings (and pre-throw conversion errors) go stale. That’s the integration fix for **Risk 2** / **Q2**.
+- **Non-findings:** `allowMissingConnectorSecrets` is per-item and used in `prepareRule` → `validateActions`. `changeTracking` is forwarded; alerting defaults to `ruleCreate` only if omitted. Leftover chunks still pass `batchSize: 200`, inside alerting’s 10–500. `find` `perPage: ruleIds.length` is enough unless the space already has duplicate `rule_id`s (Risk 7 leftovers); caller ignores `total`.
