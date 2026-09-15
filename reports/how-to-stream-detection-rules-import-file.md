@@ -15,9 +15,13 @@
 `${rulesNdjson}${exceptionLists}${actionConnectors}${exportDetails}`
 ```
 
-That’s why the route today slurps the whole upload (`createPromiseFromRuleImportStream` → `sortImports` → `createConcatStream([])`) before it does any writes. A file that mixes rules, exceptions, and connectors — with connectors and exceptions required first — is a bad streaming format: you cannot emit a usable first batch until you’ve seen the tail. Scanning backwards would also get you the tail first, but it’s a bad idea. A `HapiReadableStream` (and a single zstd/deflate blob) only goes forward, so “backwards” means buffering the whole thing anyway.
+That’s why the route today slurps the whole upload (`createPromiseFromRuleImportStream` → `sortImports` → `createConcatStream([])`) before it does any writes.
 
-The useful move is a **forward classify**. Read the Hapi upload once. Park connectors and exceptions in small arrays. Spill rule lines into one in-memory zstd stream. When the upload ends, import deps, then stream-inflate rules in batches of 200. That matches the DRC comment that outer batching should live in `route.ts` if we ever stop holding every rule in RAM ([`import_rules.ts` L67–L71](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts#L67-L71)).
+A file that mixes rules, exceptions, and connectors — with connectors and exceptions required first — is a **poor streaming format**: you cannot emit a usable first batch until you’ve seen the tail. Scanning backwards would also get you the tail first, but it’s a bad idea. A `HapiReadableStream` (and a single zstd/deflate blob) only goes forward, so “backwards” means buffering the whole thing anyway.
+
+The useful move is a **forward classify**. Read the Hapi upload once. Park connectors and exceptions in small arrays. Spill rule lines into one **in-memory zstd stream**.
+
+When the upload ends, import deps, then stream-inflate rules in batches of 200. That matches the [DRC comment](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts#L70-L71) that outer batching should live in `route.ts` if we ever stop holding every rule in RAM.
 
 zstd level 3 (Node 24 `zlib`, no extra dep) took the 12k-rule fixture from **102 MB → 16.9 MB in 185 ms**. The real win is not keeping 12k parsed rule objects. This does not raise Hapi’s 10 MB `maxRuleImportPayloadBytes` — compression happens after the body is already accepted.
 
