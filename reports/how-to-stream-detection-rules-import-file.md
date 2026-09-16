@@ -71,7 +71,7 @@ Don’t compress per line — header overhead kills the ratio. One rules stream.
 | zstd -1 | 21.23 MB | 4.8× | 148 ms |
 | **zstd -3** | **16.90 MB** | **6.0×** | **185 ms** |
 | zstd -6 | 14.13 MB | 7.2× | 485 ms |
-| deflateRaw | 21.88 MB | 4.7× | 971 ms |
+| deflateRaw / gzip | 21.88 MB | 4.7× | 971 ms |
 | brotli q4 | 13.72 MB | 7.4× | 328 ms |
 
 Brotli q4 saves another ~3 MB and isn’t worth it next to `bulkCreateRules`. This fixture is almost all rules, so three streams wouldn’t change the numbers.
@@ -111,3 +111,19 @@ These were the first ideas. They don’t work without holding the whole file.
 3. One `createZstdCompress()` for rule lines. Stream-decompress, Zod-parse in 200s, pass each batch to `importRules`.
 4. Move outer DRC batching to the route only if the route now yields batches.
 5. Don’t compress deps. Don’t use brotli. Don’t use files.
+
+---
+
+## Compatibility
+
+[`node:zlib`](https://nodejs.org/docs/latest-v24.x/api/zlib.html) ships Gzip, Deflate, Brotli, and Zstd. `createZstdCompress` / `createZstdDecompress` landed in **22.15 / 23.8**, so every Node 24+ has them. They are compiled into the Node binary — not an OS library — on official win/darwin/linux × x64/arm64/ppc64le/s390x builds.
+
+Kibana pins `engines.node` to **24.21.0**. Local check: `typeof zlib.createZstdCompress === 'function'`.
+
+**Stability 1 (Experimental)** means the *API* (option names, constants) may still move. The functions are not optional and will not be `undefined` on a normal 24+ binary. Node 26 still marks the zstd options experimental; the `zlib` module itself is Stability 2.
+
+Missing only on Node **&lt; 22.15**, or a broken custom build (`--shared-zstd` with no libzstd). There is no `--without-zstd`. Not an Elastic concern.
+
+gzip / deflate / brotli are older and stable. Same availability: bundled, all platforms. zstd is not weaker on coverage — only on API stability.
+
+This path compresses and inflates in the **same process**. No host `zstd` CLI, no `.zst` on disk, no client-side codec.
