@@ -1,0 +1,520 @@
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts
+index f594052ad523..324e359b9041 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/basic_license_essentials_tier/import_rules_transport_errors.ts
+@@ -62,6 +62,7 @@ export default ({ getService }: FtrProviderContext): void => {
+         .set('elastic-api-version', '2023-10-31')
+         .set('Content-Type', 'multipart/form-data; boundary=boundary')
+         .send('--boundary--')
++        // TODO: Missing `file` currently 500s; This should return 400 instead which is correct response here.
+         .expect(500);
+ 
+       expect(body).toMatchObject({
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts
+index 6c2b75b38889..f5871de51d9e 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_at_batch_boundary.ts
+@@ -53,8 +53,11 @@ export default ({ getService }: FtrProviderContext): void => {
+         })
+         .expect(200);
+ 
+-      const priorIds = new Map<string, string>(
+-        beforeOverwrite.data.map((rule: { rule_id: string; id: string }) => [rule.rule_id, rule.id])
++      const priorByRuleId = new Map<string, { id: string; revision: number }>(
++        beforeOverwrite.data.map((rule: { rule_id: string; id: string; revision: number }) => [
++          rule.rule_id,
++          { id: rule.id, revision: rule.revision },
++        ])
+       );
+ 
+       const rules = allIds.map((ruleId) =>
+@@ -93,15 +96,20 @@ export default ({ getService }: FtrProviderContext): void => {
+       const foundIds = body.data.map((rule: { rule_id: string }) => rule.rule_id).sort();
+       expect(foundIds).toEqual([...allIds].sort());
+ 
+-      // Spot-check overwrite targets keep SO id; a pure create gets the imported name.
++      // Spot-check overwrite targets keep SO id and bump revision; a create is new.
+       const sampleRuleIds = ['batch-rule-0', 'batch-rule-250', 'batch-rule-500'];
+       for (const ruleId of sampleRuleIds) {
+         const found = body.data.find(
+-          (rule: { rule_id: string; id: string; name: string }) => rule.rule_id === ruleId
++          (rule: { rule_id: string; id: string; name: string; revision: number }) =>
++            rule.rule_id === ruleId
+         );
+         expect(found?.name).toBe(`Imported ${ruleId}`);
+-        if (priorIds.has(ruleId)) {
+-          expect(found?.id).toBe(priorIds.get(ruleId));
++        const prior = priorByRuleId.get(ruleId);
++        if (prior) {
++          expect(found?.id).toBe(prior.id);
++          expect(found?.revision).toBe(prior.revision + 1);
++        } else {
++          expect(found?.revision).toBe(0);
+         }
+       }
+     });
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts
+index e1eeeeb6b293..69dc7e87f2ba 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_overwrite_at_batch_boundary.ts
+@@ -18,6 +18,9 @@ import { getCustomQueryRuleParams, importRules, importRulesWithSuccess } from '.
+  */
+ const RULE_COUNT = 568;
+ 
++/** Matches `RULE_IMPORT_BATCH_SIZE` — one route chunk / one alerting bulk. */
++const BATCH_SIZE = 200;
++
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
+   const detectionsApi = getService('detectionsApi');
+@@ -90,7 +93,8 @@ export default ({ getService }: FtrProviderContext): void => {
+       expect(body.total).toBe(RULE_COUNT);
+       expect(body.data).toHaveLength(RULE_COUNT);
+ 
+-      const sampleIndexes = [0, 50, 300, 500, RULE_COUNT - 1];
++      // Ends/starts of 200-rule chunks plus a few mids — not every rule.
++      const sampleIndexes = [0, 50, 199, 200, 300, 399, 400, 500, RULE_COUNT - 1];
+       for (const i of sampleIndexes) {
+         const ruleId = `overwrite-batch-rule-${i}`;
+         const found = body.data.find(
+@@ -103,5 +107,101 @@ export default ({ getService }: FtrProviderContext): void => {
+         expect(found?.revision).toBe((prior?.revision ?? 0) + 1);
+       }
+     });
++
++    it('enables and disables rules when overwriting a full batch', async () => {
++      const enableIds = range(BATCH_SIZE / 2).map((i) => `overwrite-batch-enable-${i}`);
++      const disableIds = range(BATCH_SIZE / 2).map((i) => `overwrite-batch-disable-${i}`);
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          ...enableIds.map((ruleId) =>
++            getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: `Disabled ${ruleId}`,
++              enabled: false,
++            })
++          ),
++          ...disableIds.map((ruleId) =>
++            getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: `Enabled ${ruleId}`,
++              enabled: true,
++            })
++          ),
++        ],
++        overwrite: false,
++      });
++
++      const { body: beforeOverwrite } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: BATCH_SIZE,
++          },
++        })
++        .expect(200);
++
++      const priorByRuleId = new Map<string, { id: string; revision: number }>(
++        beforeOverwrite.data.map((rule: { rule_id: string; id: string; revision: number }) => [
++          rule.rule_id,
++          { id: rule.id, revision: rule.revision },
++        ])
++      );
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          ...enableIds.map((ruleId) =>
++            getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: `Enabled ${ruleId}`,
++              enabled: true,
++            })
++          ),
++          ...disableIds.map((ruleId) =>
++            getCustomQueryRuleParams({
++              rule_id: ruleId,
++              name: `Disabled ${ruleId}`,
++              enabled: false,
++            })
++          ),
++        ],
++        overwrite: true,
++      });
++
++      const { body } = await detectionsApi
++        .findRules({
++          query: {
++            page: 1,
++            per_page: BATCH_SIZE,
++          },
++        })
++        .expect(200);
++
++      expect(body.total).toBe(BATCH_SIZE);
++      expect(body.data).toHaveLength(BATCH_SIZE);
++
++      const mid = Math.floor(enableIds.length / 2);
++      const sampleEnable = [enableIds[0], enableIds[mid], enableIds[enableIds.length - 1]];
++      const sampleDisable = [disableIds[0], disableIds[mid], disableIds[disableIds.length - 1]];
++
++      for (const ruleId of sampleEnable) {
++        const found = body.data.find((rule: { rule_id: string }) => rule.rule_id === ruleId);
++        const prior = priorByRuleId.get(ruleId);
++        expect(found?.enabled).toBe(true);
++        expect(found?.name).toBe(`Enabled ${ruleId}`);
++        expect(found?.id).toBe(prior?.id);
++        expect(found?.revision).toBe((prior?.revision ?? 0) + 1);
++      }
++      for (const ruleId of sampleDisable) {
++        const found = body.data.find((rule: { rule_id: string }) => rule.rule_id === ruleId);
++        const prior = priorByRuleId.get(ruleId);
++        expect(found?.enabled).toBe(false);
++        expect(found?.name).toBe(`Disabled ${ruleId}`);
++        expect(found?.id).toBe(prior?.id);
++        expect(found?.revision).toBe((prior?.revision ?? 0) + 1);
++      }
++    });
+   });
+ };
+diff --git a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts
+index 1b8131bb5622..c61e708a8d7c 100644
+--- a/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts
++++ b/x-pack/solutions/security/test/security_solution_api_integration/test_suites/detections_response/rules_management/rule_import_export/trial_license_complete_tier/import_rules_with_overwrite.ts
+@@ -10,16 +10,20 @@ import expect from 'expect';
+ import { DETECTION_ENGINE_RULES_IMPORT_URL } from '@kbn/security-solution-plugin/common/constants';
+ import { createRule, deleteAllRules } from '@kbn/detections-response-ftr-services';
+ import {
++  clearChangeHistory,
+   combineToNdJson,
+   getCustomQueryRuleParams,
+   fetchRule,
++  importRules,
+   importRulesWithSuccess,
++  refreshChangeHistory,
+ } from '../../../utils';
+ import type { FtrProviderContext } from '../../../../../ftr_provider_context';
+ 
+ export default ({ getService }: FtrProviderContext): void => {
+   const supertest = getService('supertest');
+   const detectionsApi = getService('detectionsApi');
++  const es = getService('es');
+   const log = getService('log');
+ 
+   describe('@ess @serverless @skipInServerlessMKI import_rules with rule overwrite set to "true"', () => {
+@@ -117,6 +121,9 @@ export default ({ getService }: FtrProviderContext): void => {
+ 
+       expect(importedRule.id).toBe(existing.id);
+       expect(importedRule.name).toBe('Imported rule');
++      expect(importedRule.revision).toBe(existing.revision + 1);
++      expect(importedRule.created_at).toBe(existing.created_at);
++      expect(importedRule.updated_at).not.toBe(existing.updated_at);
+     });
+ 
+     /**
+@@ -225,6 +232,7 @@ export default ({ getService }: FtrProviderContext): void => {
+       expect(body.id).toBe(existing.id);
+       expect(body.enabled).toBe(true);
+       expect(body.name).toBe('Enabled after overwrite');
++      expect(body.revision).toBe(existing.revision + 1);
+     });
+ 
+     it('disables an enabled rule when overwriting with enabled false', async () => {
+@@ -257,6 +265,295 @@ export default ({ getService }: FtrProviderContext): void => {
+       expect(body.id).toBe(existing.id);
+       expect(body.enabled).toBe(false);
+       expect(body.name).toBe('Disabled after overwrite');
++      expect(body.revision).toBe(existing.revision + 1);
++    });
++
++    it('updates interval when overwriting an existing rule', async () => {
++      const existing = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-interval-rule',
++          name: 'Before interval overwrite',
++          interval: '100m',
++          enabled: false,
++        })
++      );
++
++      await importRulesWithSuccess({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-interval-rule',
++            name: 'After interval overwrite',
++            interval: '1h',
++            enabled: false,
++          }),
++        ],
++        overwrite: true,
++      });
++
++      const { body } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-interval-rule' } })
++        .expect(200);
++
++      expect(body.id).toBe(existing.id);
++      expect(body.interval).toBe('1h');
++      expect(body.name).toBe('After interval overwrite');
++      expect(body.revision).toBe(existing.revision + 1);
++    });
++
++    it('reports partial success when overwriting a batch with one schema-invalid rule', async () => {
++      const first = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-ok-1',
++          name: 'Existing one',
++          enabled: false,
++        })
++      );
++      const second = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-ok-2',
++          name: 'Existing two',
++          enabled: false,
++        })
++      );
++      const failed = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-bad',
++          name: 'Existing bad',
++          enabled: false,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-ok-1',
++            name: 'Updated one',
++            enabled: false,
++          }),
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-ok-2',
++            name: 'Updated two',
++            enabled: false,
++          }),
++          {
++            ...getCustomQueryRuleParams({
++              rule_id: 'overwrite-partial-bad',
++              name: 'Should not update',
++              enabled: false,
++            }),
++            risk_score: 101,
++          },
++        ],
++        overwrite: true,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: false,
++        success_count: 2,
++        rules_count: 3,
++        errors: [
++          {
++            error: {
++              message: 'risk_score: Too big: expected number to be <=100',
++              status_code: 400,
++            },
++          },
++        ],
++      });
++      // Schema validation failures currently omit rule_id on the error object.
++      expect(importResponse.errors[0].rule_id).toBeUndefined();
++
++      const { body: updatedFirst } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-ok-1' } })
++        .expect(200);
++      const { body: updatedSecond } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-ok-2' } })
++        .expect(200);
++      const { body: unchanged } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-bad' } })
++        .expect(200);
++
++      expect(updatedFirst.id).toBe(first.id);
++      expect(updatedFirst.name).toBe('Updated one');
++      expect(updatedFirst.revision).toBe(first.revision + 1);
++      expect(updatedSecond.id).toBe(second.id);
++      expect(updatedSecond.name).toBe('Updated two');
++      expect(updatedSecond.revision).toBe(second.revision + 1);
++      expect(unchanged.id).toBe(failed.id);
++      expect(unchanged.name).toBe('Existing bad');
++      expect(unchanged.revision).toBe(failed.revision);
++    });
++
++    it('reports partial success when one overwrite target references a missing connector', async () => {
++      const first = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-ok-1',
++          name: 'Existing one',
++          enabled: false,
++        })
++      );
++      const second = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-ok-2',
++          name: 'Existing two',
++          enabled: false,
++        })
++      );
++      const failed = await createRule(
++        supertest,
++        log,
++        getCustomQueryRuleParams({
++          rule_id: 'overwrite-partial-bad',
++          name: 'Existing bad',
++          enabled: false,
++        })
++      );
++
++      const importResponse = await importRules({
++        getService,
++        rules: [
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-ok-1',
++            name: 'Updated one',
++            enabled: false,
++          }),
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-ok-2',
++            name: 'Updated two',
++            enabled: false,
++          }),
++          getCustomQueryRuleParams({
++            rule_id: 'overwrite-partial-bad',
++            name: 'Should not update',
++            enabled: false,
++            actions: [
++              {
++                group: 'default',
++                id: 'missing-overwrite-connector',
++                action_type_id: '.webhook',
++                params: {},
++              },
++            ],
++          }),
++        ],
++        overwrite: true,
++      });
++
++      expect(importResponse).toMatchObject({
++        success: false,
++        success_count: 2,
++        rules_count: 3,
++        errors: [
++          {
++            rule_id: 'overwrite-partial-bad',
++            error: {
++              status_code: 404,
++              message:
++                'Rule actions reference the following missing action IDs: missing-overwrite-connector',
++            },
++          },
++        ],
++      });
++
++      const { body: updatedFirst } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-ok-1' } })
++        .expect(200);
++      const { body: updatedSecond } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-ok-2' } })
++        .expect(200);
++      const { body: unchanged } = await detectionsApi
++        .readRule({ query: { rule_id: 'overwrite-partial-bad' } })
++        .expect(200);
++
++      expect(updatedFirst.id).toBe(first.id);
++      expect(updatedFirst.name).toBe('Updated one');
++      expect(updatedFirst.revision).toBe(first.revision + 1);
++      expect(updatedSecond.id).toBe(second.id);
++      expect(updatedSecond.name).toBe('Updated two');
++      expect(updatedSecond.revision).toBe(second.revision + 1);
++      expect(unchanged.id).toBe(failed.id);
++      expect(unchanged.name).toBe('Existing bad');
++      expect(unchanged.revision).toBe(failed.revision);
++    });
++
++    // History API is ESS-only until ruleChangesHistoryEnabled is on in serverless.
++    describe('@ess @skipInServerless overwrite change history', () => {
++      beforeEach(async () => {
++        await clearChangeHistory(es);
++      });
++
++      it('records rule_import when overwriting an existing rule', async () => {
++        const { body: rule } = await detectionsApi
++          .createRule({
++            body: getCustomQueryRuleParams({
++              rule_id: 'overwrite-history-rule',
++              name: 'Before import overwrite',
++              enabled: false,
++            }),
++          })
++          .expect(200);
++
++        await importRulesWithSuccess({
++          getService,
++          rules: [
++            getCustomQueryRuleParams({
++              rule_id: 'overwrite-history-rule',
++              name: 'After import overwrite',
++              enabled: false,
++            }),
++          ],
++          overwrite: true,
++        });
++
++        await refreshChangeHistory(es);
++
++        const { body } = await detectionsApi
++          .ruleChangesHistory({ params: { ruleId: rule.id }, query: {} })
++          .expect(200);
++
++        expect(body.total).toBe(2);
++        expect(body.items).toHaveLength(2);
++
++        const [imported, created] = body.items;
++        expect(imported.action).toBe('rule_import');
++        expect(imported.user).toEqual({ name: 'elastic' });
++        expect(imported.metadata?.bulk_count).toBe(1);
++        expect(imported.rule).toMatchObject({
++          id: rule.id,
++          rule_id: 'overwrite-history-rule',
++          name: 'After import overwrite',
++          revision: 1,
++          enabled: false,
++        });
++        expect(imported.old_values).toMatchObject({
++          name: 'Before import overwrite',
++          revision: 0,
++        });
++        expect(imported.rule.created_at).not.toBe(imported.rule.updated_at);
++
++        expect(created.action).toBe('rule_create');
++        expect(created.old_values).toBeNull();
++        expect(created.rule).toMatchObject({
++          id: rule.id,
++          rule_id: 'overwrite-history-rule',
++          name: 'Before import overwrite',
++          revision: 0,
++        });
++      });
+     });
+   });
+ };
