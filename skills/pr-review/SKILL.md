@@ -104,6 +104,7 @@ The document should open with a header block before any sections:
 # PR Review: #<number> — <title>
 
 **PR:** [org/repo#<number>](<github url>) by @creator
+**Created Date: <today>**
 ```
 
 Other relevant links (Slack threads, GitHub issues, related commits, design docs) should be included as well but they belong inline within the section where they are referenced.
