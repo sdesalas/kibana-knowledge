@@ -1,10 +1,10 @@
 # Rule Changes History: Missing Initial Snapshots — Investigation & Solutions
 
-**Date**: 2026-06-24  
-**Raised by**: Steven de Salas, Maxim Palenov, Kseniia Ignatovych, Yngrid Coello  
-**Slack thread**: https://elastic.slack.com/archives/C09QUB06E4Q/p1780590276886099  
-**Related PR**: https://github.com/elastic/kibana/pull/269617 (UI MVP for rule changes history)  
-**GitHub issue**: https://github.com/elastic/kibana/issues/274925
+- **Date:** 2026-06-24
+- **Raised by:** Steven de Salas, Maxim Palenov, Kseniia Ignatovych, Yngrid Coello
+- **Slack thread:** https://elastic.slack.com/archives/C09QUB06E4Q/p1780590276886099
+- **Related PR:** https://github.com/elastic/kibana/pull/269617 (UI MVP for rule changes history)
+- **GitHub issue:** https://github.com/elastic/kibana/issues/274925
 
 ---
 

@@ -1,9 +1,9 @@
 # Alerting V2: change-history snapshots as `RuleResponse`, not SO attrs
 
-**Scope:** How alerting v2 records rule state in `.kibana_change_history`, how that differs from `RuleSavedObjectAttributes`, future SO migrations, and restore-from-delete.  
-**Date:** 2026-07-30  
-**Code base:** `alerting_v2` on branch with rule change-history integration  
-**Verified against:** current code on that branch (not design intent alone)
+- **Scope:** How alerting v2 records rule state in `.kibana_change_history`, how that differs from `RuleSavedObjectAttributes`, future SO migrations, and restore-from-delete.
+- **Date:** 2026-07-30
+- **Code base:** `alerting_v2` on branch with rule change-history integration
+- **Verified against:** current code on that branch (not design intent alone)
 
 ---
 

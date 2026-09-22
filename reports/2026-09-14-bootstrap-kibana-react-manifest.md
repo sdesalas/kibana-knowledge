@@ -1,8 +1,8 @@
 # Bootstrap fails: missing `kibanaReact` in plugin manifests
 
-**Date:** 2026-09-14  
-**Seen on:** `main` after pull (optimizer, `yarn kbn bootstrap`)  
-**Caused by:** [#289852](https://github.com/elastic/kibana/pull/289852) (`observabilityAlerting` missing `kibanaReact`) and [#289402](https://github.com/elastic/kibana/pull/289402) (Nightshift, same miss via `@kbn/workflows-ui`)
+- **Date:** 2026-09-14
+- **Seen on:** `main` after pull (optimizer, `yarn kbn bootstrap`)
+- **Caused by:** [#289852](https://github.com/elastic/kibana/pull/289852) (`observabilityAlerting` missing `kibanaReact`) and [#289402](https://github.com/elastic/kibana/pull/289402) (Nightshift, same miss via `@kbn/workflows-ui`)
 
 `yarn kbn bootstrap` dies in webpack. Two plugins import `@kbn/kibana-react-plugin/public` without listing `kibanaReact` in `requiredPlugins` / `requiredBundles`. Optimizer treats that as a compile error, so bootstrap never finishes.
 

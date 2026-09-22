@@ -1,8 +1,8 @@
 # LLM Bot Detection via Hidden PR Comment
 
-**Date:** 2026-06-18  
-**PR under test:** https://github.com/elastic/kibana/pull/273433  
-**Comment with canary:** https://github.com/elastic/kibana/pull/273433#issuecomment-4743475514
+- **Date:** 2026-06-18
+- **PR under test:** https://github.com/elastic/kibana/pull/273433
+- **Comment with canary:** https://github.com/elastic/kibana/pull/273433#issuecomment-4743475514
 
 ---
 

@@ -1,12 +1,10 @@
 # Prebuilt rule upgrade fails when resolving Required Fields without `ecs`
 
-**Date**: 2026-07-17
-**Related issue**: https://github.com/elastic/kibana/issues/232614
-**Reported by**: mick-lue (issue), Steven de Salas (this report / fix)
-
-**API endpoint affected**:
-
-- `POST /internal/detection_engine/prebuilt_rules/upgrade/_perform` — apply a pending prebuilt rule upgrade with a manually resolved `required_fields` value
+- **Date:** 2026-07-17
+- **Related issue:** https://github.com/elastic/kibana/issues/232614
+- **Reported by:** mick-lue (issue), Steven de Salas (this report / fix)
+- **API endpoint affected:**
+  - `POST /internal/detection_engine/prebuilt_rules/upgrade/_perform` — apply a pending prebuilt rule upgrade with a manually resolved `required_fields` value
 
 ---
 

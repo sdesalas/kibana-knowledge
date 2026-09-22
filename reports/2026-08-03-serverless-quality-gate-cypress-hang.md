@@ -1,17 +1,15 @@
 # Serverless Quality Gate Cypress — step hangs ~5h after empty suite exit
 
-**Date:** 2026-08-03
-**Scope:** `kibana-serverless-security-solution-quality-gate-*` Cypress / MKI steps
-**Repo HEAD checked:** current `main` (post-pull, ~2026-08-03)
+- **Date:** 2026-08-03
+- **Scope:** `kibana-serverless-security-solution-quality-gate-*` Cypress / MKI steps
+- **Repo HEAD checked:** current `main` (post-pull, ~2026-08-03)
+- **Failing example (detection-engine Quality Gate, empty suite):**
+  https://buildkite.com/elastic/kibana-serverless-security-solution-quality-gate-detection-engine/builds/5008#019fc55d-3dd1-4725-a17d-e7aca34c472b/L319
+- **Passing controls (specs actually ran):**
+  - rule-management: https://buildkite.com/elastic/kibana-serverless-security-solution-quality-gate-rule-management/builds/5054#019fc55d-1a2f-4059-ac42-e6a431d11ef8/L428
+  - defend-workflows: also passing (same `parallel_serverless` runner, management Cypress config)
+- **Pattern:** pass when the runner finds specs; hang when it hits the empty-suite
 
-**Failing example (detection-engine Quality Gate, empty suite):**
-https://buildkite.com/elastic/kibana-serverless-security-solution-quality-gate-detection-engine/builds/5008#019fc55d-3dd1-4725-a17d-e7aca34c472b/L319
-
-**Passing controls (specs actually ran):**
-- rule-management: https://buildkite.com/elastic/kibana-serverless-security-solution-quality-gate-rule-management/builds/5054#019fc55d-1a2f-4059-ac42-e6a431d11ef8/L428
-- defend-workflows: also passing (same `parallel_serverless` runner, management Cypress config)
-
-**Pattern:** pass when the runner finds specs; hang when it hits the empty-suite
 early-exit. Hanging slugs: detection-engine, investigations, entity-analytics,
 explore, gen-ai.
 

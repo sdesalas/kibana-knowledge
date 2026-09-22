@@ -1,8 +1,8 @@
 # `.kibana_change_history` — Missing SystemDataStreamDescriptor
 
-**Date:** 2026-07-16  
-**Severity:** SEV4  
-**Status:** Active incident
+- **Date:** 2026-07-16
+- **Severity:** SEV4
+- **Status:** Active incident
 
 ---
 

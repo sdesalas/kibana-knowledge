@@ -1,6 +1,7 @@
 # Phase A2 review
 
-**Subject:** Phase A2 (`preValidate.ensureAuthorized`) in
+- **Subject:** Phase A2 (`preValidate.ensureAuthorized`) in
+
 `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts`,
 lines ~215–243.
 

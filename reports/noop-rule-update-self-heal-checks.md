@@ -1,9 +1,9 @@
 # No-op rule updates: cheap self-heal for stale API keys and missing TM tasks
 
-**Date:** 2026-09-10  
-**Issue:** [elastic/kibana#285343](https://github.com/elastic/kibana/issues/285343)  
-**Related:** [elastic/kibana#145093](https://github.com/elastic/kibana/issues/145093) (`bulkEdit` already skips no-ops), [elastic/kibana#275204](https://github.com/elastic/kibana/issues/275204) (import overwrite → `bulkUpdate`), [sdh-security-team#1026](https://github.com/elastic/sdh-security-team/issues/1026#issuecomment-2236628506) (no-op update used to rotate stale keys)  
-**Slack:** [DEX thread](https://elastic.slack.com/archives/C09S1NKF8HX/p1786733442774769?thread_ts=1781628763.734789&cid=C09S1NKF8HX) (Georgii: empty history is a bug); [kibana-alerting](https://elastic.slack.com/archives/CHSSGF015/p1787554824052939) (Mike Cote: treat key/task repair as edge cases)
+- **Date:** 2026-09-10
+- **Issue:** [elastic/kibana#285343](https://github.com/elastic/kibana/issues/285343)
+- **Related:** [elastic/kibana#145093](https://github.com/elastic/kibana/issues/145093) (`bulkEdit` already skips no-ops), [elastic/kibana#275204](https://github.com/elastic/kibana/issues/275204) (import overwrite → `bulkUpdate`), [sdh-security-team#1026](https://github.com/elastic/sdh-security-team/issues/1026#issuecomment-2236628506) (no-op update used to rotate stale keys)
+- **Slack:** [DEX thread](https://elastic.slack.com/archives/C09S1NKF8HX/p1786733442774769?thread_ts=1781628763.734789&cid=C09S1NKF8HX) (Georgii: empty history is a bug); [kibana-alerting](https://elastic.slack.com/archives/CHSSGF015/p1787554824052939) (Mike Cote: treat key/task repair as edge cases)
 
 ---
 

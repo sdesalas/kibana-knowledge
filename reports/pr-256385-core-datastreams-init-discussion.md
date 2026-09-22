@@ -1,11 +1,11 @@
 # PR #256385 — Core `dataStreams` vs direct `DataStreamClient.initialize`
 
-**PR:** [elastic/kibana#256385](https://github.com/elastic/kibana/pull/256385) — *[SecuritySolution] Create '@kbn/change-history' package*  
-**Thread:** [discussion_r2895761023](https://github.com/elastic/kibana/pull/256385#discussion_r2895761023) (on `kbn-change-history/index.ts`)  
-**Raised by:** @yngrdyn (2026-03-06)  
-**Resolved:** Tabled by @sdesalas (2026-03-18); PR merged 2026-03-20  
-**Report date:** 2026-07-30  
-**Branch checked:** `alerting-v2-rule-versioning` @ `fba40a5fb75c`
+- **PR:** [elastic/kibana#256385](https://github.com/elastic/kibana/pull/256385) — *[SecuritySolution] Create '@kbn/change-history' package*
+- **Thread:** [discussion_r2895761023](https://github.com/elastic/kibana/pull/256385#discussion_r2895761023) (on `kbn-change-history/index.ts`)
+- **Raised by:** @yngrdyn (2026-03-06)
+- **Resolved:** Tabled by @sdesalas (2026-03-18); PR merged 2026-03-20
+- **Report date:** 2026-07-30
+- **Branch checked:** `alerting-v2-rule-versioning` @ `fba40a5fb75c`
 
 ---
 

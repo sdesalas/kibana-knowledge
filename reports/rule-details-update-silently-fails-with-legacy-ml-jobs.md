@@ -1,8 +1,8 @@
 # Rule Details Page: "Update Rule" Silently Fails When Legacy ML Jobs Are Installed
 
-**Date:** 2026-07-17
-**Related issue:** [#239884](https://github.com/elastic/kibana/issues/239884)
-**Slack thread:** [#security-detection-engineering-team](https://elastic.slack.com/archives/C0B7YAUDDB5/p1784225323593619)
+- **Date:** 2026-07-17
+- **Related issue:** [#239884](https://github.com/elastic/kibana/issues/239884)
+- **Slack thread:** [#security-detection-engineering-team](https://elastic.slack.com/archives/C0B7YAUDDB5/p1784225323593619)
 
 ---
 

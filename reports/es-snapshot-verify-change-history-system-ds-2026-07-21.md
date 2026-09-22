@@ -1,13 +1,11 @@
 # `kibana-elasticsearch-snapshot-verify` — change history system data stream test failures
 
-**Date:** 2026-07-21  
-**Pipeline:** [`kibana-elasticsearch-snapshot-verify`](https://buildkite.com/elastic/kibana-elasticsearch-snapshot-verify)  
-**Branch / checkout:** `main` on `kibana-5th`  
-**ES under test:** unverified daily snapshot `9.6.0-SNAPSHOT` (`20260721-022000_899296de`)
-
-**Tracking:** [elastic/security-team#18291](https://github.com/elastic/security-team/issues/18291) — `.kibana_change_history` registered as `SystemIndexDescriptor` instead of `SystemDataStreamDescriptor` (closed; fix landed in ES).
-
-**Related:** [.knowledge/reports/kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md) (incident-3371). This report covers **verify-pipeline test failures** that showed up once that ES change landed in the daily unverified snapshot. Kibana itself starts and runs against this snapshot; the breakage is in CI tests, not the product boot path.
+- **Date:** 2026-07-21
+- **Pipeline:** [`kibana-elasticsearch-snapshot-verify`](https://buildkite.com/elastic/kibana-elasticsearch-snapshot-verify)
+- **Branch / checkout:** `main` on `kibana-5th`
+- **ES under test:** unverified daily snapshot `9.6.0-SNAPSHOT` (`20260721-022000_899296de`)
+- **Tracking:** [elastic/security-team#18291](https://github.com/elastic/security-team/issues/18291) — `.kibana_change_history` registered as `SystemIndexDescriptor` instead of `SystemDataStreamDescriptor` (closed; fix landed in ES).
+- **Related:** [.knowledge/reports/kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md) (incident-3371). This report covers **verify-pipeline test failures** that showed up once that ES change landed in the daily unverified snapshot. Kibana itself starts and runs against this snapshot; the breakage is in CI tests, not the product boot path.
 
 ---
 

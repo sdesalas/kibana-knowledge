@@ -1,7 +1,7 @@
 # Terraform Provider: Detection Rule API Call Patterns
 
-**Repo:** [`elastic/terraform-provider-elasticstack`](https://github.com/elastic/terraform-provider-elasticstack)
-**Date:** 2026-07-20
+- **Repo:** [`elastic/terraform-provider-elasticstack`](https://github.com/elastic/terraform-provider-elasticstack)
+- **Date:** 2026-07-20
 
 ## How current state is determined during `terraform plan`
 

@@ -1,8 +1,8 @@
 # Alerting V1 vs V2 — API key treatment
 
-**Date:** 2026-07-30  
-**Context:** Follow-up from review of [PR #276947](https://github.com/elastic/kibana/pull/276947) (rule change history / `metadata.version`), while comparing domain snapshots vs SO attrs.  
-**Branch referenced:** `alerting-v2-rule-versioning` (and current V1 alerting / Task Manager code on that branch).
+- **Date:** 2026-07-30
+- **Context:** Follow-up from review of [PR #276947](https://github.com/elastic/kibana/pull/276947) (rule change history / `metadata.version`), while comparing domain snapshots vs SO attrs.
+- **Branch referenced:** `alerting-v2-rule-versioning` (and current V1 alerting / Task Manager code on that branch).
 
 ---
 

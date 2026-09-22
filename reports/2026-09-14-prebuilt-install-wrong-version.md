@@ -1,10 +1,10 @@
 # Prebuilt install via `SPECIFIC_RULES` writes the right rule, wrong version when filtering by tag.
 
-**Date:** 2026-09-14
-**Area:** Security Solution — Detection Engine / prebuilt rule installation
-**Seen on:** `http://localhost:5605/kbn` (PR [#275695](https://github.com/elastic/kibana/pull/275695) smoke test)
-**Status:** Reproduced. Code-path confirmed. Unrelated to the import rewrite.
-**Raised by:** @banderror on [#275695](https://github.com/elastic/kibana/pull/275695#issuecomment-5663697131) — AWS-tagged prebuilt rules show as ready to upgrade the moment you install them.
+- **Date:** 2026-09-14
+- **Area:** Security Solution — Detection Engine / prebuilt rule installation
+- **Seen on:** `http://localhost:5605/kbn` (PR [#275695](https://github.com/elastic/kibana/pull/275695) smoke test)
+- **Status:** Reproduced. Code-path confirmed. Unrelated to the import rewrite.
+- **Raised by:** @banderror on [#275695](https://github.com/elastic/kibana/pull/275695#issuecomment-5663697131) — AWS-tagged prebuilt rules show as ready to upgrade the moment you install them.
 
 ---
 

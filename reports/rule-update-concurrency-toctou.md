@@ -1,15 +1,13 @@
 # Rule updates: concurrent requests silently overwrite each other
 
-**Date**: 2026-07-06
-**Related issue**: https://github.com/elastic/kibana/issues/276282
-**Reported by**: Patrick Borgonovi (issue), Steven de Salas (this report)
-
-**API endpoints affected**:
-
-- `POST /internal/detection_engine/rules/{ruleId}/history/{changeId}/_restore` — restore from history (the endpoint in the bug report)
-- `PUT /api/detection_engine/rules` — normal rule edit
-- `POST /internal/detection_engine/prebuilt_rules/revert` — revert a customized prebuilt rule to its base version
-- `POST /internal/detection_engine/prebuilt_rules/upgrade/_perform` — apply a pending prebuilt rule upgrade
+- **Date:** 2026-07-06
+- **Related issue:** https://github.com/elastic/kibana/issues/276282
+- **Reported by:** Patrick Borgonovi (issue), Steven de Salas (this report)
+- **API endpoints affected:**
+  - `POST /internal/detection_engine/rules/{ruleId}/history/{changeId}/_restore` — restore from history (the endpoint in the bug report)
+  - `PUT /api/detection_engine/rules` — normal rule edit
+  - `POST /internal/detection_engine/prebuilt_rules/revert` — revert a customized prebuilt rule to its base version
+  - `POST /internal/detection_engine/prebuilt_rules/upgrade/_perform` — apply a pending prebuilt rule upgrade
 
 ---
 

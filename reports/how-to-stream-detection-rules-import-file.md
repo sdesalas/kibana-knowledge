@@ -1,9 +1,9 @@
 # How to stream a detection rules import file
 
-**Date:** 2026-09-15
-**Status:** Design only. Not implemented.
-**Related:** [#275695](https://github.com/elastic/kibana/pull/275695) (import create path), [#290918](https://github.com/elastic/kibana/issues/290918) (10 MB payload cap)
-**Fixture:** `.knowledge/data/rules-import/12000disabled-rules.internal.ndjson`
+- **Date:** 2026-09-15
+- **Status:** Design only. Not implemented.
+- **Related:** [#275695](https://github.com/elastic/kibana/pull/275695) (import create path), [#290918](https://github.com/elastic/kibana/issues/290918) (10 MB payload cap)
+- **Fixture:** `.knowledge/data/rules-import/12000disabled-rules.internal.ndjson`
 
 ---
 

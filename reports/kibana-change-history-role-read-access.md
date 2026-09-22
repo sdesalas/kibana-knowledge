@@ -1,8 +1,8 @@
 # `.kibana_change_history` — Role read access (DS vs backing index)
 
-**Date:** 2026-07-16  
-**Env:** Local serverless (`yarn es serverless` + `yarn serverless-security`), mock IDP  
-**Related:** [kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md) (missing `SystemDataStreamDescriptor`)
+- **Date:** 2026-07-16
+- **Env:** Local serverless (`yarn es serverless` + `yarn serverless-security`), mock IDP
+- **Related:** [kibana-change-history-system-datastream.md](./kibana-change-history-system-datastream.md) (missing `SystemDataStreamDescriptor`)
 
 ---
 

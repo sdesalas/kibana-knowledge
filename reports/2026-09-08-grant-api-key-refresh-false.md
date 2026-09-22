@@ -1,14 +1,12 @@
 # Grant API key `refresh=false` vs `bulkCreateRules` / TM
 
-**Date:** 2026-09-08  
-**Focus:** `rulesClient.bulkCreateRules` (enabled-rule create / import create path). Not `bulkUpdateRules`.  
-**Context:** Local grant timing + whether we still need [elastic/elasticsearch#157410](https://github.com/elastic/elasticsearch/pull/157410) (`_bulk_grant`).  
-**Related:** [elastic/kibana#273675](https://github.com/elastic/kibana/issues/273675).  
-
-**Comments this note cross-checks:**
-
-- [jfreden, 2026-08-26](https://github.com/elastic/elasticsearch/pull/157410#issuecomment-5422425331) — `refresh=false` is enough; TM fires after the 1s auto-refresh; parallel `_grant` @ 50 workers is 14× vs sequential, `_bulk_grant` 72×.
-- [sdesalas, 2026-09-08](https://github.com/elastic/elasticsearch/pull/157410#issuecomment-5587922201) — we already `pMap` 50; first TM run is jittered over 5m; auth is GET so we may not need `_bulk_grant` at all.
+- **Date:** 2026-09-08
+- **Focus:** `rulesClient.bulkCreateRules` (enabled-rule create / import create path). Not `bulkUpdateRules`.
+- **Context:** Local grant timing + whether we still need [elastic/elasticsearch#157410](https://github.com/elastic/elasticsearch/pull/157410) (`_bulk_grant`).
+- **Related:** [elastic/kibana#273675](https://github.com/elastic/kibana/issues/273675).
+### Comments this note cross-checks:
+  - [jfreden, 2026-08-26](https://github.com/elastic/elasticsearch/pull/157410#issuecomment-5422425331) — `refresh=false` is enough; TM fires after the 1s auto-refresh; parallel `_grant` @ 50 workers is 14× vs sequential, `_bulk_grant` 72×.
+  - [sdesalas, 2026-09-08](https://github.com/elastic/elasticsearch/pull/157410#issuecomment-5587922201) — we already `pMap` 50; first TM run is jittered over 5m; auth is GET so we may not need `_bulk_grant` at all.
 
 ---
 

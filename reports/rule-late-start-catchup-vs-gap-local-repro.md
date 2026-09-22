@@ -1,9 +1,9 @@
 # Local repro: late rule starts, catch-up, and Gaps
 
-**Date:** 2026-08-03  
-**Scope:** Security detection rules — scheduling delay vs in-run catch-up vs recorded Gaps  
-**Audience:** Developers validating behaviour locally (manual steps, not Jest/FTR)  
-**Architecture deep dive:** [../architecture/rule_gaps_and_catchup.md](../architecture/rule_gaps_and_catchup.md)
+- **Date:** 2026-08-03
+- **Scope:** Security detection rules — scheduling delay vs in-run catch-up vs recorded Gaps
+- **Audience:** Developers validating behaviour locally (manual steps, not Jest/FTR)
+- **Architecture deep dive:** [../architecture/rule_gaps_and_catchup.md](../architecture/rule_gaps_and_catchup.md)
 
 ---
 

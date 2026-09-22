@@ -1,8 +1,8 @@
 # Rule exceptions: History tracks folder links, not the exceptions themselves
 
-**Date:** 2026-07-24
-**Related issue:** [elastic/kibana#272918](https://github.com/elastic/kibana/issues/272918) — *Rule exception activity is not accurately tracked in the rule's change history*
-**Also referenced:** bulk exception deletion ([#276458](https://github.com/elastic/kibana/issues/276458))
+- **Date:** 2026-07-24
+- **Related issue:** [elastic/kibana#272918](https://github.com/elastic/kibana/issues/272918) — *Rule exception activity is not accurately tracked in the rule's change history*
+- **Also referenced:** bulk exception deletion ([#276458](https://github.com/elastic/kibana/issues/276458))
 
 This is an investigation into the strange rule-exception behavior in change history: some actions show up, most don’t, and deleting exceptions can look like nothing happened.
 

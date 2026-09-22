@@ -1,8 +1,8 @@
 # Kibana Idle Heap Analysis
 
-**Total heap:** 630.5 MB  
-**Snapshot type:** V8 heap snapshot with allocation tracking  
-**Plugins discovered:** 236
+- **Total heap:** 630.5 MB
+- **Snapshot type:** V8 heap snapshot with allocation tracking
+- **Plugins discovered:** 236
 
 ---
 

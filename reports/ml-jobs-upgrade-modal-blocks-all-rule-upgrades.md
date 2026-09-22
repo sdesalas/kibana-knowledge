@@ -1,12 +1,12 @@
 # ML jobs upgrade modal gates all prebuilt rule upgrades
 
-**Date:** 2026-07-17
-**Area:** Security Solution — Detection Engine / Rule Management UI
-**Status:** Code-path confirmed; matches known open bug
-**Related:**
-- [kibana#239884](https://github.com/elastic/kibana/issues/239884) — open product bug: modal on every prebuilt upgrade when legacy ML jobs exist (no rule-type check)
-- [#128334](https://github.com/elastic/kibana/pull/128334) — original V1/V2 → V3 gate (8.3)
-- [#255339](https://github.com/elastic/kibana/pull/255339) — expanded `affectedJobIds` for V3 → `_ea` (9.4)
+- **Date:** 2026-07-17
+- **Area:** Security Solution — Detection Engine / Rule Management UI
+- **Status:** Code-path confirmed; matches known open bug
+- **Related:**
+  - [kibana#239884](https://github.com/elastic/kibana/issues/239884) — open product bug: modal on every prebuilt upgrade when legacy ML jobs exist (no rule-type check)
+  - [#128334](https://github.com/elastic/kibana/pull/128334) — original V1/V2 → V3 gate (8.3)
+  - [#255339](https://github.com/elastic/kibana/pull/255339) — expanded `affectedJobIds` for V3 → `_ea` (9.4)
 
 ---
 

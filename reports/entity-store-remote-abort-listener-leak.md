@@ -1,14 +1,12 @@
 # Entity Store — remote logs extraction AbortSignal listener not removed
 
-**Date:** 2026-08-05
-**Owner:** Entity Analytics (`@elastic/security-entity-analytics`)
-**Files:**
-- Bug: `x-pack/solutions/security/plugins/entity_store/server/domain/logs_extraction/remote/remote_logs_extraction_client.ts`
-- Correct pattern: `x-pack/solutions/security/plugins/entity_store/server/domain/logs_extraction/logs_extraction_client.ts`
-- Same correct pattern elsewhere: `server/tasks/entity_maintainers/execution.ts`
-
+- **Date:** 2026-08-05
+- **Owner:** Entity Analytics (`@elastic/security-entity-analytics`)
+- **Files:**
+  - Bug: `x-pack/solutions/security/plugins/entity_store/server/domain/logs_extraction/remote/remote_logs_extraction_client.ts`
+  - Correct pattern: `x-pack/solutions/security/plugins/entity_store/server/domain/logs_extraction/logs_extraction_client.ts`
+  - Same correct pattern elsewhere: `server/tasks/entity_maintainers/execution.ts`
 **Introduced:** [elastic/kibana#266307](https://github.com/elastic/kibana/pull/266307) (CCS log-slice pagination, merged 2026-04-29) — `removeEventListener` deleted during refactor and never restored. Carried into the unified remote client by [elastic/kibana#268007](https://github.com/elastic/kibana/pull/268007) (CPS).
-
 **Prior art on that PR:** Macroscope flagged the missing remove as 🟠 High. Author ([@romulets](https://github.com/romulets)) dismissed it — *“This is not a functional bug, it's a log message being leaked. The complexity of cleaning on a try catch is not worth it.”* — and the thread was resolved without a fix. This report is a rediscovery, not a first finding.
 
 ---
