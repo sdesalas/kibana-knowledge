@@ -1,6 +1,6 @@
 ---
 name: focused-review
-description: Do a review pass focused on a specific angle (architecture, type hygiene, memory, performance, rbac, error handling, test coverage, over-engineering, clean code, solution integration, api contract, security, gating, concurrency, observability, documentation, dead code, i18n). Use when the user says "focused review", "/focused-review", or asks for a targeted pass over a diff or specific code. Accepts an argument naming the focus area — e.g. `/focused-review architecture`, `/focused-review performance`.
+description: Do a review pass focused on a specific angle (architecture, type hygiene, memory, performance, rbac, error handling, test coverage, over-engineering, clean code, solution integration, api contract, security, gating, concurrency, observability, telemetry, documentation, dead code, i18n). Use when the user says "focused review", "/focused-review", or asks for a targeted pass over a diff or specific code. Accepts an argument naming the focus area — e.g. `/focused-review architecture`, `/focused-review performance`.
 ---
 
 # Focused Review
@@ -35,7 +35,8 @@ Match the user's phrase (fuzzy, case-insensitive) to one of the focus areas belo
 | `security`, `hardening`, `injection`, `xss`, `input validation`              | security             |
 | `gating`, `feature flag`, `license`, `flag`                                  | gating               |
 | `concurrency`, `race`, `parallel`, `ordering`                                | concurrency          |
-| `observability`, `logging`, `apm`, `spans`                                   | observability        |
+| `observability`, `logging`, `apm`, `spans`, `tracing`, `traces`              | observability        |
+| `telemetry`, `ebt`, `usage stats`, `usage collector`, `analytics`            | telemetry            |
 | `documentation`, `docs`, `jsdoc`, `readme`                                   | documentation        |
 | `dead code`, `orphaned`, `unused`, `unreachable`                             | dead-code            |
 | `i18n`, `translation`, `translations`, `localization`, `l10n`                | i18n                 |
@@ -325,18 +326,38 @@ Kibana-specific style rules (from `.cursor/rules/code-style-guidelines.mdc`):
 
 ## observability
 
-**Principle:** An operator should be able to diagnose a failure from the signals the code already emits — logs, spans, metrics, audit events. A change is an observability concern when it removes, coarsens, or fragments signals a downstream consumer relies on.
+**Principle:** An operator should be able to trace and debug an existing execution from the signals the code already emits — logs, APM spans, traces, audit events. A change is an observability concern when it removes, coarsens, or fragments those signals, or when a new execution path lands without enough of them to diagnose a failure.
 
 **Look for:**
 - Debug / info logging removed without an equivalent APM span or metric taking over.
 - Spans that wrap a whole operation and lose per-item outcomes inside.
 - Error paths that log the message but not the entity id / correlation key.
-- Audit or metric events left in a partial state (start-without-end, unknown outcome).
+- New server-side paths without a named span that siblings already have.
+- Span labels that duplicate the span name or the transaction URL, or that overlap semantically with another field.
+- Audit events left in a partial state (start-without-end, unknown outcome).
 - Log-level choices that quietly demote diagnosis-worthy failures — write failures at `debug`, per-item errors at `trace`.
 
 *Examples:*
 - A refactor that collapses per-item info logs into a single wrapper span, so on-call can see "operation failed" but not which item.
 - An error log that reads "conflict" repeatedly without the entity id / correlation key needed to find the offending row.
+
+---
+
+## telemetry
+
+**Principle:** Usage signals — event-based telemetry (EBT) and periodic usage-stats snapshots — exist to measure software usage by third parties. Names, types, and descriptions are a long-lived contract. A change is a telemetry concern when an event or snapshot is added, dropped, or reshaped, or when reporting can silently lie — or break the product path it's attached to.
+
+**Look for:**
+- Events that omit an outcome the question needs — or fire on every call with no status to tell outcomes apart.
+- Telemetry failures that propagate into the product path instead of being swallowed and logged.
+- Collectors that zero the whole snapshot on one failure, throw when the feature or data isn't there, or skip a cluster-wide metric because an unrelated early-return fired.
+- Snapshot values read from a persisted flag that only updates on write, so live state can drift.
+- Customer content or PII in payloads (full error messages, entity bodies).
+- Sender, event schema, and generated mapping disagreeing on the same field.
+
+*Examples:*
+- A collector lookup that validates full documents, so one malformed row rejects the promise and zeros every metric in the snapshot.
+- An event whose tests assert a field the sender never emits — the suite can't pass and the dashboard contract is undefined.
 
 ---
 
