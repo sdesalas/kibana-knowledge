@@ -105,11 +105,11 @@ await Promise.allSettled([
 ]);
 ```
 
-~~Import has no signal to turn this into a per-rule error. The rule saved object is disabled, but the task may remain scheduled; whether it can execute again depends on task-runner safeguards. The old `disableRule()` path propagated a rejected Task Manager call. Preserving parity likely requires extending the bulk-disable result contract, not only changing Security Solution code.
+~~Import has no signal to turn this into a per-rule error. The rule saved object is disabled, but the task may remain scheduled; whether it can execute again depends on task-runner safeguards. The old `disableRule()` path propagated a rejected Task Manager call. Preserving parity likely requires extending the bulk-disable result contract, not only changing Security Solution code.~~
 
-Follow-up activity 5 confirmed the execution impact is lower than first stated: Alerting's rule loader rejects a task whose saved object has `enabled: false` before calling the rule executor, and the task runner returns `shouldDisableTask`. The residual risk is stale-task cleanup and inaccurate import reporting, not another detection execution.~~ **(SKIPPED)** See follow-up activity 6.
+Follow-up activity 5 confirmed the execution impact is lower than first stated: Alerting's rule loader rejects a task whose saved object has `enabled: false` before calling the rule executor, and the task runner returns `shouldDisableTask`. The residual risk is stale-task cleanup and inaccurate import reporting, not another detection execution.~~ **(SKIPPED)** See follow-up activity 6. Activity 16: the same success definition also emits `detection_rule_import` for that rule, which `main` did not.
 
-3. **Low — the DRC now relies on a route-only maximum-size invariant.** `importRules()` no longer chunks before constructing the installed-rule KQL lookup. The current production route enforces 200, but another current or future caller can pass a larger array despite `ImportRulesArgs.batchSize`, first risking the Elasticsearch clause floor and, at much larger sizes, Alerting's 10,000-rule hard limit. Either document/enforce the maximum in the DRC or keep the route-only assumption explicit in its interface. Revalidated in follow-up activity 5.
+3. ~~**Low — the DRC now relies on a route-only maximum-size invariant.** `importRules()` no longer chunks before constructing the installed-rule KQL lookup. The current production route enforces 200, but another current or future caller can pass a larger array despite `ImportRulesArgs.batchSize`, first risking the Elasticsearch clause floor and, at much larger sizes, Alerting's 10,000-rule hard limit. Either document/enforce the maximum in the DRC or keep the route-only assumption explicit in its interface. Revalidated in follow-up activity 5.~~ **(Dropped — nit; Alerting already 400s `batchSize > 500`, and a non-route caller with a huge array not only doesnt make a lot of sense but would need to pass a code review, not a problem)** See activity 18.
 
 4. ~~**Process/coverage — the prerequisite overwrite FTR PR is not merged.** [#291548](https://github.com/elastic/kibana/pull/291548) is open, while the ticket requires that coverage on `main` before this optimization merges. Existing `main` coverage is useful, but the additional interval, partial-success, change-history, and batch-sized enabled-state cases are not part of this branch.~~ **(MERGED)** #291548 merged 2026-09-23.
 
@@ -123,9 +123,9 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
 
 ### Open questions
 
-- Overwrite success was already mixed on `main` (item succeeds if `update` + optional `enableRule`/`disableRule` did not throw; a rejected TM enable/disable/remove was an import error; non-throwing per-item enable errors and post-write schedule-update failures were already silent). This PR is also mixed (enable TM failures map to import errors; but disable TM failures cannot be surfaced, so a disabled SO can still count as success). Plus no rollback after a failed toggle on either path. That means a slight difference in the definion of "success".. Are we okay that disable Task Manager failures are now silent versus `main`?
+- Overwrite "success" meaning was already mixed/unclear on `main` (item succeeds if `update` + optional `enableRule`/`disableRule` did not throw; a rejected TM enable/disable/remove was an import error; non-throwing per-item enable errors and post-write schedule-update failures were already silent). This PR is also mixed (enable TM failures map to import errors; but disable TM failures cannot be surfaced, so a disabled SO can still count as success). Plus no rollback after a failed toggle on either path. That means a slight difference in the definion of "success".. Are we okay that partial disable failures (Task Manager SO write fail) are now silent versus `main`?
 - Can Alerting expose disable/remove Task Manager failures by task or rule ID, matching `taskIdsFailedToBeEnabled`?
-- Should `DetectionRulesClient.importRules` reject inputs above `RULE_IMPORT_BATCH_SIZE`, or is it intentionally route-only?
+- ~~Should `DetectionRulesClient.importRules` reject inputs above `RULE_IMPORT_BATCH_SIZE`, or is it intentionally route-only?~~ **Answered — route-only; not worth enforcing. See activity 18.**
 - ~~Is rejecting every overwrite in a 200-rule chunk acceptable when only some enabled interval changes trip the schedule circuit breaker?~~ **Answered — yes for this PR; same as [tradeoff 7](https://github.com/elastic/kibana/pull/284946#discussion_r3797844388).**
 - ~~Should a top-level bulk toggle failure prevent independent creates in the same route chunk?~~ **Answered — no; fixed in activity 9.**
 - ~~Should a top-level bulk update rejection prevent independent creates in the same route chunk?~~ **Answered — no; fixed in activity 10.**
@@ -261,4 +261,32 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
     - Risks 2 and 3 in the description were real but overstated. Two-step enable/disable is the same leftover as main (`update` then `toggleRuleEnabledOnUpdate`); enable TM failures are already mapped. Disable TM failures are a reporting gap, not another detection run: `rule_loader` rejects `enabled: false` and the task runner returns `shouldDisableTask`.
     - From the live review, only the schedule-limit blast radius (review risk 5) belonged in the description. DRC route-only batch cap, legacy `scheduledTaskId`, and the extra `rule_enable` history item stayed out. Review risk 4 is stale: #291548 merged 2026-09-23.
     - Published the four-bullet rewrite on [elastic/kibana#291560](https://github.com/elastic/kibana/pull/291560): no feature flag, two-step leftover, silent disable as reporting-only, and schedule-limit chunk failure with a link to [tradeoff 7](https://github.com/elastic/kibana/pull/284946#discussion_r3797844388).
+
+16. **Focused telemetry review of the full PR diff.**
+    - **Finding**
+      - [nit] `overwrite_rules.ts:132-136` + `detection_rules_client.ts:261-269` — a disable Task Manager failure still lands in `successes`, so `detection_rule_import` fires as a clean success. The event has no outcome field, so usage stats cannot tell this apart from a fully successful overwrite. On `main`, thrown `disableRule()` never reached that loop. Same success definition as skipped Risk 2; noted on Risk 2 and the first open question.
+    - **Non-findings**
+      - Event name, schema, and payload are unchanged: `{ ruleId, ruleType, isPrebuilt, isCustomized }` from `{ id, type, rule_source }`. Sender, `ruleLifecycleTelemetrySchema`, and tests agree.
+      - Overwrite still uses the existing saved-object id and the import-calculated `ruleSource` that is also persisted. Create still uses the pre-generated id echoed by `bulkCreateRules`.
+      - Events fire only for `successes`. Conflicts, write errors, thrown update/create, and enable Task Manager failures do not emit. The route does not send a second copy.
+      - Route-level chunking emits after each 200-rule `importRules` call instead of once after the old inner loop. These are per-rule events, so no double-count.
+      - `sendRuleLifecycleTelemetryEvent` still swallows `reportEvent` failures at `debug`; they cannot fail the import.
+      - Payload is SO id + type + two booleans. No customer content or PII.
+      - No import usage-stats collector is involved; the 24h detection-rule lists task is unchanged.
+      - No request-level import event exists (unlike `detection_rule_bulk_upgrade`); that predates this PR.
+      - The HTTP response uses `successes.length` only; the `telemetry` field does not leave the server.
+
+17. **Focused observability review of the full PR diff.**
+    - **Findings**
+      - None.
+    - **Non-findings**
+      - Route-level chunking turns one `DetectionRulesClient.importRules` span into one span per 200-rule chunk. A 1,000-rule import now shows five sibling spans under the HTTP transaction, which makes a slow or failed batch easier to see.
+      - Overwrite, create, and toggle have no extra Security spans. That matches the old path (all work sat inside `importRules`). Alerting already nests named children (`bulkUpdateRules.*`, `bulkEnable` / `bulkDisable`, `taskManager.*`) under that span.
+      - Going from per-rule `update`/`enableRule`/`disableRule` to one bulk call coarsens per-rule APM into one write span. Per-item failures still land in Alerting error logs and the import response `rule_id`.
+      - The import route still has no `withSecuritySpan`. Same as `main`; history/restore routes do, but this route was never one of them.
+      - No Security import logs were removed. `overwrite_rules` / `create_rules` / `import_rules` still do not log; the route still `logger.error`s only the top-level catch.
+      - Disable Task Manager failures still appear only in Alerting logs, not Security import logs. Same gap as skipped Risk 2, not a new log regression.
+      - Change-history audit still writes through Alerting bulk APIs (the extra `rule_enable` item is activity 4, not a missing audit).
+
+18. **Dropped Risk 3.** Alerting already 400s `batchSize > 500` on `bulkUpdateRules` / `bulkCreateRules`. A non-route caller passing a huge `rules` array with `batchSize` still at 200 could theoretically hit the KQL clause floor, but that is an edge case on an edge case and not worth tracking. Answered the DRC batch-cap open question: leave it route-only.
 

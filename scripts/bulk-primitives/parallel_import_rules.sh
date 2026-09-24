@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deletes all custom rules then imports rules from an ndjson file
+# Optionally deletes all custom rules, then imports rules from an ndjson file
 # on N Kibana instances in parallel.
 #
 # Targets are loaded from scripts/parallel.env.sh, which must define a TARGETS
@@ -8,15 +8,18 @@
 #
 # Override the env file with PARALLEL_ENV_FILE=/path/to/file.
 # Override the import file with IMPORT_FILE=/path/to/file.ndjson.
+# Skip the delete phase with DELETE=0 (default: 1).
 #
 # Usage:
 #   ./scripts/bulk-create/parallel_import_rules.sh
+#   DELETE=0 ./scripts/bulk-create/parallel_import_rules.sh
 #
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/.env.sh}"
 IMPORT_FILE="${IMPORT_FILE:-${SCRIPT_DIR}/../../data/rules-import/1000enabled-rules.ndjson}"
+DELETE="${DELETE:-1}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "env file not found: ${ENV_FILE}" >&2
@@ -283,10 +286,13 @@ run_import_in_parallel() {
 }
 
 EXIT=0
-run_delete_in_parallel || EXIT=1
-
-echo "Waiting ${POST_DELETE_WAIT_SECS}s before import..."
-sleep "$POST_DELETE_WAIT_SECS"
+if [[ "$DELETE" == "1" ]]; then
+  run_delete_in_parallel || EXIT=1
+  echo "Waiting ${POST_DELETE_WAIT_SECS}s before import..."
+  sleep "$POST_DELETE_WAIT_SECS"
+else
+  echo "Skipping delete (DELETE=${DELETE})"
+fi
 
 run_import_in_parallel || EXIT=1
 
