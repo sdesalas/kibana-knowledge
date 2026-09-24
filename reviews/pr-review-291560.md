@@ -18,7 +18,7 @@ Streaming itself and the prerequisite FTR audit are intentionally separate.
 
 ### Validating the issue — does this PR address it?
 
-The performance concern is valid. The PR addresses Todo items 2–5 correctly; item 6 is covered externally rather than changed in this commit. The enable reporting gap was fixed in follow-up activity 3; one lower-impact Task Manager disable-reporting gap remains after revalidation in activity 5.
+The performance concern is valid. The PR addresses Todo items 2–5. Item 1 is the prerequisite FTR on `main` via [#291548](https://github.com/elastic/kibana/pull/291548) (merged 2026-09-23). Item 6 is unchanged in this commit: no API integration tests were added alongside the write-path change; existing `main` coverage plus the item 1 FTR are treated as sufficient. The enable reporting gap was fixed in follow-up activity 3; one lower-impact Task Manager disable-reporting gap remains after revalidation in activity 5.
 
 - **Where the problem manifests:** the old overwrite path ran `rulesClient.update()` and enabled/disabled each rule separately with `pMap` concurrency 50. A 1,000-rule overwrite could therefore perform 1,000 independent update flows.
 - **How the PR fixes it:** the route sends chunks of 200 to the Detection Rules Client. Each chunk performs one `bulkUpdateRules()` call, maps Alerting IDs back to `rule_id`, then bulk-toggles only successfully updated rules whose enabled state changed.
@@ -28,15 +28,16 @@ The performance concern is valid. The PR addresses Todo items 2–5 correctly; i
 
 Todo assessment:
 
+- **1 — Complete externally:** overwrite FTR landed on `main` in [#291548](https://github.com/elastic/kibana/pull/291548) (merged 2026-09-23), before this optimization.
 - **2 — Complete:** overwrite now uses `bulkUpdateRules()`.
 - **3 — Complete for the concrete opportunity:** the duplicate prebuilt-asset fetch is removed.
 - **4 — Complete:** outer batching moved to `route.ts`; the DRC processes one supplied batch.
 - **5 — Complete:** focused tests cover route batching, update mapping, write errors, enabled-state changes, connector options, change tracking, and asset reuse.
-- **6 — Covered externally:** this commit changes no API integration tests. Existing tests on `main` cover basic overwrite, batch boundaries, and enabled-state changes; the additional prerequisite coverage is in [#291548](https://github.com/elastic/kibana/pull/291548), which is still open.
+- **6 — Not changed in this commit:** no API integration tests were added alongside the write-path change. Existing `main` tests already cover basic overwrite, batch boundaries, and enabled-state changes; item 1 added the extra interval, partial-success, change-history, and batch-sized enabled-state cases.
 
 ### Summary
 
-The PR replaces per-rule overwrite writes with one Alerting bulk update per 200-rule route chunk. It retains bulk create for new rules, separates enabled-state transitions into bulk enable/disable calls, preserves per-rule API responses, and removes a redundant prebuilt-asset lookup. The implementation matches the main ticket design, subject to the residual disable-reporting gap, the batch-scoped failure behavior below, and the external FTR prerequisite.
+The PR replaces per-rule overwrite writes with one Alerting bulk update per 200-rule route chunk. It retains bulk create for new rules, separates enabled-state transitions into bulk enable/disable calls, preserves per-rule API responses, and removes a redundant prebuilt-asset lookup. The implementation matches the main ticket design, subject to the residual disable-reporting gap and the batch-scoped failure behavior below. Prerequisite overwrite FTR is on `main` via [#291548](https://github.com/elastic/kibana/pull/291548) (merged 2026-09-23).
 
 ### Files touched
 
@@ -67,7 +68,7 @@ The PR replaces per-rule overwrite writes with one Alerting bulk update per 200-
 - Route duplicate handling guarantees one effective imported rule per `rule_id` before the DRC builds maps keyed by rule or saved-object ID.
 - `bulkUpdateRules()` reports every failed persisted item through `errors` and every persisted item through `successfulIds`.
 - A missing entry in `matchingAssetsByRuleId` is an authoritative lookup miss for the imported `(rule_id, version)`.
-- Import success is intended to include operational scheduling success, not merely persistence of the rule saved object. The current PR description implies this by treating toggle errors as import errors.
+- Import success is mixed, not a single contract. Enable Task Manager failures are mapped to import errors (`taskIdsFailedToBeEnabled`). Disable Task Manager failures cannot be surfaced — the rule SO is disabled and the import can still count as success. The published PR description now states that split explicitly.
 
 These assumptions were revalidated and qualified in follow-up activity 5.
 
@@ -110,7 +111,7 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
 
 3. **Low — the DRC now relies on a route-only maximum-size invariant.** `importRules()` no longer chunks before constructing the installed-rule KQL lookup. The current production route enforces 200, but another current or future caller can pass a larger array despite `ImportRulesArgs.batchSize`, first risking the Elasticsearch clause floor and, at much larger sizes, Alerting's 10,000-rule hard limit. Either document/enforce the maximum in the DRC or keep the route-only assumption explicit in its interface. Revalidated in follow-up activity 5.
 
-4. **Process/coverage — the prerequisite overwrite FTR PR is not merged.** [#291548](https://github.com/elastic/kibana/pull/291548) is open, while the ticket requires that coverage on `main` before this optimization merges. Existing `main` coverage is useful, but the additional interval, partial-success, change-history, and batch-sized enabled-state cases are not part of this branch.
+4. ~~**Process/coverage — the prerequisite overwrite FTR PR is not merged.** [#291548](https://github.com/elastic/kibana/pull/291548) is open, while the ticket requires that coverage on `main` before this optimization merges. Existing `main` coverage is useful, but the additional interval, partial-success, change-history, and batch-sized enabled-state cases are not part of this branch.~~ **(MERGED)** #291548 merged 2026-09-23.
 
 5. **Low — a schedule-limit overflow rejects unrelated overwrites in the same 200-rule chunk.** `bulkUpdateRules()` intentionally validates changed intervals as one batch. On overflow it returns errors for every prepared item, not only the enabled rules whose intervals contributed to the limit. Because import passes each 200-rule route chunk as one Alerting batch, disabled rules and rules with unchanged schedules in that chunk also fail. The old per-rule path isolated the circuit-breaker failure to the individual update. This is a documented `bulkUpdateRules()` tradeoff from [#286508](https://github.com/elastic/kibana/pull/286508), but it is still an import behavior change worth accepting explicitly. Identified in follow-up activity 5.
 
@@ -122,14 +123,14 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
 
 ### Open questions
 
-- Should `_import` success mean “rule saved object persisted” or “rule persisted and requested scheduling state applied”? The implementation and PR description currently imply the latter.
+- Overwrite success was already mixed on `main` (item succeeds if `update` + optional `enableRule`/`disableRule` did not throw; a rejected TM enable/disable/remove was an import error; non-throwing per-item enable errors and post-write schedule-update failures were already silent). This PR is also mixed (enable TM failures map to import errors; but disable TM failures cannot be surfaced, so a disabled SO can still count as success). Plus no rollback after a failed toggle on either path. That means a slight difference in the definion of "success".. Are we okay that disable Task Manager failures are now silent versus `main`?
 - Can Alerting expose disable/remove Task Manager failures by task or rule ID, matching `taskIdsFailedToBeEnabled`?
 - Should `DetectionRulesClient.importRules` reject inputs above `RULE_IMPORT_BATCH_SIZE`, or is it intentionally route-only?
-- Is rejecting every overwrite in a 200-rule chunk acceptable when only some enabled interval changes trip the schedule circuit breaker?
+- ~~Is rejecting every overwrite in a 200-rule chunk acceptable when only some enabled interval changes trip the schedule circuit breaker?~~ **Answered — yes for this PR; same as [tradeoff 7](https://github.com/elastic/kibana/pull/284946#discussion_r3797844388).**
 - ~~Should a top-level bulk toggle failure prevent independent creates in the same route chunk?~~ **Answered — no; fixed in activity 9.**
 - ~~Should a top-level bulk update rejection prevent independent creates in the same route chunk?~~ **Answered — no; fixed in activity 10.**
 - Should import add coverage for a disabled rule whose existing `scheduledTaskId` differs from its rule saved-object ID, or should Alerting fix that behavior first?
-- Will #291548 merge into `main` before this PR, as required by the ticket?
+- ~~Will #291548 merge into `main` before this PR, as required by the ticket?~~ **Answered — yes; merged 2026-09-23.**
 
 ### Notes for your codebase map
 
@@ -174,7 +175,7 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
    - Decision: leave the extra history item. Folding enable into the import event is not possible without Alerting allowing `enabled` on update, and matching main would mean suppressing a real write. Parity belongs to #262665.
 
 5. **Revalidated the assumptions and current PR head after the enable-failure fix.**
-   - The implementation commit was rebased from the historical `6c0357028e8f` referenced above to `029bfcf6d52c`; current head is `dd1c5d1965f7`.
+   - The implementation commit was rebased from the historical `6c0357028e8f` referenced above to `029bfcf6d52c`; current head at that revalidation was `dd1c5d1965f7`. Later verified head is `2272f0d19cf8` (see activities 14–15).
    - A repository-wide caller search found the HTTP route as the only production caller of `DetectionRulesClient.importRules`. Direct calls remain possible through the public interface, which is why Risk 3 still stands.
    - Route duplicate handling is global and keyed by `rule_id` before chunking; overwrite keeps one last value. This satisfies the maps in import and Alerting, which otherwise collapse duplicate IDs.
    - With unique IDs and `exitEarlyOnError: false`, `bulkUpdateRules()` accounts for each returned item through `successfulIds` or `errors`; thrown whole-call failures are converted to per-rule import errors by the DRC catch. No silent unaccounted row was found.
@@ -251,4 +252,13 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
       - `bulkUpdateRules()` re-establishes `WriteOperations.Update` authorization for every loaded rule type and consumer before using the unsecured Saved Objects client. Rule-parameter, connector/action, and system-action authorization also remain in the per-item preparation path.
       - Bulk enable and disable combine the requested IDs with a read authorization filter, then enforce `BulkEnable` or `BulkDisable` authorization before writing. The single and bulk operations belong to the same Alerting enable privilege group, so replacing the old calls does not widen access.
       - Authorization failures cannot reach an unsecured write for the rejected Alerting batch. Import maps rejected update and toggle calls back to the submitted rules without bypassing the underlying check.
+
+14. **Verified PR-description risks 2 and 3 against current head `2272f0d19cf8`.**
+    - **Risk 2 (two-step write) is real, but not new.** `bulkUpdateRules()` pins `enabled: originalRule.enabled`. Import then calls `bulkEnableRules` / `bulkDisableRules` only for successful IDs whose `enabled` flipped. Main did the same split: `rulesClient.update` then `toggleRuleEnabledOnUpdate` → `enableRule` / `disableRule`. Both old and new write the rule SO first, then the TM task. If the toggle fails after the field write, the updated fields stay; there is no rollback/cleanup on either path. After the enable-mapping fix, a failed enable is reported (`taskIdsFailedToBeEnabled` or a thrown call). The leftover is the same as main: SO can be `enabled: true` with no running task, and a repeat overwrite skips the toggle because the SO is already enabled.
+    - **Risk 3 (silent disable) is real as a reporting gap, overstated as an execution risk.** `BulkDisableRulesResult` is `{ rules, errors, total }` — no failed-task IDs. `tryToDisableTasks` logs TM errors/throws and returns nothing; `tryToRemoveTasks` builds `taskIdsFailedToBeDeleted` but `Promise.allSettled` discards it. Import only reads `errors` (SO write failures). Old `disableRule()` awaited TM and threw (`disable_rule.test.ts` “throws when failing to disable task”), so overwrite used to fail that item. New path reports success. Execution is still blocked: `rule_loader.ts` throws `Disabled` when `!enabled`, and the task runner returns `shouldDisableTask`, so the leftover scheduled task should self-disable on the next tick rather than keep detecting. Surfacing the failure still needs an Alerting contract change.
+
+15. **Revalidated the PR-description Risks section and published the rewrite.** Checked the live description against current head `2272f0d19cf8` and the remaining open review risks.
+    - Risks 2 and 3 in the description were real but overstated. Two-step enable/disable is the same leftover as main (`update` then `toggleRuleEnabledOnUpdate`); enable TM failures are already mapped. Disable TM failures are a reporting gap, not another detection run: `rule_loader` rejects `enabled: false` and the task runner returns `shouldDisableTask`.
+    - From the live review, only the schedule-limit blast radius (review risk 5) belonged in the description. DRC route-only batch cap, legacy `scheduledTaskId`, and the extra `rule_enable` history item stayed out. Review risk 4 is stale: #291548 merged 2026-09-23.
+    - Published the four-bullet rewrite on [elastic/kibana#291560](https://github.com/elastic/kibana/pull/291560): no feature flag, two-step leftover, silent disable as reporting-only, and schedule-limit chunk failure with a link to [tradeoff 7](https://github.com/elastic/kibana/pull/284946#discussion_r3797844388).
 
