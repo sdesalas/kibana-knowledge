@@ -88,7 +88,7 @@ if (enableIds.length > 0) {
 
 ~~The saved object can therefore be `enabled: true`, `_import` can count it as successful, and its task can remain disabled or unavailable. Impact is high because this is a silent missed-detection state; likelihood is lower because it requires a Task Manager failure. The old `enableRule()` path propagated a rejected Task Manager call. This needs either failure mapping from `taskIdsFailedToBeEnabled` or an explicit decision that import success only covers persistence.~~ **(FIXED)** See follow-up activity 3.
 
-2. **Low — disable can report success while Task Manager failed to disable or remove the task.** Alerting bulk disable waits with `Promise.allSettled`, logs Task Manager failures, and returns no failed task IDs:
+2. ~~**Low — disable can report success while Task Manager failed to disable or remove the task.** Alerting bulk disable waits with `Promise.allSettled`, logs Task Manager failures, and returns no failed task IDs:~~
 
 ```89:99:x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/bulk_disable_rules.ts
 const [taskIdsToDisable, taskIdsToDelete, taskIdsToClearState] = accListSpecificForBulkOperation;
@@ -104,9 +104,9 @@ await Promise.allSettled([
 ]);
 ```
 
-Import has no signal to turn this into a per-rule error. The rule saved object is disabled, but the task may remain scheduled; whether it can execute again depends on task-runner safeguards. The old `disableRule()` path propagated a rejected Task Manager call. Preserving parity likely requires extending the bulk-disable result contract, not only changing Security Solution code.
+~~Import has no signal to turn this into a per-rule error. The rule saved object is disabled, but the task may remain scheduled; whether it can execute again depends on task-runner safeguards. The old `disableRule()` path propagated a rejected Task Manager call. Preserving parity likely requires extending the bulk-disable result contract, not only changing Security Solution code.
 
-Follow-up activity 5 confirmed the execution impact is lower than first stated: Alerting's rule loader rejects a task whose saved object has `enabled: false` before calling the rule executor, and the task runner returns `shouldDisableTask`. The residual risk is stale-task cleanup and inaccurate import reporting, not another detection execution.
+Follow-up activity 5 confirmed the execution impact is lower than first stated: Alerting's rule loader rejects a task whose saved object has `enabled: false` before calling the rule executor, and the task runner returns `shouldDisableTask`. The residual risk is stale-task cleanup and inaccurate import reporting, not another detection execution.~~ **(SKIPPED)** See follow-up activity 6.
 
 3. **Low — the DRC now relies on a route-only maximum-size invariant.** `importRules()` no longer chunks before constructing the installed-rule KQL lookup. The current production route enforces 200, but another current or future caller can pass a larger array despite `ImportRulesArgs.batchSize`, first risking the Elasticsearch clause floor and, at much larger sizes, Alerting's 10,000-rule hard limit. Either document/enforce the maximum in the DRC or keep the route-only assumption explicit in its interface. Revalidated in follow-up activity 5.
 
@@ -114,9 +114,11 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
 
 5. **Low — a schedule-limit overflow rejects unrelated overwrites in the same 200-rule chunk.** `bulkUpdateRules()` intentionally validates changed intervals as one batch. On overflow it returns errors for every prepared item, not only the enabled rules whose intervals contributed to the limit. Because import passes each 200-rule route chunk as one Alerting batch, disabled rules and rules with unchanged schedules in that chunk also fail. The old per-rule path isolated the circuit-breaker failure to the individual update. This is a documented `bulkUpdateRules()` tradeoff from [#286508](https://github.com/elastic/kibana/pull/286508), but it is still an import behavior change worth accepting explicitly. Identified in follow-up activity 5.
 
-6. **Medium — a top-level bulk enable/disable rejection couples unrelated rules after persistence.** Returned item errors and Task Manager failures are handled, but a rejection from `bulkEnableRules()` or `bulkDisableRules()` bubbles out of `overwriteRules()`. The outer catch then reports every unresponded rule in the route chunk as failed and skips the create bucket, even when some overwrites were already persisted or needed no enabled-state change. The old `pMap` path caught a thrown toggle per overwrite and continued. This requires a less common top-level Alerting failure (for example PIT, authorization, or saved-object access), but the impact spans partial persistence and up to the full 200-rule chunk, and there is no focused test for it. Identified in follow-up activity 5.
+6. ~~**Medium — a top-level bulk enable/disable rejection couples unrelated rules after persistence.** Returned item errors and Task Manager failures are handled, but a rejection from `bulkEnableRules()` or `bulkDisableRules()` bubbles out of `overwriteRules()`. The outer catch then reports every unresponded rule in the route chunk as failed and skips the create bucket, even when some overwrites were already persisted or needed no enabled-state change. The old `pMap` path caught a thrown toggle per overwrite and continued. This requires a less common top-level Alerting failure (for example PIT, authorization, or saved-object access), but the impact spans partial persistence and up to the full 200-rule chunk, and there is no focused test for it. Identified in follow-up activity 5.~~ **(FIXED)** See follow-up activity 9.
 
 7. **Low — a disabled rule with a valid legacy task ID can be left enabled but unscheduled.** `bulkEnableRules()` decides whether to schedule a replacement by checking the original `scheduledTaskId`, but always persists `scheduledTaskId: rule.id` and later enables that rewritten ID. If the original task exists under a different ID, no replacement is scheduled, the saved object points at a task that does not exist, and the old task is no longer referenced. The Risk 1 fix should report the failed `rule.id` enable, but the saved object remains enabled and a repeat import skips the toggle. The old single-rule `enableRule()` instead re-enabled the original task ID. This is limited to legacy or otherwise noncanonical persisted state, but the explicit nonmatching-ID handling in both disable paths confirms that state is supported. Identified in follow-up activity 5.
+
+8. ~~**Low — a top-level bulk update rejection still skips independent creates in the same route chunk.** `overwriteRules()` lets a rejected `bulkUpdateRules()` escape. The outer `importRules()` catch then reports every unresponded rule as failed and exits before `createRules()`, even though the create bucket is independent. Alerting already converts normal preparation and saved-object write failures into per-item errors, so the remaining rejection paths are uncommon batch-level failures such as PIT loading, authorization, or client acquisition. Main's old per-rule flow isolated those failures and still processed creates. Catching at the overwrite bucket boundary could map the rejection only to `toOverwrite` and continue with `toCreate`.~~ **(FIXED)** See follow-up activity 10.
 
 ### Open questions
 
@@ -124,7 +126,8 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
 - Can Alerting expose disable/remove Task Manager failures by task or rule ID, matching `taskIdsFailedToBeEnabled`?
 - Should `DetectionRulesClient.importRules` reject inputs above `RULE_IMPORT_BATCH_SIZE`, or is it intentionally route-only?
 - Is rejecting every overwrite in a 200-rule chunk acceptable when only some enabled interval changes trip the schedule circuit breaker?
-- Should a top-level bulk toggle failure prevent independent creates in the same route chunk?
+- ~~Should a top-level bulk toggle failure prevent independent creates in the same route chunk?~~ **Answered — no; fixed in activity 9.**
+- ~~Should a top-level bulk update rejection prevent independent creates in the same route chunk?~~ **Answered — no; fixed in activity 10.**
 - Should import add coverage for a disabled rule whose existing `scheduledTaskId` differs from its rule saved-object ID, or should Alerting fix that behavior first?
 - Will #291548 merge into `main` before this PR, as required by the ticket?
 
@@ -182,4 +185,70 @@ Follow-up activity 5 confirmed the execution impact is lower than first stated: 
    - Found no additional correctness issue in route aggregation, connector/action validation, exception-list sanitization, API-key handling, telemetry forwarding, or the normal successful ordering.
    - Current status check: #291560 is still a draft and has only lightweight checks; full Buildkite CI has not been triggered. Prerequisite #291548 remains open, with `kibana-ci` green but review still required.
    - Re-ran the focused import-client and route Jest suites on current head: 34 tests passed (27 + 7).
+
+6. **Checked whether bulk disable returns a Task Manager failure list like Risk 1.** It does not. `BulkDisableRulesResult` is `{ rules, errors, total }`. `errors` is only saved-object write failures. There is no `taskIdsFailedToBeDisabled` (or any other failed-task field) on the method result or the HTTP schema.
+   - `tryToDisableTasks` reads `bulkDisable` errors and a thrown `bulkDisable`, then logs them and returns nothing.
+   - `tryToRemoveTasks` does build `taskIdsFailedToBeDeleted` and returns it, but `bulkDisableRules` wraps both calls in `Promise.allSettled` and discards that return value.
+   - Import only destructures `errors` from `bulkDisableRules`. Unlike Risk 1, there is nothing local to map. Surfacing these failures still needs an Alerting contract change.
+
+7. **Confirmed Risk 6 on current head `a60d0847eb3e` and narrowed its scope and fix.**
+   - `overwriteRules()` records no successes until both top-level toggle calls finish. A rejection from either call therefore escapes to `importRules()` after `bulkUpdateRules()` has already persisted every successful overwrite.
+   - The outer catch marks every unresponded rule in that route batch as failed and exits before `createRules()`. This includes successfully persisted overwrites that needed no toggle, plus new rules in the same batch. The route continues with later batches, so the maximum blast radius is the current 200-rule chunk rather than the full import.
+   - These calls can reject before or around the toggle saved-object write: authorization and Saved Objects lookup failures, an empty post-update match, PIT iteration failures, Task Manager bulk scheduling failures during enable, and top-level Saved Objects write failures. Normal per-item write errors and Task Manager enable/disable failures do not use this path.
+   - Main's old `pMap` flow caught a thrown single-rule toggle inside that rule's iteration and still processed unrelated overwrites and creates. The new behavior is therefore a verified loss of failure isolation.
+   - A local fix is sufficient: catch enable and disable rejections independently, map each rejection only to the IDs submitted to that operation, and continue the other toggle and the create bucket. Marking every submitted toggle ID failed is conservative because a top-level rejection can occur after partial persistence. Focused mixed-batch tests should cover both enable and disable rejection and assert that unchanged overwrites, the other toggle group, and creates still complete.
+
+8. **Implemented the Risk 6 fix in the working tree.**
+   - `toggleState()` now catches top-level enable and disable rejections independently and maps each rejection only to the IDs submitted to that operation.
+   - A shared failure recorder deduplicates returned item errors, Task Manager enable failures, and rejected-call errors while preserving their public `rule_id` mapping.
+   - Added mixed-batch tests for both rejection paths. They verify that unchanged overwrites, the opposite toggle group, and new-rule creation continue successfully.
+   - Focused Jest passed: 29 tests. ESLint, IDE diagnostics, and `git diff --check` also passed.
+
+9. **Focused error-handling review of the full PR diff.**
+   - **Finding**
+     - [should-fix] import_rules.ts:109-138 — a rejected bulkUpdateRules() still skips independent creates in that batch. Raised as Risk 8. 
+   - **Non-findings**
+     - `toggleState()` now isolates enable and disable rejections correctly.
+     - Per-item update/create errors retain rule IDs.
+     - Completed overwrites survive later create failures.
+     - Route batches continue after returned errors.
+     - Telemetry failures are safely swallowed.
+     - `bulkCreateRules()` can reject for batch-level preconditions and dependencies: invalid limits, username/actions client acquisition, bulk authorization, schedule-limit validation, or an unexpected uncaught framework failure.
+     - Normal per-rule validation/preparation failures, Task Manager scheduling failures, whole-call saved-object write failures, and per-row saved-object failures are returned through `errors`.
+     - Import's outer catch maps a remaining `bulkCreateRules()` rejection only to the unresponded create rules because overwrites have already been recorded, and create is the final bucket. With route and Alerting batch sizes both 200, the create subset also uses at most one internal batch. No create-side analogue of Risk 8 was found.
+
+10. **Implemented the Risk 8 fix in `overwriteRules()`.**
+    - A rejected `bulkUpdateRules()` is now mapped only to overwrite inputs that reached the bulk call, preserving earlier per-rule preparation errors.
+    - `overwriteRules()` returns the partial result instead of rejecting, so `importRules()` continues with the independent create bucket.
+    - Extended the rejection test with a mixed overwrite/create batch and verified that the overwrite reports `kaboom` while the new rule succeeds.
+    - Focused Jest passed: 29 tests. ESLint, IDE diagnostics, and `git diff --check` also passed.
+
+11. **Focused architecture review of the full PR diff.**
+    - **Finding**
+      - [nit] `detection_rules_client.ts:51,250` imports `RULE_IMPORT_BATCH_SIZE` from the API layer, while `route.ts:192,201` uses the same constant for both route chunking and Alerting's inner write batch. This keeps logic dependent on transport code and conflates two independently tunable policies. It is the layering aspect of Risk 3 rather than a new correctness risk.
+    - **Non-findings**
+      - Moving outer chunking to the route matches the ticket's ownership goal and leaves the Detection Rules Client responsible for one supplied batch.
+      - Sharing `ImportRulesOptions` between create and overwrite removes duplicate write configuration without widening the public interface.
+      - Passing a prefetched asset through `applyRuleUpdate()` keeps rule-source calculation in its existing merger layer and avoids an import-specific duplicate fetch without introducing a dependency cycle.
+      - Alerting production code is unchanged; the added Alerting tests document the dependency contract this Security Solution path relies on, so they are in scope rather than a cross-plugin drive-by.
+      - The create, overwrite, validation, and route aggregation responsibilities remain separated along the existing boundaries.
+
+12. **Focused performance review of the full PR diff.**
+    - **Finding**
+      - [nit] `find_installed_rules_by_signature_ids.ts:35-48` still scales its KQL clause list and `perPage` directly with the caller's input. The production route caps this at 200, but the public Detection Rules Client does not enforce that bound. This revalidates Risk 3 rather than adding a new risk.
+    - **Non-findings**
+      - The overwrite path replaces up to 200 independent update flows with one `bulkUpdateRules()` call plus at most one bulk enable and one bulk disable call.
+      - Prebuilt context requests run concurrently, and the matching asset map prevents a second per-rule asset fetch during overwrite.
+      - Route chunks run sequentially, bounding concurrent Saved Objects, API-key, and Task Manager work; there is no new unbounded fan-out.
+      - The overwrite preparation loop is sequential, but its former per-rule I/O is removed by the prefetched asset or explicit miss, so dropping `pMap` does not serialize network requests.
+      - New maps, sets, and arrays are linear in the 200-rule route chunk. Parsing and full-request response aggregation still retain the current bounded import in memory, but that behavior predates this PR and streaming remains intentionally deferred.
+
+13. **Focused RBAC review of the full PR diff.**
+    - **Findings**
+      - None.
+    - **Non-findings**
+      - The import route still requires `RULES_API_ALL`, matching the existing create, update, and delete rule routes.
+      - `bulkUpdateRules()` re-establishes `WriteOperations.Update` authorization for every loaded rule type and consumer before using the unsecured Saved Objects client. Rule-parameter, connector/action, and system-action authorization also remain in the per-item preparation path.
+      - Bulk enable and disable combine the requested IDs with a read authorization filter, then enforce `BulkEnable` or `BulkDisable` authorization before writing. The single and bulk operations belong to the same Alerting enable privilege group, so replacing the old calls does not widen access.
+      - Authorization failures cannot reach an unsecured write for the rejected Alerting batch. Import maps rejected update and toggle calls back to the submitted rules without bypassing the underlying check.
 
