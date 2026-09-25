@@ -9,7 +9,9 @@
 
 ## Summary
 
-[`import_rules/route.ts`](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts) handles `POST /api/detection_engine/rules/_import`. It has to import **connectors and exceptions before rules**, but the NDJSON file is written the other way around, (see [`export_rules/route.ts` L115](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/export_rules/route.ts#L115)).
+[`import_rules/route.ts`](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts) handles `POST /api/detection_engine/rules/_import`. 
+
+It has to import **connectors and exceptions before rules**, but the NDJSON file is written the other way around, (see [`export_rules/route.ts` L115](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/export_rules/route.ts#L115)).
 
 ```
 ${rulesNdjson}         <-- Rules top of the file
@@ -24,7 +26,7 @@ If we upload 10K rules, it loads ALL 10K rules into memory (200MB heap usage, 4-
 
 | | heapUsed | RSS |
 |---|---:|---:|
-| Retained (`rules` after the await) | **~120 MB** | **~450 MB** |
+| 10KRetained (`rules` after the await) | **~120 MB** | **~450 MB** |
 | Peak during the await (JSON.parse + Zod copy both live) | **~160–200 MB** | **~490 MB** |
 
 See [Heap measurement](#heap-measurement) below.
@@ -41,6 +43,8 @@ zstd level 3 (Node 24 `zlib`, no extra dep) took a 12k-rule fixture from **102 M
 
 ## Approach
 
+The following approach used in a 10K rule import would **reduce peak heap by ~10×** from ~160–200 MB to 15–20 MB. See [Expected heap (before vs after)](#expected-heap-before-vs-after).
+
 We create one in-memory zstd stream for rule lines.
 
 The existing maps already run **one line at a time** (split → parse → filter → migrate → strip). The memory problem is `sortImports`: it is a reduce that keeps every parsed rule until the file ends. Do not do that.
@@ -54,8 +58,6 @@ Classify each parsed object the way `sortImports` already does (top-level keys o
 - else → rule: write the **raw line bytes** to the zstd stream, then discard the parsed object
 
 Exceptions and connectors are tiny. Leave them as arrays. `errors[]` is a `BulkError` list passed forward — do not mix `Error` into a `rules[]`. If you keep parsed rules, compression is pointless.
-
-This way peak heap during slurp of 10K rules would be reduced ~10× from ~160–200 MB to 15–20 MB. See [Expected heap (before vs after)](#expected-heap-before-vs-after).
 
 ```ts
 // after the Hapi stream is fully classified and rulesZstd.end()
