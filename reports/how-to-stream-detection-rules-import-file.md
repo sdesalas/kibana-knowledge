@@ -1,6 +1,6 @@
-# How to stream a detection rules import file
+# Avoiding OOM in the detection rules import with compressed memory stream
 
-- **Date:** 2026-09-15
+- **Date:** 2026-09-15 (heap numbers: 2026-09-25)
 - **Status:** Design only. Not implemented.
 - **Related:** [#275695](https://github.com/elastic/kibana/pull/275695) (import create path), [#290918](https://github.com/elastic/kibana/issues/290918) (10 MB payload cap)
 - **Fixture:** `.knowledge/data/rules-import/12000disabled-rules.internal.ndjson`
@@ -9,31 +9,53 @@
 
 ## Summary
 
-[`import_rules/route.ts`](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts) handles `POST /api/detection_engine/rules/_import`. It has to import **connectors and exceptions before rules**, but the NDJSON file is written the other way around: rules, then exceptions, then connectors, then a details footer ([`export_rules/route.ts` L115](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/export_rules/route.ts#L115)).
+[`import_rules/route.ts`](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts) handles `POST /api/detection_engine/rules/_import`. It has to import **connectors and exceptions before rules**, but the NDJSON file is written the other way around, (see [`export_rules/route.ts` L115](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/export_rules/route.ts#L115)).
 
-```ts
-`${rulesNdjson}${exceptionLists}${actionConnectors}${exportDetails}`
+```
+${rulesNdjson}         <-- Rules top of the file
+${exceptionLists}      <-- Dependencies appear after 
+${actionConnectors}        🤷‍♂ (oh dear)
+${exportDetails}
 ```
 
-That’s why the route today slurps the whole upload (`createPromiseFromRuleImportStream` → `sortImports` → `createConcatStream([])`) before it does any writes.
+Because of this, the route today slurps the whole upload. 
+
+If we upload 10K rules, it loads ALL 10K rules into memory (200MB heap usage, 4-500MB RSS)(`createPromiseFromRuleImportStream` → `sortImports` → `createConcatStream([])`) before it does any writes.
+
+| | heapUsed | RSS |
+|---|---:|---:|
+| Retained (`rules` after the await) | **~120 MB** | **~450 MB** |
+| Peak during the await (JSON.parse + Zod copy both live) | **~160–200 MB** | **~490 MB** |
+
+See [Heap measurement](#heap-measurement) below.
 
 A file that mixes rules, exceptions, and connectors — with connectors and exceptions required first — is a **poor streaming format**: you cannot emit a usable first batch until you’ve seen the tail. Scanning backwards would also get you the tail first, but it’s a bad idea. A `HapiReadableStream` (and a single zstd/deflate blob) only goes forward, so “backwards” means buffering the whole thing anyway.
 
-The useful move is a **forward classify**. Read the Hapi upload once. Park connectors and exceptions in small arrays. Spill rule lines into one **in-memory zstd stream**.
+There is another pproach that works here, to **forward classify and compress**. Read the Hapi upload once. Park connectors and exceptions in small arrays. Spill rule lines into one **in-memory [zstd](https://en.wikipedia.org/wiki/Zstd) stream**.
 
 When the upload ends, import deps, then stream-inflate rules in batches of 200. That matches the [DRC comment](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts#L70-L71) that outer batching should live in `route.ts` if we ever stop holding every rule in RAM.
 
-zstd level 3 (Node 24 `zlib`, no extra dep) took the 12k-rule fixture from **102 MB → 16.9 MB in 185 ms**. The real win is not keeping 12k parsed rule objects. This does not raise Hapi’s 10 MB `maxRuleImportPayloadBytes` — compression happens after the body is already accepted.
-
-Not for #275695. Do it when we raise the cap or when heap on large imports is the next bottleneck. No temp files.
+zstd level 3 (Node 24 `zlib`, no extra dep) took a 12k-rule fixture from **102 MB → 16.9 MB in 185 ms**. This approach reduced memory usage by not keeping 12k parsed rule objects.
 
 ---
 
-## Possible approach
+## Approach
 
-Classify each line the way `sortImports` already does: `attributes` → connector, `list_id` / `item_id` / `entries` → exception, `exportedCount` → drop, else rule. Write the **raw line bytes**. Throw away the parsed object — if you keep parsed rules, compression is pointless.
+We create one in-memory zstd stream for rule lines.
 
-You only need **one** zstd stream, for rules. Exceptions and connectors are tiny. Leave them as arrays.
+The existing maps already run **one line at a time** (split → parse → filter → migrate → strip). The memory problem is `sortImports`: it is a reduce that keeps every parsed rule until the file ends. Do not do that.
+
+Classify each parsed object the way `sortImports` already does (top-level keys only):
+
+- `list_id` / `item_id` / `entries` → exception (keep)
+- `attributes` → connector (keep)
+- `exported_count` → drop
+- parse / schema failure populate → `errors[]`, drop the object
+- else → rule: write the **raw line bytes** to the zstd stream, then discard the parsed object
+
+Exceptions and connectors are tiny. Leave them as arrays. `errors[]` is a `BulkError` list passed forward — do not mix `Error` into a `rules[]`. If you keep parsed rules, compression is pointless.
+
+This way peak heap during slurp of 10K rules would be reduced ~10× from ~160–200 MB to 15–20 MB. See [Expected heap (before vs after)](#expected-heap-before-vs-after).
 
 ```ts
 // after the Hapi stream is fully classified and rulesZstd.end()
@@ -127,3 +149,40 @@ Missing only on Node **&lt; 22.15**, or a broken custom build (`--shared-zstd` w
 gzip / deflate / brotli are older and stable. Same availability: bundled, all platforms. zstd is not weaker on coverage — only on API stability.
 
 This path compresses and inflates in the **same process**. No host `zstd` CLI, no `.zst` on disk, no client-side codec.
+
+---
+
+## Heap measurement
+
+Measured 2026-09-25. First 10,000 lines of `.knowledge/data/rules-import/12000disabled-rules.internal.ndjson`: **85,060,484 bytes (~81 MB)** NDJSON, ~8.5 KB/rule (eql, ~5.6 KB `note`). Isolated Node 24 process (`--expose-gc`). Zod cost is a same-shape object-graph clone (strings shared) — a stand-in for `RuleToImport.safeParse` in `validateRulesStream`.
+
+RSS baseline for that process was ~43 MB, so this slurp is **+~410 MB retained / +~450 MB peak** on top of a Kibana server’s existing RSS.
+
+- `JSON.parse` of 10k rules: **~114 MB** heap (~11–13 KB/rule vs 8.5 KB JSON).
+- `validateRulesStream` then `safeParse`s **all 10k at once**. Peak is both object graphs: **~156 MB** measured. `createConcatStream([])` only wraps the one reduce result.
+- `sortImports` doing `[...acc.rules, item]` 10k times is pointer arrays. Noise.
+- Line strings do not all sit around — the reduce accumulates parsed objects as the stream flows.
+- The ~80 MB upload Buffer often stays mapped as **external**, not `heapUsed`. That is most of the RSS − heapUsed gap, with V8 `heapTotal` slack on top.
+
+The 120 MB `rules` array lives for the rest of the handler (dedup, action migration, then 200-rule `importRules` batches). Later writes add more. Default `maxRuleImportPayloadBytes` is 10 MB, so this file never reaches this line until [#290918](https://github.com/elastic/kibana/issues/290918).
+
+---
+
+## Expected heap (before vs after)
+
+After classify, before the 200-loop. 10k / 81 MB fixture, zstd -3.
+
+| | Before (today) | After (classify + zstd) | Notes |
+|---|---:|---:|---|
+| Parsed rules | **~114 MB** | **0** | Today `sortImports` keeps every `JSON.parse`. After: write raw line, drop the object. |
+| Zod clone | **~40 MB extra** (peak **~156 MB** with parse) | **0 retained** | Today `validateRulesStream` `safeParse`s all 10k at once. After: Zod one line or one 200-batch, then drop. |
+| Retained heap (`rules` after await) | **~120 MB** | **~15–20 MB** | After is almost all the zstd blob (~14 MB) + a ~1 MB `rule_id` map if you keep last-wins. |
+| Peak heap during the slurp | **~160–200 MB** | **~15–20 MB + ~25 KB** | After peak is growing zstd + one line (~8.5 KB) + one parse (~12 KB). Maybe one more Zod clone if you validate per line. |
+| Exceptions + connectors | in the same reduce acc | same arrays, tiny | Unchanged. Do not compress. |
+| `errors[]` | mixed `Error`s inside `rules[]` | `BulkError[]` only | Failures don’t keep a rule object alive. |
+| Upload Buffer (RSS / external) | **~80 MB** | **~80 MB** | Hapi still holds the POST. This approach does not free it. |
+| RSS (isolated process, ~43 MB baseline) | **~450 MB** retained / **~490 MB** peak | **~140 MB** ballpark | Baseline + ~80 MB upload + ~15 MB zstd + V8 slack. Not 450. |
+
+At the **current 10 MB cap**, after is ~1.5–2 MB zstd. The table is the #290918-sized file.
+
+Once you inflate 200s, add **~2–3 MB** for that batch (200 × ~12 KB), then drop it. The zstd blob stays until the handler ends.
