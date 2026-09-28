@@ -1,0 +1,396 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.test.ts
+index da1c367f4119..25ee021ab5dd 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.test.ts
+@@ -104,6 +104,7 @@ describe('Import rules route', () => {
+           telemetry: { id: 'id-1', type: 'query', rule_source: { type: 'internal' } },
+         },
+       ],
++      skipped: [],
+       errors: [],
+     });
+ 
+@@ -200,6 +201,7 @@ describe('Import rules route', () => {
+     });
+     clients.detectionRulesClient.importRules.mockResolvedValue({
+       successes: [],
++      skipped: [],
+       errors: [
+         createRuleImportErrorObject({ ruleId: 'rule-1', message: 'import failed' }),
+         createRuleImportErrorObject({
+@@ -234,6 +236,7 @@ describe('Import rules route', () => {
+     responseActions.mockResolvedValue({ valid: rules, errors: [] });
+     clients.detectionRulesClient.importRules.mockResolvedValue({
+       successes: [],
++      skipped: [],
+       errors: [],
+     });
+ 
+@@ -268,6 +271,12 @@ describe('Import rules route', () => {
+           telemetry: { id: 'id-rule-b', type: 'query', rule_source: { type: 'internal' } },
+         },
+       ],
++      skipped: [
++        {
++          rule_id: 'rule-d',
++          telemetry: { id: 'id-rule-d', type: 'query', rule_source: { type: 'internal' } },
++        },
++      ],
+       errors: [
+         createRuleImportErrorObject({ ruleId: 'rule-a', message: 'boom' }),
+         createRuleImportErrorObject({
+@@ -282,7 +291,7 @@ describe('Import rules route', () => {
+ 
+     expect(response.status).toEqual(200);
+     expect(response.body.success).toEqual(false);
+-    expect(response.body.success_count).toEqual(1);
++    expect(response.body.success_count).toEqual(2);
+     expect(response.body.errors).toEqual([
+       { rule_id: 'rule-a', error: { status_code: 400, message: 'boom' } },
+       { rule_id: 'rule-c', error: { status_code: 409, message: 'conflict' } },
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+index 6cd8b2c4b2ba..f810cfb2fd9b 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/import_rules/route.ts
+@@ -194,6 +194,7 @@ export const importRulesRoute = (
+             });
+ 
+           const successes: ImportRuleSuccess[] = [];
++          let skippedCount = 0;
+           const importErrors: ImportRuleError[] = [];
+           const bulkCount = validatedResponseActionsRules.length;
+ 
+@@ -209,6 +210,7 @@ export const importRulesRoute = (
+               batchSize: RULE_IMPORT_BATCH_SIZE,
+             });
+             successes.push(...result.successes);
++            skippedCount += result.skipped.length;
+             importErrors.push(...result.errors);
+           }
+ 
+@@ -228,7 +230,7 @@ export const importRulesRoute = (
+ 
+           const importRulesResponse: ImportRulesResponse = {
+             success: errors.length === 0,
+-            success_count: successes.length,
++            success_count: successes.length + skippedCount,
+             rules_count: rules.length,
+             errors,
+             exceptions_errors: exceptionsErrors,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
+index b576137f78bc..53d0d8ab394c 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/__mocks__/detection_rules_client.ts
+@@ -20,7 +20,7 @@ const createDetectionRulesClientMock = () => {
+     bulkDeleteRules: jest.fn(),
+     upgradePrebuiltRule: jest.fn(),
+     revertPrebuiltRule: jest.fn(),
+-    importRules: jest.fn().mockResolvedValue({ successes: [], errors: [] }),
++    importRules: jest.fn().mockResolvedValue({ successes: [], skipped: [], errors: [] }),
+     getRuleCustomizationStatus: jest.fn(),
+     getHistoryForRule: jest.fn(),
+     restoreRuleFromHistory: jest.fn(),
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
+index f9873224dfac..42955d34ce6d 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
+@@ -260,6 +260,77 @@ describe('detectionRulesClient.importRules', () => {
+     );
+   });
+ 
++  it('skips unchanged overwrite rules without writing or toggling their state', async () => {
++    const existingRule = {
++      ...getRulesSchemaMock(),
++      rule_id: 'existing-rule',
++      exceptions_list: [],
++    };
++    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++      'existing-rule': existingRule,
++    });
++
++    const result = await subject.importRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: true,
++      rules: [{ ...existingRule }],
++    });
++
++    expect(result).toEqual({
++      successes: [],
++      skipped: [
++        expect.objectContaining({
++          rule_id: 'existing-rule',
++          telemetry: expect.objectContaining({ id: existingRule.id }),
++        }),
++      ],
++      errors: [],
++    });
++    expect(rulesClient.bulkUpdateRules).not.toHaveBeenCalled();
++    expect(rulesClient.bulkEnableRules).not.toHaveBeenCalled();
++    expect(rulesClient.bulkDisableRules).not.toHaveBeenCalled();
++    expect(analytics.reportEvent).toHaveBeenCalledTimes(1);
++  });
++
++  it('only sends changed overwrite rules to bulkUpdateRules', async () => {
++    const unchanged = {
++      ...getRulesSchemaMock(),
++      id: 'unchanged-id',
++      rule_id: 'unchanged-rule',
++      exceptions_list: [],
++    };
++    const changed = {
++      ...getRulesSchemaMock(),
++      id: 'changed-id',
++      rule_id: 'changed-rule',
++      exceptions_list: [],
++    };
++    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++      'unchanged-rule': unchanged,
++      'changed-rule': changed,
++    });
++    rulesClient.bulkUpdateRules.mockResolvedValueOnce({
++      successfulIds: [changed.id],
++      errors: [],
++      total: 1,
++    });
++
++    const result = await subject.importRules({
++      allowMissingConnectorSecrets: false,
++      overwriteRules: true,
++      rules: [{ ...unchanged }, { ...changed, name: 'Changed name' }],
++    });
++
++    expect(rulesClient.bulkUpdateRules).toHaveBeenCalledWith(
++      expect.objectContaining({
++        rules: [expect.objectContaining({ id: changed.id })],
++      })
++    );
++    expect(result.successes).toEqual([expect.objectContaining({ rule_id: 'changed-rule' })]);
++    expect(result.skipped).toEqual([expect.objectContaining({ rule_id: 'unchanged-rule' })]);
++    expect(result.errors).toEqual([]);
++  });
++
+   it('per-row bulk error is re-paired to its source rule_id via uuid', async () => {
+     const ruleToImport = getImportRulesSchemaMock();
+     rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
+@@ -582,7 +653,7 @@ describe('detectionRulesClient.importRules', () => {
+       rules: [],
+     });
+ 
+-    expect(result).toEqual({ successes: [], errors: [] });
++    expect(result).toEqual({ successes: [], skipped: [], errors: [] });
+     expect(rulesClient.bulkCreateRules).not.toHaveBeenCalled();
+     expect(fetchPrebuiltImportContext).not.toHaveBeenCalled();
+     expect(findInstalledRulesBySignatureIds).not.toHaveBeenCalled();
+@@ -713,7 +784,12 @@ describe('detectionRulesClient.importRules', () => {
+   });
+ 
+   it('overwrite branch: enable-only flip calls bulkEnableRules after a successful write', async () => {
+-    const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule', enabled: false };
++    const existingRule = {
++      ...getRulesSchemaMock(),
++      rule_id: 'existing-rule',
++      enabled: false,
++      exceptions_list: [],
++    };
+     (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
+       'existing-rule': existingRule,
+     });
+@@ -726,11 +802,12 @@ describe('detectionRulesClient.importRules', () => {
+     const { successes, errors } = await subject.importRules({
+       allowMissingConnectorSecrets: false,
+       overwriteRules: true,
+-      rules: [{ ...getImportRulesSchemaMock(), rule_id: 'existing-rule', enabled: true }],
++      rules: [{ ...existingRule, enabled: true }],
+     });
+ 
+     expect(errors).toEqual([]);
+     expect(successes).toEqual([expect.objectContaining({ rule_id: 'existing-rule' })]);
++    expect(rulesClient.bulkUpdateRules).toHaveBeenCalledTimes(1);
+     expect(rulesClient.bulkEnableRules).toHaveBeenCalledWith({ ids: [existingRule.id] });
+     expect(rulesClient.bulkDisableRules).not.toHaveBeenCalled();
+   });
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+index f5186cf38b05..413c3bf7bb8f 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+@@ -259,7 +259,7 @@ export const createDetectionRulesClient = ({
+         });
+ 
+         if (analytics) {
+-          for (const { telemetry } of result.successes) {
++          for (const { telemetry } of [...result.successes, ...result.skipped]) {
+             sendRuleLifecycleTelemetryEvent(
+               analytics,
+               DETECTION_RULE_IMPORT_EVENT,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/create_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/create_rules.ts
+index 5b54405271b7..89b25b0a1bd1 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/create_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/create_rules.ts
+@@ -88,7 +88,7 @@ export async function createRules({
+   }
+ 
+   if (bulkInputs.length === 0) {
+-    return { successes, errors };
++    return { successes, skipped: [], errors };
+   }
+ 
+   const { successfulIds, errors: bulkErrors } = await rulesClient.bulkCreateRules<RuleParams>({
+@@ -118,5 +118,5 @@ export async function createRules({
+     }
+   }
+ 
+-  return { successes, errors };
++  return { successes, skipped: [], errors };
+ }
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
+index a2c3ed94ac61..08fb709e9700 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
+@@ -49,10 +49,11 @@ export async function importRules({
+   const { overwriteRules: shouldOverwrite, ...writeOptions } = importOptions;
+ 
+   if (rules.length === 0) {
+-    return { successes: [], errors: [] };
++    return { successes: [], skipped: [], errors: [] };
+   }
+ 
+   const successes: ImportRuleSuccess[] = [];
++  const skipped: ImportRuleSuccess[] = [];
+   const errors: ImportRuleError[] = [];
+ 
+   try {
+@@ -121,6 +122,7 @@ export async function importRules({
+           },
+         });
+         successes.push(...overwritten.successes);
++        skipped.push(...overwritten.skipped);
+         errors.push(...overwritten.errors);
+       }
+ 
+@@ -134,6 +136,7 @@ export async function importRules({
+           },
+         });
+         successes.push(...created.successes);
++        skipped.push(...created.skipped);
+         errors.push(...created.errors);
+       }
+     }
+@@ -141,6 +144,7 @@ export async function importRules({
+     const message = e instanceof Error ? e.message : String(e);
+     const responded = new Set([
+       ...successes.map((item) => item.rule_id),
++      ...skipped.map((item) => item.rule_id),
+       ...errors.map((item) => item.error.ruleId),
+     ]);
+ 
+@@ -151,5 +155,5 @@ export async function importRules({
+     }
+   }
+ 
+-  return { successes, errors };
++  return { successes, skipped, errors };
+ }
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
+index 7bffee26ff8b..fe924da8f32c 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
+@@ -11,6 +11,7 @@ import type {
+   RulesClient,
+ } from '@kbn/alerting-plugin/server';
+ import type { ActionsClient } from '@kbn/actions-plugin/server';
++import { isEqual } from 'lodash';
+ import type { RuleResponse } from '../../../../../../../../common/api/detection_engine';
+ import type { PrebuiltRuleAsset } from '../../../../../prebuilt_rules';
+ import type { RuleParams } from '../../../../../rule_schema';
+@@ -49,6 +50,7 @@ export async function overwriteRules({
+ }: OverwriteRulesParams): Promise<ImportRulesResult> {
+   const { actionsClient, rulesClient, prebuiltRuleAssetClient } = deps;
+   const successes: ImportRuleSuccess[] = [];
++  const skipped: ImportRuleSuccess[] = [];
+   const errors: ImportRuleError[] = [];
+   const pending = new Map<string, ImportRuleSuccess>();
+   const bulkInputs: BulkUpdateRulesParams<RuleParams>['rules'] = [];
+@@ -72,24 +74,32 @@ export async function overwriteRules({
+       updated = { ...updated, rule_source: ruleSource, immutable };
+ 
+       const requestedEnabled = rule.enabled ?? existingRule.enabled;
+-      if (!existingRule.enabled && requestedEnabled) {
+-        toEnable.push(existingRule.id);
+-      } else if (existingRule.enabled && !requestedEnabled) {
+-        toDisable.push(existingRule.id);
+-      }
+-
+-      pending.set(existingRule.id, {
++      const source: ImportRuleSuccess = {
+         rule_id: rule.rule_id,
+         telemetry: {
+           id: existingRule.id,
+           type: rule.type,
+           rule_source: ruleSource,
+         },
+-      });
+-      bulkInputs.push({
+-        id: existingRule.id,
+-        data: convertRuleResponseToAlertingRule(updated, actionsClient),
+-      });
++      };
++      const data = convertRuleResponseToAlertingRule(updated, actionsClient);
++      const existingData = convertRuleResponseToAlertingRule(existingRule, actionsClient);
++
++      if (existingRule.enabled === requestedEnabled && isEqual(existingData, data)) {
++        skipped.push(source);
++      } else {
++        if (!existingRule.enabled && requestedEnabled) {
++          toEnable.push(existingRule.id);
++        } else if (existingRule.enabled && !requestedEnabled) {
++          toDisable.push(existingRule.id);
++        }
++
++        pending.set(existingRule.id, source);
++        bulkInputs.push({
++          id: existingRule.id,
++          data,
++        });
++      }
+     } catch (e) {
+       errors.push(
+         createRuleImportErrorObject({
+@@ -101,7 +111,7 @@ export async function overwriteRules({
+   }
+ 
+   if (bulkInputs.length === 0) {
+-    return { successes, errors };
++    return { successes, skipped, errors };
+   }
+ 
+   let result: BulkUpdateRulesResult;
+@@ -117,7 +127,7 @@ export async function overwriteRules({
+     for (const source of pending.values()) {
+       errors.push(createRuleImportErrorObject({ ruleId: source.rule_id, message }));
+     }
+-    return { successes, errors };
++    return { successes, skipped, errors };
+   }
+ 
+   const { successfulIds, errors: bulkErrors } = result;
+@@ -149,7 +159,7 @@ export async function overwriteRules({
+   }
+ 
+   errors.push(...toggleErrors);
+-  return { successes, errors };
++  return { successes, skipped, errors };
+ }
+ 
+ const toggleState = async ({
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts
+index c5a613f58ecb..f6bb4ce0ff2e 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts
+@@ -26,6 +26,7 @@ export interface ImportRuleSuccess {
+ 
+ export interface ImportRulesResult {
+   successes: ImportRuleSuccess[];
++  skipped: ImportRuleSuccess[];
+   errors: ImportRuleError[];
+ }
+ 
