@@ -1,19 +1,19 @@
 ---
 name: taskmanager-notes
-description: Summarize Steven's substantive work from the current conversation into dated Markdown handoff notes in /Users/sdesalas/taskmanager/inbox. Use at the end of a conversation, when Steven asks to capture, save, summarize, or update the conversation as a Task Manager inbox note, or when he invokes /taskmanager-notes. Supports repeated invocations in one conversation, including multiple runs on the same day and conversations spanning multiple days, without duplicating previously captured material.
+description: Summarize the user's substantive work from the current conversation into dated Markdown handoff notes in ~/taskmanager/inbox. Use at the end of a conversation, when the user asks to capture, save, summarize, or update the conversation as a Task Manager inbox note, or when they invoke /taskmanager-notes. Supports repeated invocations in one conversation, including multiple runs on the same day and conversations spanning multiple days, without duplicating previously captured material.
 ---
 
 # Task Manager Notes
 
-Capture Steven's work for his PA to incorporate into the task tracker, daily log, and workstream records. Treat the inbox folder as append-only, not as a transcript archive.
+Capture the user's work for their PA to incorporate into the task tracker, daily log, and workstream records. Treat the inbox folder as append-only, not as a transcript archive.
 
 ## Load the policy
 
-Read `/Users/sdesalas/taskmanager/inbox/README.md` completely before asking confirmation questions or writing a note. Follow its content, template, and writing rules. If it is unavailable, stop and tell Steven; do not invent a replacement format.
+Read `~/taskmanager/inbox/README.md` completely before asking confirmation questions or writing a note. Follow its content, template, and writing rules. If it is unavailable, stop and tell the user; do not invent a replacement format.
 
 ## Determine coverage
 
-1. Review the current conversation and identify substantive work by Steven or work he explicitly directed. Exclude assistant housekeeping, exploratory dead ends with no meaningful finding, and work already captured before the latest checkpoint.
+1. Review the current conversation and identify substantive work by the user or work they explicitly directed. Exclude assistant housekeeping, exploratory dead ends with no meaningful finding, and work already captured before the latest checkpoint.
 2. Search backward in the conversation for the latest assistant response containing both:
    - `Inbox note saved:`, `Inbox note updated:`, or the legacy `Incoming note saved:` / `Incoming note updated:`
    - `Taskmanager-notes checkpoint: <token>`
@@ -40,10 +40,10 @@ Do not use a checkpoint as evidence that facts are true. It only identifies the 
 Follow the confirmation process in the inbox README before writing:
 
 1. Inventory every distinct newly covered task in a compact numbered list.
-2. Ask about one task at a time, confirming its main **why** and concrete **outcome**. Offer short likely interpretations. Steven may answer several tasks at once; accept that without repeating questions.
-3. If Steven already stated both points unambiguously, reflect the proposed why and outcome and ask for a quick confirmation rather than reopening the question.
+2. Ask about one task at a time, confirming its main **why** and concrete **outcome**. Offer short likely interpretations. The user may answer several tasks at once; accept that without repeating questions.
+3. If the user already stated both points unambiguously, reflect the proposed why and outcome and ask for a quick confirmation rather than reopening the question.
 4. Carry forward an earlier confirmed why or outcome only when the new material does not change it. Ask again when the status, evidence, motivation, ownership, or next step has materially changed.
-5. Do not write until every newly covered task has sufficient confirmation. Mark facts Steven cannot resolve as explicitly unknown rather than inferring certainty.
+5. Do not write until every newly covered task has sufficient confirmation. Mark facts the user cannot resolve as explicitly unknown rather than inferring certainty.
 
 ## Write append-only notes
 
