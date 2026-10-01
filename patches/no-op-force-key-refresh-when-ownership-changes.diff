@@ -1,0 +1,584 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.change_tracking.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.change_tracking.test.ts
+index cf99f2d415d4..fd499ff84d57 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.change_tracking.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.change_tracking.test.ts
+@@ -72,7 +72,7 @@ describe('DetectionRulesClient change tracking', () => {
+       matchingAssetsByRuleId: {},
+       availableRuleAssetIds: new Set<string>(),
+     });
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValue({});
++    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValue({ rules: {}, owners: {} });
+     rulesClient.bulkCreateRules.mockResolvedValue({
+       successfulIds: [],
+       errors: [],
+@@ -165,7 +165,8 @@ describe('DetectionRulesClient change tracking', () => {
+       it('forwards caller-supplied changeTracking when overwriting an existing rule', async () => {
+         const existingRule = getRulesSchemaMock();
+         (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
+-          [existingRule.rule_id]: existingRule,
++          rules: { [existingRule.rule_id]: existingRule },
++          owners: {},
+         });
+ 
+         await detectionRulesClient.importRules({
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
+index 773252321505..7f62abad5cd6 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.import_rules.test.ts
+@@ -17,6 +17,7 @@ import { buildMlAuthz } from '../../../../machine_learning/__mocks__/authz';
+ import { SecurityRuleChangeTrackingAction } from '../../../../../../common/detection_engine/rule_management/rule_change_tracking';
+ import { getImportRulesSchemaMock } from '../../../../../../common/api/detection_engine/rule_management/mocks';
+ import { getRulesSchemaMock } from '../../../../../../common/api/detection_engine/model/rule_schema/mocks';
++import type { RuleResponse } from '../../../../../../common/api/detection_engine';
+ import { createDetectionRulesClient } from './detection_rules_client';
+ import { checkRuleExceptionReferences } from './methods/import_rules/check_rule_exception_references';
+ import { fetchPrebuiltImportContext } from './methods/import_rules/fetch_prebuilt_import_context';
+@@ -36,9 +37,15 @@ const emptyPrebuiltContext = () => ({
+   availableRuleAssetIds: new Set<string>(),
+ });
+ 
++const mockInstalled = (
++  rules: Record<string, RuleResponse>,
++  owners: Record<string, string | null> = {}
++) => (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({ rules, owners });
++
+ describe('detectionRulesClient.importRules', () => {
+   let rulesClient: ReturnType<typeof rulesClientMock.create>;
+   let subject: ReturnType<typeof createDetectionRulesClient>;
++  let createSubject: (username?: string | null) => ReturnType<typeof createDetectionRulesClient>;
+   let analytics: AnalyticsServiceSetup;
+   const rulesAuthz = getMockRulesAuthz();
+ 
+@@ -46,7 +53,7 @@ describe('detectionRulesClient.importRules', () => {
+     jest.clearAllMocks();
+     (checkRuleExceptionReferences as jest.Mock).mockReturnValue([[], []]);
+     (fetchPrebuiltImportContext as jest.Mock).mockResolvedValue(emptyPrebuiltContext());
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValue({});
++    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValue({ rules: {}, owners: {} });
+ 
+     rulesClient = rulesClientMock.create();
+     rulesClient.bulkCreateRules.mockResolvedValue({
+@@ -80,17 +87,20 @@ describe('detectionRulesClient.importRules', () => {
+       page: 1,
+     });
+ 
+-    subject = createDetectionRulesClient({
+-      actionsClient: actionsClientMock.create(),
+-      rulesClient,
+-      userProfile: userProfileServiceMock.createStart(),
+-      mlAuthz: buildMlAuthz(),
+-      rulesAuthz,
+-      savedObjectsClient,
+-      license: licenseMock.createLicenseMock(),
+-      productFeaturesService: createProductFeaturesServiceMock(),
+-      analytics,
+-    });
++    createSubject = (username) =>
++      createDetectionRulesClient({
++        actionsClient: actionsClientMock.create(),
++        rulesClient,
++        userProfile: userProfileServiceMock.createStart(),
++        mlAuthz: buildMlAuthz(),
++        rulesAuthz,
++        savedObjectsClient,
++        license: licenseMock.createLicenseMock(),
++        productFeaturesService: createProductFeaturesServiceMock(),
++        analytics,
++        username,
++      });
++    subject = createSubject();
+   });
+ 
+   it('all-new disabled rules: single bulkCreateRules call, no conflicts', async () => {
+@@ -196,7 +206,7 @@ describe('detectionRulesClient.importRules', () => {
+     const r1 = { ...getImportRulesSchemaMock(), rule_id: 'new-rule' };
+     const r2 = { ...getImportRulesSchemaMock(), rule_id: 'existing-rule' };
+ 
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': getRulesSchemaMock(),
+     });
+     rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => ({
+@@ -224,7 +234,7 @@ describe('detectionRulesClient.importRules', () => {
+     const r2 = { ...getImportRulesSchemaMock(), rule_id: 'existing-rule' };
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+ 
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -267,7 +277,7 @@ describe('detectionRulesClient.importRules', () => {
+       rule_id: 'existing-rule',
+       exceptions_list: [],
+     };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+ 
+@@ -313,7 +323,7 @@ describe('detectionRulesClient.importRules', () => {
+       rule_id: 'changed-rule',
+       exceptions_list: [],
+     };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'unchanged-rule': unchanged,
+       'changed-rule': changed,
+     });
+@@ -350,6 +360,78 @@ describe('detectionRulesClient.importRules', () => {
+     );
+   });
+ 
++  describe('API key ownership on unchanged overwrite rules', () => {
++    const existingRule = {
++      ...getRulesSchemaMock(),
++      rule_id: 'existing-rule',
++      exceptions_list: [],
++    };
++
++    const importAs = (username: string | null) => {
++      rulesClient.bulkUpdateRules.mockResolvedValueOnce({
++        successfulIds: [existingRule.id],
++        errors: [],
++        total: 1,
++      });
++      return createSubject(username).importRules({
++        allowMissingConnectorSecrets: false,
++        overwriteRules: true,
++        rules: [{ ...existingRule }],
++      });
++    };
++
++    it('skips the rule when the importer owns its API key', async () => {
++      mockInstalled({ 'existing-rule': existingRule }, { 'existing-rule': 'importer' });
++
++      const { successes } = await importAs('importer');
++
++      expect(rulesClient.bulkUpdateRules).not.toHaveBeenCalled();
++      expect(successes).toEqual([expect.objectContaining({ unchanged: true })]);
++    });
++
++    it('rewrites the rule when another user owns its API key', async () => {
++      mockInstalled({ 'existing-rule': existingRule }, { 'existing-rule': 'someone-else' });
++
++      const { successes } = await importAs('importer');
++
++      expect(rulesClient.bulkUpdateRules).toHaveBeenCalledWith(
++        expect.objectContaining({ rules: [expect.objectContaining({ id: existingRule.id })] })
++      );
++      expect(successes).toEqual([
++        expect.objectContaining({ telemetry: expect.objectContaining({ outcome: 'updated' }) }),
++      ]);
++    });
++
++    it('rewrites the rule when it has no API key owner', async () => {
++      mockInstalled({ 'existing-rule': existingRule }, { 'existing-rule': null });
++
++      await importAs('importer');
++
++      expect(rulesClient.bulkUpdateRules).toHaveBeenCalledTimes(1);
++    });
++
++    it('skips a disabled rule owned by another user, since updating it mints no key', async () => {
++      const disabled = { ...existingRule, enabled: false };
++      mockInstalled({ 'existing-rule': disabled }, { 'existing-rule': 'someone-else' });
++
++      await createSubject('importer').importRules({
++        allowMissingConnectorSecrets: false,
++        overwriteRules: true,
++        rules: [{ ...disabled }],
++      });
++
++      expect(rulesClient.bulkUpdateRules).not.toHaveBeenCalled();
++    });
++
++    it('skips the rule when the importer is unknown', async () => {
++      mockInstalled({ 'existing-rule': existingRule }, { 'existing-rule': 'someone-else' });
++
++      await importAs(null);
++
++      expect(rulesClient.bulkUpdateRules).not.toHaveBeenCalled();
++    });
++  });
++
+   it('per-row bulk error is re-paired to its source rule_id via uuid', async () => {
+     const ruleToImport = getImportRulesSchemaMock();
+     rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
+@@ -394,7 +476,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('forwards caller changeTracking to rulesClient.bulkUpdateRules verbatim on overwrite', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -523,7 +605,7 @@ describe('detectionRulesClient.importRules', () => {
+   it('overwrite branch: a thrown bulkUpdateRules error does not prevent creates', async () => {
+     const existingRule = { ...getImportRulesSchemaMock(), rule_id: 'existing-rule' };
+     const newRule = { ...getImportRulesSchemaMock(), rule_id: 'new-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': { ...getRulesSchemaMock(), rule_id: 'existing-rule' },
+     });
+     rulesClient.bulkUpdateRules.mockRejectedValueOnce(new Error('kaboom'));
+@@ -548,7 +630,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('overwrite branch: a per-row bulkUpdateRules error is re-paired to the rule_id', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -583,7 +665,7 @@ describe('detectionRulesClient.importRules', () => {
+     };
+ 
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     (checkRuleExceptionReferences as jest.Mock).mockReturnValueOnce([[], checkedExceptionsList]);
+@@ -707,7 +789,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('emits detection_rule_import for a successful overwrite', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -734,7 +816,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('does not emit for conflicts or failed creates', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkCreateRules.mockImplementationOnce(async (args) => {
+@@ -769,7 +851,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+     expect(analytics.reportEvent).not.toHaveBeenCalled();
+ 
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': { ...getRulesSchemaMock(), rule_id: 'existing-rule' },
+     });
+     rulesClient.bulkUpdateRules.mockRejectedValueOnce(new Error('kaboom'));
+@@ -785,7 +867,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('overwrite branch: forwards allowMissingConnectorSecrets to bulkUpdateRules', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule' };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -812,7 +894,7 @@ describe('detectionRulesClient.importRules', () => {
+       enabled: false,
+       exceptions_list: [],
+     };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -836,7 +918,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('overwrite branch: a per-item enable failure is an error, not a success', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule', enabled: false };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -867,7 +949,7 @@ describe('detectionRulesClient.importRules', () => {
+ 
+   it('overwrite branch: a Task Manager enable failure is an error, not a success', async () => {
+     const existingRule = { ...getRulesSchemaMock(), rule_id: 'existing-rule', enabled: false };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'existing-rule': existingRule,
+     });
+     rulesClient.bulkUpdateRules.mockResolvedValueOnce({
+@@ -918,7 +1000,7 @@ describe('detectionRulesClient.importRules', () => {
+       rule_id: 'unchanged-rule',
+       enabled: true,
+     };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'enable-rule': toEnable,
+       'disable-rule': toDisable,
+       'unchanged-rule': unchanged,
+@@ -979,7 +1061,7 @@ describe('detectionRulesClient.importRules', () => {
+       rule_id: 'unchanged-rule',
+       enabled: true,
+     };
+-    (findInstalledRulesBySignatureIds as jest.Mock).mockResolvedValueOnce({
++    mockInstalled({
+       'enable-rule': toEnable,
+       'disable-rule': toDisable,
+       'unchanged-rule': unchanged,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+index 8df8e0d353d3..9fef2d6fec1e 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/detection_rules_client.ts
+@@ -75,6 +75,7 @@ interface DetectionRulesClientParams {
+   license: ILicense;
+   analytics?: AnalyticsServiceSetup;
+   logger?: Logger;
++  username?: string | null;
+ }
+ 
+ export const createDetectionRulesClient = ({
+@@ -88,6 +89,7 @@ export const createDetectionRulesClient = ({
+   license,
+   analytics,
+   logger,
++  username,
+ }: DetectionRulesClientParams): IDetectionRulesClient => {
+   const prebuiltRuleAssetClient = createPrebuiltRuleAssetsClient(savedObjectsClient);
+ 
+@@ -268,6 +270,7 @@ export const createDetectionRulesClient = ({
+             savedObjectsClient,
+             prebuiltRuleAssetClient,
+             mlAuthz,
++            username,
+           },
+         });
+ 
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.test.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.test.ts
+index f79819965c2d..8fb26077d937 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.test.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.test.ts
+@@ -43,7 +43,22 @@ describe('findInstalledRulesBySignatureIds', () => {
+   it('returns an empty map and skips ES for an empty ruleIds array', async () => {
+     const result = await findInstalledRulesBySignatureIds({ rulesClient, ruleIds: [] });
+     expect(rulesClient.find).not.toHaveBeenCalled();
+-    expect(result).toEqual({});
++    expect(result).toEqual({ rules: {}, owners: {} });
++  });
++
++  it('returns the API key owner of each installed rule', async () => {
++    rulesClient.find.mockResolvedValue({
++      data: [
++        { ...getRuleMock({ ...getQueryRuleParams(), ruleId: 'rule-a' }), apiKeyOwner: 'alice' },
++      ],
++      page: 1,
++      perPage: 100,
++      total: 1,
++    });
++
++    const { owners } = await findInstalledRulesBySignatureIds({ rulesClient, ruleIds: ['rule-a'] });
++
++    expect(owners).toEqual({ 'rule-a': 'alice' });
+   });
+ 
+   it('KQL filter wraps and OR-joins rule_ids', async () => {
+@@ -95,7 +110,7 @@ describe('findInstalledRulesBySignatureIds', () => {
+       const unescapedQuotes = filter.match(/(^|[^\\])"/g) ?? [];
+       expect(unescapedQuotes.length).toBeGreaterThanOrEqual(2);
+ 
+-      expect(result[ruleId]?.rule_id).toBe(ruleId);
++      expect(result.rules[ruleId]?.rule_id).toBe(ruleId);
+     });
+   });
+ });
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.ts
+index 5156fa2e7f51..69335b5a79ab 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/find_installed_rules_by_signature_ids.ts
+@@ -13,6 +13,7 @@ import type {
+ } from '../../../../../../../../common/api/detection_engine';
+ import { internalRuleToAPIResponse } from '../../converters/internal_rule_to_api_response';
+ import { findRules } from '../../../search/find_rules';
++import type { InstalledRules } from './types';
+ 
+ /**
+  * Look up installed rules by `rule_id`, returned as a map keyed by `rule_id`.
+@@ -23,7 +24,7 @@ import { findRules } from '../../../search/find_rules';
+  * @param rulesClient - Alerting rules client used for the underlying `findRules` call.
+  * @param ruleIds - `rule_id`s to look up. `\` and `"` are escaped for KQL safety;
+  *   other metacharacters (`()`, `*`, `<>`, `and`/`or`/`not`) stay inside the quoted literal.
+- * @returns Installed rules keyed by `rule_id`. Empty for an empty input.
++ * @returns Installed rules and their API key owners, both keyed by `rule_id`. Empty for an empty input.
+  */
+ export const findInstalledRulesBySignatureIds = async ({
+   rulesClient,
+@@ -31,8 +32,8 @@ export const findInstalledRulesBySignatureIds = async ({
+ }: {
+   rulesClient: RulesClient;
+   ruleIds: RuleSignatureId[];
+-}): Promise<Record<string, RuleResponse>> => {
+-  if (ruleIds.length === 0) return {};
++}): Promise<InstalledRules> => {
++  if (ruleIds.length === 0) return { rules: {}, owners: {} };
+ 
+   const filter = `alert.attributes.params.ruleId: (${ruleIds
+     .map((id) => `"${escapeQuotes(id)}"`)
+@@ -48,10 +49,12 @@ export const findInstalledRulesBySignatureIds = async ({
+     sortOrder: undefined,
+   });
+ 
+-  const installedRulesById: Record<string, RuleResponse> = {};
++  const rules: Record<string, RuleResponse> = {};
++  const owners: Record<string, string | null> = {};
+   for (const rule of data) {
+     const response = internalRuleToAPIResponse(rule);
+-    installedRulesById[response.rule_id] = response;
++    rules[response.rule_id] = response;
++    owners[response.rule_id] = rule.apiKeyOwner ?? null;
+   }
+-  return installedRulesById;
++  return { rules, owners };
+ };
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
+index a2c3ed94ac61..ec44646886d9 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/import_rules.ts
+@@ -38,6 +38,7 @@ interface ImportRulesDeps {
+   savedObjectsClient: SavedObjectsClientContract;
+   prebuiltRuleAssetClient: IPrebuiltRuleAssetsClient;
+   mlAuthz: MlAuthz;
++  username?: string | null;
+ }
+ 
+ export async function importRules({
+@@ -45,7 +46,14 @@ export async function importRules({
+   options: importOptions,
+   deps,
+ }: ImportRulesParams): Promise<ImportRulesResult> {
+-  const { actionsClient, rulesClient, savedObjectsClient, prebuiltRuleAssetClient, mlAuthz } = deps;
++  const {
++    actionsClient,
++    rulesClient,
++    savedObjectsClient,
++    prebuiltRuleAssetClient,
++    mlAuthz,
++    username,
++  } = deps;
+   const { overwriteRules: shouldOverwrite, ...writeOptions } = importOptions;
+ 
+   if (rules.length === 0) {
+@@ -57,14 +65,15 @@ export async function importRules({
+ 
+   try {
+     // Step 1: Fetch data
+-    const [existingExceptionLists, prebuiltContext, existingRules] = await Promise.all([
+-      getReferencedExceptionLists({ rules, savedObjectsClient }),
+-      fetchPrebuiltImportContext({ rules, ruleAssetsClient: prebuiltRuleAssetClient }),
+-      findInstalledRulesBySignatureIds({
+-        rulesClient,
+-        ruleIds: rules.map((r) => r.rule_id),
+-      }),
+-    ]);
++    const [existingExceptionLists, prebuiltContext, { rules: existingRules, owners }] =
++      await Promise.all([
++        getReferencedExceptionLists({ rules, savedObjectsClient }),
++        fetchPrebuiltImportContext({ rules, ruleAssetsClient: prebuiltRuleAssetClient }),
++        findInstalledRulesBySignatureIds({
++          rulesClient,
++          ruleIds: rules.map((r) => r.rule_id),
++        }),
++      ]);
+ 
+     // Step 2: Validate
+     const { importableRules, errors: validationErrors } = await validateRulesToImport({
+@@ -112,12 +121,14 @@ export async function importRules({
+         const overwritten = await overwriteRules({
+           rules: toOverwrite,
+           existingRules,
++          owners,
+           matchingAssetsByRuleId: prebuiltContext.matchingAssetsByRuleId,
+           options: writeOptions,
+           deps: {
+             actionsClient,
+             rulesClient,
+             prebuiltRuleAssetClient,
++            username,
+           },
+         });
+         successes.push(...overwritten.successes);
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
+index 2ed2d4bca591..8ea50a502f4c 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/overwrite_rules.ts
+@@ -30,6 +30,7 @@ import type {
+ interface OverwriteRulesParams {
+   rules: ImportableRuleData[];
+   existingRules: Record<string, RuleResponse>;
++  owners: Record<string, string | null>;
+   matchingAssetsByRuleId: Record<string, PrebuiltRuleAsset>;
+   options: ImportRulesOptions;
+   deps: OverwriteRulesDeps;
+@@ -39,16 +40,18 @@ interface OverwriteRulesDeps {
+   actionsClient: ActionsClient;
+   rulesClient: RulesClient;
+   prebuiltRuleAssetClient: IPrebuiltRuleAssetsClient;
++  username?: string | null;
+ }
+ 
+ export async function overwriteRules({
+   rules,
+   existingRules,
++  owners,
+   matchingAssetsByRuleId,
+   options,
+   deps,
+ }: OverwriteRulesParams): Promise<ImportRulesResult> {
+-  const { actionsClient, rulesClient, prebuiltRuleAssetClient } = deps;
++  const { actionsClient, rulesClient, prebuiltRuleAssetClient, username } = deps;
+   const successes: ImportRuleSuccess[] = [];
+   const errors: ImportRuleError[] = [];
+   const pending = new Map<string, ImportRuleSuccess>();
+@@ -75,7 +78,11 @@ export async function overwriteRules({
+       const requestedEnabled = rule.enabled ?? existingRule.enabled;
+       const telemetry = { id: existingRule.id, type: rule.type, rule_source: ruleSource };
+       const data = convertRuleResponseToAlertingRule(updated, actionsClient);
++      // Force a rewrite (and API key rotation) when the importer doesn't own the enabled rule's key.
++      const ownerChanged =
++        existingRule.enabled && username != null && owners[rule.rule_id] !== username;
+       const unchanged =
++        !ownerChanged &&
+         existingRule.enabled === requestedEnabled &&
+         isEqual(convertRuleResponseToAlertingRule(existingRule, actionsClient), data);
+ 
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts
+index 1d29aa643a4c..9de68cd3692e 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/import_rules/types.ts
+@@ -6,6 +6,7 @@
+  */
+ 
+ import type {
++  RuleResponse,
+   RuleSource,
+   RuleToImport,
+   ValidatedRuleToImport,
+@@ -46,6 +47,11 @@ export interface ImportRuleError {
+   };
+ }
+ 
++export interface InstalledRules {
++  rules: Record<string, RuleResponse>;
++  owners: Record<string, string | null>;
++}
++
+ // Survivors of per-rule validation that proceed to conflict classification.
+ export interface ImportableRuleData {
+   rule: ValidatedRuleToImport;
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/request_context_factory.ts b/x-pack/solutions/security/plugins/security_solution/server/request_context_factory.ts
+index d38232ffe93b..b6b7ea150dd9 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/request_context_factory.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/request_context_factory.ts
+@@ -209,6 +209,7 @@ export class RequestContextFactory implements IRequestContextFactory {
+           analytics: core.analytics,
+           userProfile: coreStart.userProfile,
+           logger: options.logger,
++          username: coreContext.security.authc.getCurrentUser()?.username ?? null,
+         });
+       }),
+ 
