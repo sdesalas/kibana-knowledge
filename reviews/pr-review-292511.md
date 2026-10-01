@@ -68,14 +68,14 @@ The diff matches the `main` fix. On 9.4 the filter value is a `{ fields: { tags,
 
 ### Risks
 
-1. (ALREADY NOTED) ~~The backport will not pass typecheck, and the new filter tests do not exercise 9.4's filter. `fetchVersionsBySoIds` takes `additionalFilter?: string`, but `fetchLatestVersions` passes `PrebuiltRuleAssetsFilter`. `ESFilter` is referenced and never imported. The tests pass `` `${PREBUILT_RULE_ASSETS_SO_TYPE}.tags: "…"` `` into both `fetchLatestVersions` and `prepareQueryDslFilter`. The helper then evaluates `filter?.fields.tags`, which throws on a string. The one test with no filter is the only one that matches this branch. `kibana-ci` is already red; the job log was not opened here.~~
+1. (FIXED) ~~The backport will not pass typecheck, and the new filter tests do not exercise 9.4's filter. `fetchVersionsBySoIds` takes `additionalFilter?: string`, but `fetchLatestVersions` passes `PrebuiltRuleAssetsFilter`. `ESFilter` is referenced and never imported. The tests pass `` `${PREBUILT_RULE_ASSETS_SO_TYPE}.tags: "…"` `` into both `fetchLatestVersions` and `prepareQueryDslFilter`. The helper then evaluates `filter?.fields.tags`, which throws on a string. The one test with no filter is the only one that matches this branch. `kibana-ci` is already red; the job log was not opened here.~~
 
    ~~The query change itself is what 9.4 needs. Typing that argument as `PrebuiltRuleAssetsFilter`, importing `ESFilter`, and feeding the tests `{ fields: { tags: { include: { values: [tag] } } } }` would make the same diff valid. `prepareQueryDslFilter(...).filter` is the right thing to spread: tag and name includes are the only clauses it returns when `excludeRuleIds` is omitted, so `must_not` is not dropped on this path.~~
 
 ### Open questions
 
-- (ALREADY NOTED) ~~Can the new tests be rewritten against the structured filter, instead of the KQL string from `main`? The "filter is on the second search only" assertion is the right check. It just needs `prepareQueryDslFilter` to be called with `{ fields: { tags: { include: { values } } } }`, which is what `_review` actually sends.~~
-- (ALREADY NOTED) ~~`fetchLatestVersionSpecifiers` still declares a `filter` argument and nothing passes it or reads it. Worth deleting so the next change does not put the tag back on the aggregation.~~
+- (FIXED) ~~Can the new tests be rewritten against the structured filter, instead of the KQL string from `main`? The "filter is on the second search only" assertion is the right check. It just needs `prepareQueryDslFilter` to be called with `{ fields: { tags: { include: { values } } } }`, which is what `_review` actually sends.~~
+- (FIXED) ~~`fetchLatestVersionSpecifiers` still declares a `filter` argument and nothing passes it or reads it. Worth deleting so the next change does not put the tag back on the aggregation.~~
 
 ### Notes for your codebase map
 
@@ -93,3 +93,9 @@ The diff matches the `main` fix. On 9.4 the filter value is a `{ fields: { tags,
 - The exclude / match tests return whatever the mock is queued to return. They do not inspect the latest asset's tags. The placement test is the only one that would actually catch the filter landing on the wrong search, and it already fails on the KQL/object mismatch.
 
 2. Focused pass: solution-integration. Checked `prepareQueryDslFilter` and `savedObjectsClient.search` against the new `bool.filter` wrap. No new risk. The string-vs-object filter is still Risk #1. Query wrap is valid (see below).
+
+3. Re-checked after `022022cb` ("Fix type errors in 9.4 backport: use PrebuiltRuleAssetsFilter shape"). Compared tests to [#292386](https://github.com/elastic/kibana/pull/292386) at `baddd143`. Ran the suite locally — 4/4 pass.
+
+- Risk #1 and both open questions are fixed: `additionalFilter` is `PrebuiltRuleAssetsFilter`, `ESFilter` is imported, unused `filter` arg is gone, tests use `{ fields: { tags: { include: { values } } } }`.
+- Same four cases as upstream: exclude when latest lost the tag; filter on asset fetch only, not the aggregation; return latest when tags match; return all when no filter. Only the filter shape changed (KQL string → 9.4 object).
+- The exclude / match tests still return whatever the mock queues. That is also how upstream is written. No coverage dropped.
