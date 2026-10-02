@@ -1,17 +1,21 @@
 # Rule API key owner staleness
 
-Companion to [bulk_api_key_generation.md](./bulk_api_key_generation.md)
-("Why a rule has a key") and the PR review for
-[elastic/kibana#293948](https://github.com/elastic/kibana/pull/293948)
-(`.knowledge/reviews/pr-review-293948.md`, Risk #1 and activities #8-#9).
+Investigation into rule executor usage of API keys generated during rule update.
 
-**Question:** when does it matter that a rule's API key is owned by someone
-who has left, been disabled, or had their access changed?
+Performed during PR review for [elastic/kibana#293948](https://github.com/elastic/kibana/pull/293948), chasing a concern that keys
+might become stale due to owner account changes (since they are not being rotated as regularly).
 
-**Short answer:** the owner's account changing doesn't break the rule. The
-key stops working only when it's invalidated or expires. When that happens,
-detection rules hide the auth failure behind a misleading "Unable to find
-matching indices" warning and stop alerting.
+**Question:**
+
+> When does it matter that a rule's API key is owned by someone
+> who has left, been disabled, or had their access changed?
+
+**Short answer:**
+
+> the owner's account changing doesn't break the rule. The
+> key stops working only when it's invalidated or expires. When that happens,
+> detection rules hide the auth failure behind a misleading "Unable to find
+> matching indices" warning and stop alerting.
 
 ---
 
@@ -19,7 +23,7 @@ matching indices" warning and stop alerting.
 
 ✅ rule keeps working · ⚠️ rule runs but can miss data · ❌ rule stops alerting · ❓ not tested
 
-| # | Scenario | Status | Notes |
+| # | Scenario | Keeps Working? | Notes |
 |---|---|---|---|
 | 1 | Owner loses roles or is demoted | ✅ | The key keeps the permissions it was created with (`limited_by`), so the rule carries on as before. **Tested.** |
 | 2 | Owner is disabled | ✅ | The owner can't log in (401), but the key still works. **Tested.** |
@@ -107,12 +111,12 @@ On `main`, every `rules/_import?overwrite=true` mints a new key for each
 enabled rule, with the importer's current permissions. That incidentally
 fixed both problem cases above.
 
-[#293948](https://github.com/elastic/kibana/pull/293948) skips unchanged rules, so their keys are no longer refreshed. 
+[#293948](https://github.com/elastic/kibana/pull/293948) skips unchanged rules, so their keys are no longer refreshed.
 
-A possible follow-up, not part of the PR and not decided yet, is an **ownership check** 
-(see [diff](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/no-op-force-key-refresh-when-ownership-changes.diff)): if an unchanged rule is enabled and its key belongs to someone other 
-than the person importing, **rewrite it anyway**. That gives the rule a new key owned 
-by the importer, so an admin or CI pipeline that re-imports someone else's rules 
+A possible follow-up, not part of the PR and not decided yet, is an **ownership check**
+(see [diff](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/no-op-force-key-refresh-when-ownership-changes.diff)): if an unchanged rule is enabled and its key belongs to someone other
+than the person importing, **rewrite it anyway**. That gives the rule a new key owned
+by the importer, so an admin or CI pipeline that re-imports someone else's rules
 still takes them over.
 
 | Re-import of unchanged rules | `main` | #293948 | #293948 + ownership check |
