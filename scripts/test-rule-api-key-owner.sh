@@ -17,7 +17,12 @@
 #   delete-user     bob is deleted
 #   invalidate-key  bob's Alerting API key is invalidated
 #   expire-key      bob's Alerting API key gets a 1m expiration, then we wait it out
+#   saml-idp-remove       SAML bob is removed from the IdP (sessions and tokens killed)
+#   saml-groups           SAML bob's IdP groups change (logs in again without read)
+#   saml-disable-profile  SAML bob's ES user profile is disabled
 #   cleanup         remove everything this script creates
+#
+# saml-* scenarios need the dev mock IdP: `yarn es snapshot` (trial) + `yarn start`.
 #
 # Optional env: ES_URL, KIBANA_URL, KIBANA_AUTH (user:password, default elastic:changeme)
 #
@@ -37,6 +42,17 @@ AUTH="${KIBANA_AUTH:-elastic:changeme}"
 BOB="bob"
 BOB_PASS="changeme-bob"
 BOB_AUTH="${BOB}:${BOB_PASS}"
+
+# SAML bob only exists in the IdP. ES never stores him; he gets his roles from
+# the SAML login via the dev role mapping. Kibana calls are made with his session cookie.
+SAML_REALM="cloud-saml-kibana"
+COOKIES="${TMPDIR:-/tmp}/rule-owner-test-saml.cookies"
+
+# How Kibana calls are made as bob: basic auth, or "saml" for the session cookie.
+BOB_LOGIN="$BOB_AUTH"
+
+# Which of bob's API keys to report. Native and SAML bob share a username.
+KEY_FILTER="username=${BOB}"
 
 # Two roles so we can take away index access without taking away Kibana access:
 #   KIBANA_ROLE  -> Kibana "all" in every space (lets bob create rules)
@@ -61,13 +77,16 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-# kbn <user:pass> <METHOD> <path> [curl args...]
+# kbn <user:pass|saml> <METHOD> <path> [curl args...]
 # Calls Kibana with the headers its APIs require (xsrf, internal origin for
 # internal routes like _run_soon, and the public API version).
+# "saml" sends SAML bob's session cookie instead of basic auth.
 kbn() {
   local auth="$1" method="$2" path="$3"
   shift 3
-  curl -sS -u "$auth" \
+  local creds=(-u "$auth")
+  [[ "$auth" == "saml" ]] && creds=(-b "$COOKIES")
+  curl -sS "${creds[@]}" \
     -H "kbn-xsrf: true" \
     -H "x-elastic-internal-origin: Kibana" \
     -H "elastic-api-version: 2023-10-31" \
@@ -93,6 +112,33 @@ es_code() {
 
 step() { echo; echo "== $*"; }
 
+# HTTP status of SAML bob's session (200 = still logged in, 401 = session gone).
+saml_session_code() {
+  curl -sS -o /dev/null -w "%{http_code}" -b "$COOKIES" \
+    -H "x-elastic-internal-origin: Kibana" "${KIBANA_URL}/internal/security/me" || echo "000"
+}
+
+# saml_login <role...>
+# Log bob in the way a browser would after an IdP-initiated SSO: ask the mock
+# IdP for a signed SAML response with these roles, then post it to Kibana's
+# SAML callback. Kibana keeps bob's ES access token in the session behind the cookie.
+saml_login() {
+  local roles response code
+  roles="$(printf '%s\n' "$@" | jq -R . | jq -sc .)"
+  response="$(curl -sS -H "kbn-xsrf: true" -H "x-elastic-internal-origin: Kibana" \
+    -H "Content-Type: application/json" -X POST "${KIBANA_URL}/mock_idp/saml_response" \
+    --data "{\"username\":\"${BOB}\",\"roles\":${roles},\"url\":\"/\"}" | jq -r '.SAMLResponse // empty')"
+  [[ -n "$response" ]] ||
+    { echo "Mock IdP gave no SAML response. Is Kibana running from source (yarn start)?" >&2; exit 2; }
+
+  rm -f "$COOKIES"
+  code="$(curl -sS -o /dev/null -w "%{http_code}" -c "$COOKIES" \
+    -X POST "${KIBANA_URL}/api/security/saml/callback" --data-urlencode "SAMLResponse=${response}")"
+  [[ "$code" == "302" ]] || { echo "SAML login failed: HTTP ${code}" >&2; exit 1; }
+  echo "SAML bob logged in: $(kbn saml GET /internal/security/me |
+    jq -c '{username, realm: .authentication_realm.name, roles, profile_uid}')"
+}
+
 # ---------------------------------------------------------------------------
 # Setup / teardown
 # ---------------------------------------------------------------------------
@@ -117,6 +163,12 @@ cleanup() {
   es "$AUTH" DELETE "/_security/role/${READER_ROLE}" >/dev/null || true
   kbn "$AUTH" DELETE "/api/security/role/${KIBANA_ROLE}" >/dev/null || true
   es "$AUTH" DELETE "/${INDEX}" >/dev/null || true
+  # SAML bob: log out any session and drop his ES tokens.
+  kbn "$AUTH" POST /api/security/session/_invalidate \
+    --data "{\"match\":\"query\",\"query\":{\"provider\":{\"type\":\"saml\"},\"username\":\"${BOB}\"}}" >/dev/null || true
+  es "$AUTH" DELETE /_security/oauth2/token \
+    --data "{\"username\":\"${BOB}\",\"realm_name\":\"${SAML_REALM}\"}" >/dev/null || true
+  rm -f "$COOKIES"
   echo "done"
 }
 
@@ -133,16 +185,21 @@ setup() {
 
   # Kibana role via the Kibana API (it knows how to express "base: all" for
   # every space). No ES index privileges here on purpose.
+  # manage_own_api_key is only needed by expire-key, where bob updates his own key.
   kbn "$AUTH" PUT "/api/security/role/${KIBANA_ROLE}" \
-    --data '{"elasticsearch":{"cluster":[],"indices":[]},"kibana":[{"base":["all"],"spaces":["*"]}]}' >/dev/null
+    --data '{"elasticsearch":{"cluster":["manage_own_api_key"],"indices":[]},"kibana":[{"base":["all"],"spaces":["*"]}]}' >/dev/null
 
   # Plain ES role: read on the source index only.
   es "$AUTH" PUT "/_security/role/${READER_ROLE}" \
     --data "{\"indices\":[{\"names\":[\"${INDEX}*\"],\"privileges\":[\"read\",\"view_index_metadata\"]}]}" >/dev/null
 
   # bob starts with both roles.
-  es "$AUTH" PUT "/_security/user/${BOB}" \
-    --data "{\"password\":\"${BOB_PASS}\",\"roles\":[\"${KIBANA_ROLE}\",\"${READER_ROLE}\"]}" >/dev/null
+  if [[ "$BOB_LOGIN" == "saml" ]]; then
+    saml_login "$KIBANA_ROLE" "$READER_ROLE"
+  else
+    es "$AUTH" PUT "/_security/user/${BOB}" \
+      --data "{\"password\":\"${BOB_PASS}\",\"roles\":[\"${KIBANA_ROLE}\",\"${READER_ROLE}\"]}" >/dev/null
+  fi
 
   index_doc "baseline"
 
@@ -151,7 +208,7 @@ setup() {
   # That key's permissions are a snapshot of bob's roles at this moment.
   step "Create enabled rule as ${BOB}"
   local body
-  body="$(kbn "$BOB_AUTH" POST /api/detection_engine/rules --data "{
+  body="$(kbn "$BOB_LOGIN" POST /api/detection_engine/rules --data "{
     \"rule_id\":\"${RULE_ID}\",\"name\":\"Rule owner test\",\"description\":\"API key owner lifecycle test\",
     \"type\":\"query\",\"language\":\"kuery\",\"query\":\"*\",\"index\":[\"${INDEX}*\"],
     \"risk_score\":21,\"severity\":\"low\",\"interval\":\"1m\",\"from\":\"now-10m\",\"enabled\":true
@@ -167,9 +224,11 @@ setup() {
 # Running the rule and reading the result
 # ---------------------------------------------------------------------------
 
-# Timestamp of the rule's most recent run (empty until it has run once).
+# Timestamp of the rule's most recent run. A brand-new rule already has one,
+# but with status "pending", so report "" until a run has really finished.
 last_run_date() {
-  kbn "$AUTH" GET "/api/alerting/rule/${RULE_SO_ID}" | jq -r '.execution_status.last_execution_date // empty'
+  kbn "$AUTH" GET "/api/alerting/rule/${RULE_SO_ID}" |
+    jq -r 'select(.execution_status.status != "pending") | .execution_status.last_execution_date // empty'
 }
 
 # Poll until last_execution_date moves past <prev>, i.e. a new run has finished.
@@ -220,14 +279,14 @@ report() {
 
   # Alerting names its keys "Alerting: <rule type>/<rule name>", so filter on that.
   echo "bob's Alerting API keys:"
-  es "$AUTH" GET "/_security/api_key?username=${BOB}&with_limited_by=true" | jq '[.api_keys[]
+  es "$AUTH" GET "/_security/api_key?${KEY_FILTER}&with_limited_by=true" | jq '[.api_keys[]
     | select(.name | startswith("Alerting:"))
-    | { id, name, invalidated, expiration, limited_by_roles: ((.limited_by // [{}])[0] | keys) }]'
+    | { id, name, realm, invalidated, expiration, limited_by_roles: ((.limited_by // [{}])[0] | keys) }]'
 }
 
 # Id of bob's current (not yet invalidated) Alerting key.
 key_id() {
-  es "$AUTH" GET "/_security/api_key?username=${BOB}" | jq -r '[.api_keys[]
+  es "$AUTH" GET "/_security/api_key?${KEY_FILTER}" | jq -r '[.api_keys[]
     | select((.name | startswith("Alerting:")) and (.invalidated | not))][0].id // empty'
 }
 
@@ -297,7 +356,7 @@ case "$scenario" in
     ;;
 
   # Kibana never sets an expiration on rule keys, so we add one ourselves.
-  # Only the key's owner can update it, so this call runs as bob.
+  # Only the key's owner can update it (needs manage_own_api_key), so this call runs as bob.
   # Expect: once the minute passes, the next run fails with an auth error.
   expire-key)
     cleanup; setup; baseline
@@ -314,13 +373,54 @@ case "$scenario" in
     after
     ;;
 
+  # ES holds nothing for a SAML user, so "removed from the IdP" means he can't
+  # log in again, and an admin kills his live Kibana sessions and ES tokens.
+  # Expect: like delete-user, the rule keeps alerting.
+  saml-idp-remove)
+    BOB_LOGIN="saml"; KEY_FILTER="username=${BOB}&realm_name=${SAML_REALM}"
+    cleanup; setup; baseline
+    step "Remove SAML ${BOB}: invalidate his Kibana sessions and ES tokens"
+    kbn "$AUTH" POST /api/security/session/_invalidate \
+      --data "{\"match\":\"query\",\"query\":{\"provider\":{\"type\":\"saml\"},\"username\":\"${BOB}\"}}" | jq -c .
+    es "$AUTH" DELETE /_security/oauth2/token \
+      --data "{\"username\":\"${BOB}\",\"realm_name\":\"${SAML_REALM}\"}" | jq -c '{invalidated_tokens}'
+    echo "bob's old session: HTTP $(saml_session_code)"
+    after
+    ;;
+
+  # bob's IdP groups lose the reader role. SAML roles only apply at login, so
+  # he logs in again with the Kibana role only.
+  # Expect: like remove-role, the rule keeps alerting on the old snapshot.
+  saml-groups)
+    BOB_LOGIN="saml"; KEY_FILTER="username=${BOB}&realm_name=${SAML_REALM}"
+    cleanup; setup; baseline
+    step "SAML ${BOB} logs in again without ${READER_ROLE}"
+    saml_login "$KIBANA_ROLE"
+    after
+    ;;
+
+  # The only "disable" ES has for a SAML user is his user profile.
+  # Expect: the rule keeps alerting; the key doesn't depend on the profile.
+  saml-disable-profile)
+    BOB_LOGIN="saml"; KEY_FILTER="username=${BOB}&realm_name=${SAML_REALM}"
+    cleanup; setup; baseline
+    step "Disable SAML ${BOB}'s user profile"
+    uid="$(kbn saml GET /internal/security/me | jq -r '.profile_uid // empty')"
+    [[ -n "$uid" ]] || { echo "No user profile for SAML ${BOB}" >&2; exit 1; }
+    es "$AUTH" POST "/_security/profile/${uid}/_disable" | jq -c .
+    es "$AUTH" GET "/_security/profile/${uid}" | jq -c '.profiles[0] | {uid, enabled}'
+    after
+    # Re-enable so the next SAML login isn't affected.
+    es "$AUTH" POST "/_security/profile/${uid}/_enable" >/dev/null
+    ;;
+
   cleanup)
     cleanup
     ;;
 
   # No or unknown scenario: print the usage block from the top of this file.
   *)
-    sed -n '2,22p' "$0"
+    sed -n '2,28p' "$0"
     exit 2
     ;;
 esac
