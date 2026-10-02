@@ -2,7 +2,7 @@
 
 **PR:** [elastic/kibana#293948](https://github.com/elastic/kibana/pull/293948) by @sdesalas
 **Created Date: 2026-10-01**
-**Reviewed at:** [`c6baea443cfe`](https://github.com/elastic/kibana/pull/293948/commits/c6baea443cfeca6a61919866e9cf482cdf04bc4f) (PR head, 2 commits)
+**Reviewed at:** [`b58129762ed4`](https://github.com/elastic/kibana/pull/293948/commits/b58129762ed406ee08589a2f1d8773ad6057ab10) (PR head, 7 commits). First pass was at `c6baea443cfe` (2 commits).
 
 **Scale:** Substantive, but the core logic is small (~40 lines in `overwrite_rules.ts`). The rest is API schema, telemetry plumbing and tests. Standard review, all files.
 
@@ -75,31 +75,29 @@ On `rules/_import?overwrite=true`, rules whose alerting payload and `enabled` st
 2. ~~**Backport labels on a default-behavior change.** The PR carries `v9.5.6` + `backport:version` + `release_note:fix`. Changing default import semantics (risk 1) and adding an API response field in a patch release is a bigger step than a typical bug-fix backport.~~ **(SKIPPED)** The fix can't avoid a behavior change, and the new `unchanged_count` field is how that change is made visible to users. The backport targets 9.5 only, because change history went GA in 9.5 and that's when the blank entries started showing. Reviewers can push back if they disagree. See activity #7.
 3. ~~**Errors become successes for unchanged-but-broken rules.** Because unchanged rules skip alerting validation, a rule whose connector was deleted, or whose interval now breaks an enforced minimum, used to return an import error and now returns success. No data is written, so it's not a safety issue, but it changes what the response tells the user.~~ **(IGNORED)** Not really a problem. The rule already exists in that exact state, so throwing an error on import doesn't leave anyone better off.
 4. ~~**Telemetry schema change.** `detection_rule_import` gets a new required `outcome` keyword field, and the event no longer shares the lifecycle schema. Dashboards or downstream models (SDA/dbt) that union install/import/revert on a shared shape may need updating. Event counts stay continuous, which is good.~~ **(IGNORED)** The change is additive. The new schema spreads `ruleLifecycleTelemetrySchema` and adds `outcome`, so the event type and every existing field stay the same. Install and revert are untouched, and unchanged rules still send an import event, so counts don't move.
-5. **FTR coverage of the skip is thin.** The new FTR (`import_rules_telemetry.ts`) does run the real stored-vs-incoming comparison end to end, but only for one disabled custom query rule, and it only checks `unchanged_count` and the telemetry `outcome`. No FTR asserts that an unchanged re-import leaves `revision`, `updated_at` and change history alone. The existing overwrite FTRs all change `name` before re-importing, so they only cover the changed path. Not covered end to end: other rule types (ML, threshold, EQL, ES|QL, new terms, indicator match), prebuilt rules with `rule_source`, rules with actions or exceptions, enabled rules, and export → re-import with no edits (the DaC flow). See activity #10.
-6. **The public API docs now say the wrong thing about overwrite.** The `> warn` block in `import_rules_route.schema.yaml` (L17-19) says the importing user's key "gets assigned to the affected rules", which is no longer true for unchanged rules. The `overwrite` param description (L58) still says only "existing rules ... are overwritten" and doesn't mention that identical rules are skipped. The docs that reach users (bump.sh, via the bundled specs) will describe the old behavior. See activity #2.
+5. ~~**FTR coverage of the skip is thin.** The new FTR (`import_rules_telemetry.ts`) does run the real stored-vs-incoming comparison end to end, but only for one disabled custom query rule, and it only checks `unchanged_count` and the telemetry `outcome`. No FTR asserts that an unchanged re-import leaves `revision`, `updated_at` and change history alone. The existing overwrite FTRs all change `name` before re-importing, so they only cover the changed path. Not covered end to end: other rule types (ML, threshold, EQL, ES|QL, new terms, indicator match), prebuilt rules with `rule_source`, rules with actions or exceptions, enabled rules, and export → re-import with no edits (the DaC flow). See activity #10.~~ **(DONE)** Covered by the FTR assertions in activity #12.
+6. ~~**The public API docs now say the wrong thing about overwrite.** The `> warn` block in `import_rules_route.schema.yaml` (L17-19) says the importing user's key "gets assigned to the affected rules", which is no longer true for unchanged rules. The `overwrite` param description (L58) still says only "existing rules ... are overwritten" and doesn't mention that identical rules are skipped. The docs that reach users (bump.sh, via the bundled specs) will describe the old behavior. See activity #2.~~ **(DONE)** Light-touch wording fixes to both, see activity #14.
 7. ~~**`Fixes: #285343` will auto-close an issue that's only partly fixed.** The issue covers no-op writes from single `update()`/`patch()` (the UI "Save" with no edits) as well as import-overwrite. This PR only touches import. Once merged, the UI-save half of the bug has no open issue tracking it. See activity #3.~~ **(DISCARDED)** Not a risk. The concern is only imports, where users re-upload the same file with minor changes. A single update is a deliberate user action that should still rotate the API key and write change history, and it doubles as the remedial path when something goes wrong.
-8. **`overwrite=true` no longer guarantees its side effects.** Before, every matched rule got `revision + 1`, a new `updated_at`/`updated_by`, a change-history entry and legacy-actions migration. Now those happen only when the payload differs. API clients that read `revision`/`updated_at` after import to confirm it applied, or that assume overwrite migrates legacy actions, will see different results. This is the intended fix, but it's a public API behavior change and should be documented as one (ties to Risks 1 and 6). See activity #4.
+8. ~~**`overwrite=true` no longer guarantees its side effects.** Before, every matched rule got `revision + 1`, a new `updated_at`/`updated_by`, a change-history entry and legacy-actions migration. Now those happen only when the payload differs. API clients that read `revision`/`updated_at` after import to confirm it applied, or that assume overwrite migrates legacy actions, will see different results. This is the intended fix, but it's a public API behavior change and should be documented as one (ties to Risks 1 and 6). See activity #4.~~ **(DONE)** Desired behavior, now documented in the `overwrite` param description. See activity #14.
+9. **Legacy actions aren't migrated on an untouched re-import.** Overwrite used to run `bulkMigrateLegacyActions` on every matched rule. An exported rule with legacy (pre-8.x) actions re-imported untouched now counts as unchanged, so its legacy sidecar stays until the rule's next real change. A file without the actions still counts as changed and migrates. Low impact: nothing about the legacy actions changes. Added to the PR's Risks section. See activity #12. **(ACCEPTED)** Documented in the PR's Risks section. Too internal for the release note.
 
 ### Open questions
 
-- Should the PR description and release note call out that re-import no longer rotates API keys or changes the rule owner for unchanged rules? What's the recommended alternative for support's stale-key workaround?
-  - *Suggested reading: activity #5. Ownership rotation goes through the **Update API key** bulk action in Stack Management → Rules, same as before ([issue comment](https://github.com/elastic/kibana/issues/285343#issuecomment-5933664503)).*
+- ~~Should the PR description and release note call out that re-import no longer rotates API keys or changes the rule owner for unchanged rules? What's the recommended alternative for support's stale-key workaround?~~ **Answered — yes, both now call it out, pointing to **Update API key** in Stack Management → Rules. See activities #5 and #15.**
 - ~~Is backporting to 9.5.6 intended, given the default behavior change and the new response field? Or should this be 9.6-only?~~ **Answered — yes, 9.5 only, since that's when change history went GA. See activity #7.**
-- Was an opt-out (for example a query param that forces a rewrite) considered for users who relied on re-import to refresh keys? The PR's "Decisions" section argues against rewriting but doesn't mention keys.
-  - *Suggested reading: activity #5. An existing bulk action already covers key and owner refresh without bumping revisions, so an opt-out may not be needed.*
+- ~~Was an opt-out (for example a query param that forces a rewrite) considered for users who relied on re-import to refresh keys? The PR's "Decisions" section argues against rewriting but doesn't mention keys.~~ **Answered — not needed. **Update API key** already refreshes keys and owners without bumping revisions. See activity #5.**
 - ~~Is it OK for an unchanged rule that would fail current validation (missing connector, interval below an enforced minimum) to be reported as a success?~~ **Answered — yes. The rule already exists in that state, so an import error doesn't help. See Risk #3 (ignored).**
-- Should `bulk_count` in change history reflect the full import size or the number of rules actually written?
+- ~~Should `bulk_count` in change history reflect the full import size or the number of rules actually written?~~ **Answered — keep the full import size. See activity #15.**
 - ~~Does the `detection_rule_import` schema change need sign-off or an update in the downstream telemetry mapping (SDA/dbt models that read `detection_rule_*` events)?~~ **Answered — no. The change only adds a field. See Risk #4 (ignored).**
-- Would it be worth adding one FTR that re-imports an exported rule unchanged and asserts `revision`, `updated_at` and history count stay the same? Ideally a prebuilt rule plus one non-query type.
-- Small design point: `unchanged?: boolean` and `telemetry.outcome === 'unchanged'` encode the same fact. Could `unchanged_count` just be derived from `outcome`?
-- Does the PR need a `## Release Note` section? Without one, the release note falls back to the PR title, which says nothing about unchanged rules keeping their old API key and owner.
+- ~~Would it be worth adding one FTR that re-imports an exported rule unchanged and asserts `revision`, `updated_at` and history count stay the same? Ideally a prebuilt rule plus one non-query type.~~ **Answered — done. See activity #12.**
+- ~~Small design point: `unchanged?: boolean` and `telemetry.outcome === 'unchanged'` encode the same fact. Could `unchanged_count` just be derived from `outcome`?~~ **Answered — yes. `outcome` moved onto `ImportRuleSuccess` and `unchanged` dropped. See activity #13.**
+- ~~Does the PR need a `## Release Note` section? Without one, the release note falls back to the PR title, which says nothing about unchanged rules keeping their old API key and owner.~~ **Answered — yes, added. See activity #15.**
 - Do the user-facing "Import detection rules" docs in `elastic/docs-content` describe overwrite as always updating rules? If so, they need a matching update.
-- Should the PR use `Part of #285343` (or open a follow-up for `update()`/`patch()`) instead of `Fixes:`?
-  - *Suggested reading: Risk #7 (discarded). Single updates are meant to keep writing, so `Fixes:` holds as long as the issue scope matches.*
-- Would splitting the telemetry `outcome` commit into its own PR make the 9.5.6 backport cleaner? The bug fix doesn't depend on it.
+- ~~Should the PR use `Part of #285343` (or open a follow-up for `update()`/`patch()`) instead of `Fixes:`?~~ **Answered — `Fixes:` stays. The issue was rescoped to import only. See activity #6 and Risk #7 (discarded).**
+- ~~Would splitting the telemetry `outcome` commit into its own PR make the 9.5.6 backport cleaner? The bug fix doesn't depend on it.~~ **Answered — no, keep them together. See activity #15.**
 - Should the `isEqual(convert(existing), convert(next))` check become a shared helper now that restore-from-history and import both use it, and `update()`/`patch()` will likely be next?
-- Do stored rules with legacy (pre-8.x) actions show up as "unchanged" on re-import? If so, they now skip the `bulkMigrateLegacyActions` step that the write path used to run.
-- Since the route always sends `unchanged_count`, should the schema list it under `required` like the other count fields? As it stands, generated client types make it optional.
+- ~~Do stored rules with legacy (pre-8.x) actions show up as "unchanged" on re-import? If so, they now skip the `bulkMigrateLegacyActions` step that the write path used to run.~~ **Answered — yes, on an untouched export round trip. See Risk #9 and activity #12.**
+- ~~Since the route always sends `unchanged_count`, should the schema list it under `required` like the other count fields? As it stands, generated client types make it optional.~~ **Answered — yes, now required. See activity #15.**
 
 ### Notes for your codebase map
 
@@ -184,7 +182,7 @@ Looked at whether import could still rotate keys for the main DaC case: a pipeli
 
 - An enabled, unchanged rule whose `apiKeyOwner` isn't the importer is rewritten through `bulkUpdateRules()`, which mints a new key under the importer. Patch: [no-op-force-key-refresh-when-ownership-changes.diff](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/no-op-force-key-refresh-when-ownership-changes.diff).
 - The comparison is like for like: Alerting stamps `apiKeyOwner` from `core.security.authc.getCurrentUser(request).username` (`rules_client_factory.ts` L454-457, `api_key_as_alert_attributes.ts` L82), the same call Security makes on the same request.
-- To be decided.
+- **Skipped.** Deleting a user or changing their roles doesn't change what an existing API key can do (see activity #9), so a stale key owner is less of a problem than it looked. Not worth the extra complexity. Ownership rotation stays with **Update API key**.
 
 **9. Dug deeper: what happens to a rule when its key owner is deactivated or replaced**
 
@@ -215,4 +213,59 @@ Pulled the PR diff (same two commits as reviewed) and read the new and existing 
 - Gaps: other rule types, prebuilt rules with `rule_source`, actions and exceptions, enabled rules (the API key path), and export → re-import with no edits.
 - Couldn't confirm CI on the PR; `gh pr checks` only returned skipped jobs on the first page.
 - Reworded Risk #5 to the narrower gap.
+
+**11. Planned FTR coverage for the skip (Risk #5)**
+
+Worked out which FTR assertions would cover what this PR changes, keeping cost down. FTRs are expensive, so every item extends an existing test instead of adding a new one. A wrong "changed" result only falls back to the old write, so the focus is on proving the skip works for the real flows and that API keys rotate only when they should.
+
+- **KEEP #1, nothing gets written:** `import_rules_with_overwrite.ts` change-history test (L805). Re-import the "After" payload and assert `unchanged_count: 1`, `revision` still 1, `updated_at` unchanged, history still 2 items.
+- **KEEP #2, mixed batch:** `import_rules_telemetry.ts` already imports created/updated/unchanged/invalid and fetches the rules. Assert `updated.revision` is 1 and `unchanged.revision` is still 0. No `bulk_count` check, since history is ESS-only and this test also runs on serverless.
+- **OPTIONAL #3, every rule type:** one extra re-import per case in `import_rules_by_type.ts`, asserting `unchanged_count: 1`.
+- **KEEP #4, export then re-import untouched:** `import_rules_identity.ts` round trip (L323). Re-import the exported rule as-is before the name change; assert `unchanged_count: 1` and `revision` unchanged. This is the Detections as Code flow.
+- **KEEP #5, actions:** `import_rules_with_actions.ts`. Export and re-import untouched in L43 (exported actions have `uuid`, expect `unchanged_count: 1`). Add `unchanged_count: 0` to L187, which re-imports hand-written actions without `uuid`.
+- **KEEP #6, API key rotation both ways:** `import_rules_with_overwrite.ts` enabled interval test (L334). Read `alert.apiKey` via `getRuleSOById`; it changes after the changed import, then stays the same after an identical re-import with `unchanged_count: 1`.
+- ~~**KEEP #7, enabled-only flip still writes:** `import_rules_with_overwrite.ts` disable test (L256). Use the same name in both payloads so only `enabled` differs; existing `revision + 1`, `enabled: false` and task checks then cover the flip. Add `unchanged_count: 0`.~~ **(DROPPED)** It takes over an existing test and removes valid checks (name update, `revision + 1`, since alerting doesn't bump revision for `enabled` alone). It also can't prove `enabled` was the only difference without first re-importing an identical copy. The unit test (`detection_rules_client.import_rules.test.ts` L808, enable-only flip) already covers the check.
+- **KEEP #8, prebuilt rules:** `import_single_prebuilt_rule.ts`. L81 is already an identical re-import; switch to `importRules` and assert `unchanged_count: 1`. In L200, import the customized payload a second time and assert `unchanged_count: 1` with `rule_source.is_customized` still true.
+- **DROP #9, `overwrite: false`:** the skip code never runs on that path.
+
+**12. Added FTR coverage for the unchanged-rule skip**
+
+Added FTR assertions for the skip, following the activity #11 plan plus exceptions and legacy actions. All three configs pass locally; pushed as `80dccc124951`.
+
+- Covered: identical re-import (no revision, `updated_at` or history change), export round trip, actions, prebuilt rules, exceptions, and API keys rotating only on a real change (new test, split out of the interval test).
+- Legacy actions: re-importing a rule with its legacy action is skipped, so the legacy migration doesn't run. Raised as Risk #9, added to the PR's Risks section, and asserted in `import_rules_ess.ts`.
+- Fixed two things the PR broke: the exact response match in `import_rules.ts` (needed `unchanged_count: 0`) and the type error in `import_rules_telemetry.ts` L62.
+- Risk #5 marked done.
+
+**13. Removed the duplicate "unchanged" flag on import results**
+
+`ImportRuleSuccess` stored the same fact twice: `unchanged: true` (read by the route for `unchanged_count`) and `telemetry.outcome` (read by telemetry). Moved `outcome` up onto `ImportRuleSuccess` and dropped `unchanged`. Pushed as `b17bf269ec67`.
+
+- `ImportRuleSuccess` is now `{ rule_id, outcome, telemetry }`, and `telemetry` is back to the plain `RuleLifecycleTelemetryData`.
+- `route.ts` counts `outcome === 'unchanged'`. `detection_rules_client.ts` merges `outcome` into each telemetry payload just before sending.
+- Side benefit: the route test fixtures go back to their one-line `main` shape, shrinking the PR diff.
+- Leftover: `RuleImportTelemetryData` now only exists for the sender's input type. Fine as is.
+- Lint, the `security_solution` type check, and the route and client unit tests all pass.
+
+**14. Fixed the API docs wording (Risk #6)**
+
+Kept it light-touch: two sentence-level edits in `import_rules_route.schema.yaml`, then regenerated. Pushed as `906094df5ef6`.
+
+- `> warn` block: "assigned to the affected rules" became "assigned to the created or updated rules", so readers don't assume unchanged rules move to their key.
+- `overwrite` param: added "Rules with no changes are left as they are and counted in the response's `unchanged_count`."
+- Regenerated the ESS and serverless bundles (`bundle_detections`) and the generated clients (`openapi/generate`): `import_rules_route.gen.ts`, `quickstart_client.gen.ts` and the Scout/supertest `detections.gen.ts`. No unrelated generator changes.
+- `oas_docs/output` is left to the CI bot (`make api-docs`).
+- Still open: the user-facing docs in `elastic/docs-content` (not in this repo) and the docs review on the PR checklist.
+- Risk #6 marked done.
+
+**15. Release note, PR description updates and remaining decisions**
+
+Wrapped up the open questions and got the PR description ready for review.
+
+- Added a `## Release note` section to the PR, above the checklist. It covers skipped unchanged rules, the new `unchanged_count`, and that re-import no longer fixes rules whose API key was deleted, pointing to **Update API key** in Stack Management → Rules.
+- Risk 1 in the PR now ends with "Called out in the release note below."
+- Manual testing done: re-importing the 1000-rule file with one rule changed returned `unchanged_count: 999`. Ticked in the PR checklist, along with the release note.
+- Made `unchanged_count` required in the response schema, matching the other count fields. Regenerated the bundles and `import_rules_route.gen.ts`, and added `unchanged_count: 0` to the fixtures in `import_rules_route.test.ts` and the import modal's `test_utils.ts`. No runtime change, since the route already always sends it.
+- Decisions: keep `bulk_count` as the full import size, keep the telemetry `outcome` change in this PR, and skip the activity #8 re-keying patch.
+- Still open (follow-ups, not blocking): the `elastic/docs-content` import page, a shared helper for the `isEqual(convert(existing), convert(next))` check, the docs review on the PR checklist, and a separate bug for dead API keys showing up as "Unable to find matching indices" (activity #9).
 
