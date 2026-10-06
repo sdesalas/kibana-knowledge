@@ -2,7 +2,7 @@
 
 **PR:** [elastic/kibana#293948](https://github.com/elastic/kibana/pull/293948) by @sdesalas
 **Created Date: 2026-10-01**
-**Reviewed at:** [`0a27802d75be`](https://github.com/elastic/kibana/pull/293948/commits/0a27802d75bec9ed72dbec7b7dcf3e2033e25fa7) (PR head, all 8 commits squashed into one on 2026-10-02). Commit hashes in activities #12–#15 are from before the squash. First pass was at `c6baea443cfe` (2 commits).
+**Reviewed at:** [`082e43c33600`](https://github.com/elastic/kibana/pull/293948/commits/082e43c33600a52a51433b316e73ec5405cfb1e7) (PR head, rebased onto `main` as one commit). Earlier activity hashes (#12–#15) are from before that squash. First pass was at `c6baea443cfe` (2 commits).
 
 **Scale:** Substantive, but the core logic is small (~40 lines in `overwrite_rules.ts`). The rest is API schema, telemetry plumbing and tests. Standard review, all files.
 
@@ -268,4 +268,14 @@ Wrapped up the open questions and got the PR description ready for review.
 - Made `unchanged_count` required in the response schema, matching the other count fields. Regenerated the bundles and `import_rules_route.gen.ts`, and added `unchanged_count: 0` to the fixtures in `import_rules_route.test.ts` and the import modal's `test_utils.ts`. No runtime change, since the route already always sends it.
 - Decisions: keep `bulk_count` as the full import size, keep the telemetry `outcome` change in this PR, and skip the activity #8 re-keying patch.
 - Still open (follow-ups, not blocking): the `elastic/docs-content` import page, a shared helper for the `isEqual(convert(existing), convert(next))` check, the docs review on the PR checklist, and a separate bug for dead API keys showing up as "Unable to find matching indices" (activity #9).
+
+**16. Replaced `unchanged_count` with `rules_summary`**
+
+A single `unchanged_count` didn't match how other rule-management APIs already report mixed outcomes (a `summary` object with counts by result). Steven switched the import response to a required `rules_summary` (`created` / `updated` / `unchanged` / `failed`) so callers can see the same breakdown, and dropped `unchanged_count` because it never shipped. `success_count` is still created + updated + unchanged. `failed` is `rules_count - success_count` (not `errors.length`). Pushed as `082e43c33600`.
+
+- Route builds the object from each success `outcome`, then `failed: rulesCount - successCount`.
+- Schema, generated clients, detections bundles, and `oas_docs/output` all carry the field. Overwrite docs point at `rules_summary.unchanged`.
+- FTRs assert the summary on the interesting paths (overwrite skip/update/partial fail, actions, ESS RBAC mix, space create-then-overwrite). Happy-path `importRulesWithSuccess` helpers were left alone.
+- PR description: OAS JSON diff, manual testing, release note, and checklist now talk about `rules_summary` instead of `unchanged_count`.
+- Description copy: "Counts of imported rules by outcome. `created`, `updated`, and `unchanged` are included in `success_count`. `failed` did not import successfully."
 
