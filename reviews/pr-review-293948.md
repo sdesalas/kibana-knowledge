@@ -2,7 +2,7 @@
 
 **PR:** [elastic/kibana#293948](https://github.com/elastic/kibana/pull/293948) by @sdesalas
 **Created Date: 2026-10-01**
-**Reviewed at:** [`b58129762ed4`](https://github.com/elastic/kibana/pull/293948/commits/b58129762ed406ee08589a2f1d8773ad6057ab10) (PR head, 7 commits). First pass was at `c6baea443cfe` (2 commits).
+**Reviewed at:** [`0a27802d75be`](https://github.com/elastic/kibana/pull/293948/commits/0a27802d75bec9ed72dbec7b7dcf3e2033e25fa7) (PR head, all 8 commits squashed into one on 2026-10-02). Commit hashes in activities #12–#15 are from before the squash. First pass was at `c6baea443cfe` (2 commits).
 
 **Scale:** Substantive, but the core logic is small (~40 lines in `overwrite_rules.ts`). The rest is API schema, telemetry plumbing and tests. Standard review, all files.
 
