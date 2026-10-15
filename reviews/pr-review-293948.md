@@ -2,7 +2,7 @@
 
 **PR:** [elastic/kibana#293948](https://github.com/elastic/kibana/pull/293948) by @sdesalas
 **Created Date: 2026-10-01**
-**Reviewed at:** [`082e43c33600`](https://github.com/elastic/kibana/pull/293948/commits/082e43c33600a52a51433b316e73ec5405cfb1e7) (PR head, rebased onto `main` as one commit). Earlier activity hashes (#12–#15) are from before that squash. First pass was at `c6baea443cfe` (2 commits).
+**Reviewed at:** local telemetry sanity on `localhost:5606/kbn` (after [`c9496efd69cc`](https://github.com/elastic/kibana/pull/293948/commits/c9496efd69cce1e1b14850968ca18f1af93a97ef)). Prior pass was at `c9496efd69cc`; earlier at `3db9c2675397` / `082e43c33600`. First pass was at `c6baea443cfe` (2 commits).
 
 **Scale:** Substantive, but the core logic is small (~40 lines in `overwrite_rules.ts`). The rest is API schema, telemetry plumbing and tests. Standard review, all files.
 
@@ -87,7 +87,7 @@ On `rules/_import?overwrite=true`, rules whose alerting payload and `enabled` st
 - ~~Is backporting to 9.5.6 intended, given the default behavior change and the new response field? Or should this be 9.6-only?~~ **Answered — yes, 9.5 only, since that's when change history went GA. See activity #7.**
 - ~~Was an opt-out (for example a query param that forces a rewrite) considered for users who relied on re-import to refresh keys? The PR's "Decisions" section argues against rewriting but doesn't mention keys.~~ **Answered — not needed. **Update API key** already refreshes keys and owners without bumping revisions. See activity #5.**
 - ~~Is it OK for an unchanged rule that would fail current validation (missing connector, interval below an enforced minimum) to be reported as a success?~~ **Answered — yes. The rule already exists in that state, so an import error doesn't help. See Risk #3 (ignored).**
-- ~~Should `bulk_count` in change history reflect the full import size or the number of rules actually written?~~ **Answered — keep the full import size. See activity #15.**
+- ~~Should `bulk_count` in change history reflect the full import size or the number of rules actually written?~~ **Answered — keep the full import size. See activity #15.** (Comment on `route.ts` still missing — activity #17.)
 - ~~Does the `detection_rule_import` schema change need sign-off or an update in the downstream telemetry mapping (SDA/dbt models that read `detection_rule_*` events)?~~ **Answered — no. The change only adds a field. See Risk #4 (ignored).**
 - ~~Would it be worth adding one FTR that re-imports an exported rule unchanged and asserts `revision`, `updated_at` and history count stay the same? Ideally a prebuilt rule plus one non-query type.~~ **Answered — done. See activity #12.**
 - ~~Small design point: `unchanged?: boolean` and `telemetry.outcome === 'unchanged'` encode the same fact. Could `unchanged_count` just be derived from `outcome`?~~ **Answered — yes. `outcome` moved onto `ImportRuleSuccess` and `unchanged` dropped. See activity #13.**
@@ -97,7 +97,8 @@ On `rules/_import?overwrite=true`, rules whose alerting payload and `enabled` st
 - ~~Would splitting the telemetry `outcome` commit into its own PR make the 9.5.6 backport cleaner? The bug fix doesn't depend on it.~~ **Answered — no, keep them together. See activity #15.**
 - Should the `isEqual(convert(existing), convert(next))` check become a shared helper now that restore-from-history and import both use it, and `update()`/`patch()` will likely be next?
 - ~~Do stored rules with legacy (pre-8.x) actions show up as "unchanged" on re-import? If so, they now skip the `bulkMigrateLegacyActions` step that the write path used to run.~~ **Answered — yes, on an untouched export round trip. See Risk #9 and activity #12.**
-- ~~Since the route always sends `unchanged_count`, should the schema list it under `required` like the other count fields? As it stands, generated client types make it optional.~~ **Answered — yes, now required. See activity #15.**
+- ~~Since the route always sends `unchanged_count`, should the schema list it under `required` like the other count fields? As it stands, generated client types make it optional.~~ **Answered — yes, now required (as part of `rules_summary`). See activities #15–#16.**
+- ~~**Should `rules_summary` use `skipped` (unchanged + NDJSON duplicates) instead of `unchanged`, and how do callers learn the skip reason?**~~ **Answered — option B.** Rename to `skipped` for no-ops only (still in `success_count`); keep in-file duplicates in `failed` / `errors`. See activity #19.
 
 ### Notes for your codebase map
 
@@ -278,4 +279,88 @@ A single `unchanged_count` didn't match how other rule-management APIs already r
 - FTRs assert the summary on the interesting paths (overwrite skip/update/partial fail, actions, ESS RBAC mix, space create-then-overwrite). Happy-path `importRulesWithSuccess` helpers were left alone.
 - PR description: OAS JSON diff, manual testing, release note, and checklist now talk about `rules_summary` instead of `unchanged_count`.
 - Description copy: "Counts of imported rules by outcome. `created`, `updated`, and `unchanged` are included in `success_count`. `failed` did not import successfully."
+
+**17. Re-check at `3db9c2675397` (delta since `082e43c33600`)**
+
+PR moved since the last review: rebase into `bf3b2dc`, merge `main` a few times, then **Address PR feedback** [`dd6a85b164db`](https://github.com/elastic/kibana/pull/293948/commits/dd6a85b164db447981f51e69265a5d4000753d42), then another merge to head `3db9c2675397`. Core skip logic and the `rules_summary` shape are unchanged from activity #16. Compared the prior review, Maxim/Nastasha threads, and the current code.
+
+- Feedback commit renames `pending` → `byId` in `create_rules.ts` / `overwrite_rules.ts`.
+- Adds unit tests pinning unchanged detection: identical actions → `unchanged`; legacy rule-level `throttle` matching stored frequency → `unchanged`; action missing its stored `uuid` → `updated`.
+- Drops five happy-path FTR `rules_summary` asserts that weren't the test's goal.
+- GitHub threads resolved for those plus Bugbot uuid, enabled-only bulkUpdate nit, `bulkCount`, telemetry `outcome` nesting, and the test payload helper.
+
+**18. Remaining items after the re-check**
+
+Two review threads are still open; the rest of the prior review is settled or deferred.
+
+- `rules_summary` shape is the real merge gate. Maxim wants `skipped` (unchanged + NDJSON duplicates) with `rules_count = created + updated + skipped + failed`. Code still ships `unchanged` / `failed`, and `failed: rulesCount - successCount` still counts duplicates as failed. Steven posted options A–D on 2026-10-13 (per-item skipped array, keep duplicates in failed + rename, dual `duplicated`+`unchanged`, or log-only reasons); no Maxim reply yet.
+- Nastasha's longer overwrite docs wording is still open on `oas_docs/.../kibana.serverless.yaml`. She APPROVED anyway. Source YAML still has the short "Rules with no changes…" sentence; the enable-flip edge case (`updated_at` moves, `revision` doesn't) isn't documented.
+- Non-blocking leftovers:
+  - PR checklist: API docs review for `rules_summary` still unticked.
+  - Missing `bulkCount` comment on `route.ts` L198 (promised in the thread).
+  - Follow-ups from earlier: `elastic/docs-content` import page, shared `isEqual(convert…)` helper, dead API key warning bug (activity #9).
+- Confirmed still fine: skip logic, API key/owner behavior, release note, FTR no-write coverage, legacy-actions risk (accepted), 9.5 backport labels, `Fixes: #285343` scope.
+
+**19. Chose option B: `skipped` for no-ops, duplicates stay in `failed`/`errors`**
+
+Drove by the [Maxim `rules_summary` thread](https://github.com/elastic/kibana/pull/293948#discussion_r4258644965) (options A–D) plus the follow-up on `success_count` vs packing duplicates into `skipped`. Picked **B**: `rules_summary.skipped` means only unchanged no-ops and still counts in `success_count`; in-file duplicate `rule_id`s stay in `errors` and `rules_summary.failed`. Landed as [`c9496efd69cc`](https://github.com/elastic/kibana/pull/293948/commits/c9496efd69cce1e1b14850968ca18f1af93a97ef). Related note on the intentional overwrite duplicate change: [discussion_r4269957342](https://github.com/elastic/kibana/pull/293948#discussion_r4269957342).
+
+- Renamed `unchanged` → `skipped` across the OAS schema, generated clients, bundles, route summary, import `outcome`, and telemetry (`RuleImportOutcome`, `detection_rule_import.outcome`). Docs still say skipped = nothing changed.
+- Why not put duplicates in `skipped`: if `success_count = created + updated + skipped` and duplicates were skipped, they'd inflate successes; if `success_count` dropped skipped entirely, a full no-op re-import could look like `success: true, success_count: 0`. Keeping duplicates as failures preserves existing success semantics.
+- Behavior change: `getTupleDuplicateErrorsAndUniqueRules` drops the `isOverwrite` flag, so `overwrite=true` now reports the same in-file duplicate conflict as `overwrite=false` (`More than one rule with rule-id: "…" found`). Still imports one rule (last wins); the gap was an empty `errors` array on overwrite.
+- History dig (in the related comment): the overwrite asymmetry was locked by tests back to 2020 ([#57466](https://github.com/elastic/kibana/pull/57466)) with no product rationale to keep it — only the general "no duplicate rule_ids" goal from [#50222](https://github.com/elastic/kibana/issues/50222).
+- Tests: unit test for overwrite duplicates now expects the conflict error; FTR `basic_license…/import_rules.ts` flipped from "should NOT report a conflict" to expecting the error + `rules_summary.failed: 1` while still asserting last-wins create; overwrite-path FTRs updated for `skipped`.
+- Side benefit called out in the thread: UI error toasts now fire for duplicate lines on both overwrite branches with no UI change.
+- Still waiting on Maxim to close the parent thread; Nastasha docs wording and the other non-blocking leftovers from activity #18 are untouched.
+
+**20. Local telemetry sanity check (`detection_rule_import` + `outcome`)**
+
+Ran the FTR-shaped import mix against a local stack (`localhost:5606/kbn`, ES `9205`) with `telemetry.enabled` / `optIn` / `localShipper: true` in `kibana.dev.yml`, so EBT events land in `ebt-kibana-server`. Confirms the new `outcome` values leave the process and match the API summary.
+
+- Seeded `rule-updated` + `rule-unchanged`, then re-imported create / rename-update / identical / invalid (`risk_score: 101`).
+- API: `rules_summary: { created: 1, updated: 1, skipped: 1, failed: 1 }`, `success_count: 3`. Revisions: created `0`, updated `1`, skipped still `0`.
+- Queried `ebt-kibana-server` for `event_type: detection_rule_import` after the second import: three events with `outcome` `created` / `updated` / `skipped` on the matching rule ids; no event for the invalid rule.
+- Needed `telemetry.localShipper: true` (and a warm call to `/internal/telemetry/ebt_local_shipper`) — without the local shipper, events aren't queryable on localhost.
+- Sample docs from `ebt-kibana-server` (`context` omitted; all three share one `trace.id` from the import request):
+
+```json
+[
+  {
+    "timestamp": "2026-10-14T14:54:38.076Z",
+    "event_type": "detection_rule_import",
+    "properties": {
+      "ruleId": "82944ecc-751a-4e6d-b4a0-938bef4466c7",
+      "ruleType": "query",
+      "isPrebuilt": false,
+      "isCustomized": false,
+      "outcome": "skipped"
+    },
+    "trace": { "id": "4d590fc62a79e518e7f35de64f652d20" }
+  },
+  {
+    "timestamp": "2026-10-14T14:54:38.076Z",
+    "event_type": "detection_rule_import",
+    "properties": {
+      "ruleId": "d334f386-d67b-494b-aa3f-77a28195784e",
+      "ruleType": "query",
+      "isPrebuilt": false,
+      "isCustomized": false,
+      "outcome": "updated"
+    },
+    "trace": { "id": "4d590fc62a79e518e7f35de64f652d20" }
+  },
+  {
+    "timestamp": "2026-10-14T14:54:38.076Z",
+    "event_type": "detection_rule_import",
+    "properties": {
+      "ruleId": "562130b5-41f3-469f-b80a-4bfa0623d18e",
+      "ruleType": "query",
+      "isPrebuilt": false,
+      "isCustomized": false,
+      "outcome": "created"
+    },
+    "trace": { "id": "4d590fc62a79e518e7f35de64f652d20" }
+  }
+]
+```
 
