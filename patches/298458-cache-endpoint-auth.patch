@@ -1,0 +1,57 @@
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/endpoint/endpoint_app_context_services.ts b/x-pack/solutions/security/plugins/security_solution/server/endpoint/endpoint_app_context_services.ts
+index 97436aef264e..eef91b207d15 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/endpoint/endpoint_app_context_services.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/endpoint/endpoint_app_context_services.ts
+@@ -194,6 +194,8 @@ export class EndpointAppContextService {
+   private fleetServicesFactory: EndpointFleetServicesFactoryInterface | null = null;
+   private savedObjectsFactoryService: SavedObjectsClientFactory | null = null;
+   private readonly ccsCache = new SimpleMemCache({ ttl: CCS_CACHE_TTL_SECONDS });
++  // One Fleet/_has_privileges resolve per HTTP request (bulk rule writes share context.request).
++  private readonly endpointAuthzByRequest = new WeakMap<KibanaRequest, Promise<EndpointAuthz>>();
+ 
+   public security: SecurityServiceStart | undefined;
+ 
+@@ -515,18 +517,33 @@ export class EndpointAppContextService {
+   }
+ 
+   public async getEndpointAuthz(request: KibanaRequest): Promise<EndpointAuthz> {
+-    if (!this.startDependencies?.productFeaturesService) {
++    const productFeaturesService = this.startDependencies?.productFeaturesService;
++    if (!productFeaturesService) {
+       throw new EndpointAppContentServicesNotStartedError();
+     }
+-    const fleetAuthz = await this.getFleetAuthzService().fromRequest(request);
+-    const userRoles = this.security?.authc.getCurrentUser(request)?.roles ?? [];
+-    return calculateEndpointAuthz(
+-      this.getLicenseService(),
+-      fleetAuthz,
+-      userRoles,
+-      this.isServerless(),
+-      this.startDependencies.productFeaturesService
+-    );
++
++    const cached = this.endpointAuthzByRequest.get(request);
++    if (cached) {
++      return cached;
++    }
++
++    const pending = (async (): Promise<EndpointAuthz> => {
++      const fleetAuthz = await this.getFleetAuthzService().fromRequest(request);
++      const userRoles = this.security?.authc.getCurrentUser(request)?.roles ?? [];
++      return calculateEndpointAuthz(
++        this.getLicenseService(),
++        fleetAuthz,
++        userRoles,
++        this.isServerless(),
++        productFeaturesService
++      );
++    })().catch((err) => {
++      this.endpointAuthzByRequest.delete(request);
++      throw err;
++    });
++
++    this.endpointAuthzByRequest.set(request, pending);
++    return pending;
+   }
+ 
+   public getEndpointMetadataService(spaceId: string = DEFAULT_SPACE_ID): EndpointMetadataService {
