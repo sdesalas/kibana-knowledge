@@ -3,11 +3,8 @@ name: apm-investigation
 description: >-
   Hypothesis-driven APM investigation after a heavy HTTP/API operation: account
   for wall-clock time, dig into surprises with ad-hoc queries, and rank
-  optimization candidates by union wall-clock impact — single deployment or
-  compare the same endpoint across two environments. Use when the user invokes
-  /apm-investigation, asks to investigate or compare APM hotspots, or wants
-  impact-sorted candidates from a monitoring traces-apm* cluster after they
-  already ran the operation(s).
+  optimization candidates by union wall-clock impact. Use when the user invokes
+  /apm-investigation, asks to investigate or compare APM hotspots.
 disable-model-invocation: true
 ---
 
@@ -18,11 +15,16 @@ Deliver optimization candidates ranked by **union wall-clock impact** on total
 request duration — one deployment, or the same transaction across two
 environments (baseline vs PR, old vs new, local vs cloud).
 
+## When this skill triggers
+
+- `/apm-investigation`
+- `/apm-investigation <endpoint> <time window>`
+- `/apm-investigation compare …`
+- “investigate APM for …”, “compare APM between …”, “rank APM hotspots”
+
 ## Stance: you are investigating, not checklisting
 
-Scripts and the pattern catalog are **accelerators and vocabulary**, not the
-investigation. Unexpected problems will not match a pre-written label. Your job
-is to explain where the wall-clock went and why — including surprises.
+Your job is to explain where the wall-clock went and why — including surprises.
 
 **Do:**
 - Form hypotheses from gaps, odd span names, phase timing, parent trees, compare deltas
@@ -58,13 +60,6 @@ Repeat until the ranked list is honest and the biggest costs are explained:
    (side-effect spam with tiny union).
 7. **Deliver** — impact-sorted list + short “why” per top item. Catalog labels
    when they fit; free-text Pattern when they don’t.
-
-## When this skill triggers
-
-- `/apm-investigation`
-- `/apm-investigation <endpoint> <time window>`
-- `/apm-investigation compare …`
-- “investigate APM for …”, “compare APM between …”, “rank APM hotspots”
 
 ## Session bootstrap (always first)
 
