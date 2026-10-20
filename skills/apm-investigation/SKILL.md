@@ -305,14 +305,137 @@ Lead with what you concluded, not raw script dumps.
 - Implementing code fixes (unless user asks after the ranked list)
 - Browser APM UI as the *only* tool (ES API preferred; UI ok for sanity)
 
-## Scripts (optional accelerators)
+## Scripts
 
-Use when helpful; replace or extend with custom queries anytime.
+Below is the logic needed to accomplish the investigation steps above. Full
+implementations live next to this skill:
 
-| Script | Purpose |
-| --- | --- |
-| `find_transactions.py` | List candidate txns (optional `--env-a` / `--env-b`) |
-| `analyze_transaction.py` | First-pass union-wall ranking for one `trace.id` |
-| `compare_traces.py` | First-pass side-by-side delta for two `trace.id`s |
+`scripts/find_transactions.py` · `scripts/analyze_transaction.py` ·
+`scripts/compare_traces.py`
 
-Creds: only `~/config/apm.creds` (no helper scripts).
+`scripts/es_api.py` — shared creds load + ES HTTP/ES|QL helpers so the three
+CLIs don’t repeat that logic. Loads `~/config/apm.creds` (`KEY=value`,
+optional `APM_*` env overrides, reject sample placeholders), Basic-auth
+`urllib` GET/POST to monitoring ES, thin ES|QL helpers (`/_query?format=json`
+→ columns/values rows). Default index `APM_INDEX` or `traces-apm*`.
+
+### `find_transactions.py`
+
+**Purpose:** Discover candidate transactions for an endpoint + time window
+(entry mode A). With both `--env-a` / `--env-b`, run twice and print two lists.
+
+**CLI:** `--path`, `--from` / `--to` (ISO8601), optional `--environment` or
+`--env-a`/`--env-b`, optional `--hostname`, `--limit` (20), `--json`.
+
+**Core logic** — ES|QL (escape `"` / `\` in interpolated strings):
+
+```esql
+FROM traces-apm*
+| WHERE @timestamp >= "{from}" AND @timestamp <= "{to}"
+| WHERE processor.event == "transaction"
+| WHERE url.path LIKE "*{path}*" OR transaction.name LIKE "*{path}*"
+| WHERE service.environment == "{env}" OR labels.deploymentName == "{env}"   -- if env set
+| WHERE host.hostname == "{host}"                                           -- if host set
+| KEEP @timestamp, transaction.name, transaction.duration.us, trace.id,
+       url.path, service.environment, labels.deploymentName, host.hostname,
+       transaction.span_count.started, transaction.span_count.dropped
+| SORT transaction.duration.us DESC
+| LIMIT {limit}
+```
+
+Print duration_s, started/dropped (🚨 if dropped > 100), path, `trace.id`,
+env/deploy/host. Compare discover: suggest `compare_traces.py` with the two
+picked ids.
+
+### `analyze_transaction.py`
+
+**Purpose:** First-pass union-wall ranking for one `trace.id` (mode B). Exports
+`analyze_trace(creds, trace_id, …) → dict` for compare.
+
+**CLI:** `--trace-id`, `--pad-seconds` (2), `--top` (25),
+`--dropped-warn-threshold` (100), `--json`.
+
+**Fetch txn** (prefer `transaction.type == "request"` or HTTP-named; else
+longest). Window = `@timestamp` ± pad through `duration.us`. If no txn: same
+window from longest `span.name == "route handler"` (started/dropped unknown).
+
+```esql
+FROM traces-apm*
+| WHERE trace.id == "{trace_id}"
+| WHERE processor.event == "transaction"
+| KEEP @timestamp, transaction.name, transaction.duration.us,
+       transaction.span_count.started, transaction.span_count.dropped,
+       url.path, service.environment, host.hostname, labels.deploymentName,
+       transaction.id, transaction.type
+| SORT transaction.duration.us DESC
+| LIMIT 10
+```
+
+**Page spans** — `_search` with `search_after` until exhausted:
+
+```json
+{
+  "size": 2000,
+  "sort": [{ "@timestamp": "asc" }, { "_doc": "asc" }],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "processor.event": "span" } },
+        { "term": { "trace.id": "{trace_id}" } },
+        { "range": { "@timestamp": { "gte": "{t0}", "lte": "{t1}" } } }
+      ]
+    }
+  },
+  "_source": ["@timestamp", "span", "parent"]
+}
+```
+
+Interval per hit: `[parse(@timestamp), + span.duration.us]`. Keep spans that
+overlap the txn window. Group by `span.name`.
+
+**Union wall** (merge overlapping intervals, then sum):
+
+```python
+def union_seconds(intervals):
+    iv = sorted(intervals)
+    merged, (cs, ce) = [], iv[0]
+    for s, e in iv[1:]:
+        if s <= ce:
+            ce = max(ce, e)
+        else:
+            merged.append((cs, ce))
+            cs, ce = s, e
+    merged.append((cs, ce))
+    return sum((e - s).total_seconds() for s, e in merged)
+```
+
+Per name: `union_s`, `sum_s = Σ duration`, `n`, `pct = 100 * union / txn_dur`.
+Sort by `union_s` DESC. Heuristic `pattern` from name/n/union/sum (authz N+1,
+parallel fan-out, serial critical path, side-effect noise, …). Warn 🚨 if
+dropped > threshold. Skip `route handler` in top-actions (envelope span).
+
+### `compare_traces.py`
+
+**Purpose:** Side-by-side delta for two `trace.id`s (mode C).
+
+**CLI:** `--trace-a` / `--trace-b`, `--label-a` / `--label-b`, `--top`,
+`--pad-seconds`, `--dropped-warn-threshold`, `--json`.
+
+**Core logic** — analyze both (large `top`), outer-join by span name:
+
+```python
+a, b = analyze_trace(creds, trace_a, …), analyze_trace(creds, trace_b, …)
+by_a = {r["name"]: r for r in a["all"]}
+by_b = {r["name"]: r for r in b["all"]}
+rows = []
+for name in set(by_a) | set(by_b):
+    ra, rb = by_a.get(name), by_b.get(name)
+    ua, ub = (ra["union_s"] if ra else 0), (rb["union_s"] if rb else 0)
+    # note: only-in-A / only-in-B / improved|worse on B if |Δ| > 0.05s / similar
+    rows.append({…, "delta_union_s": ub - ua, "abs_delta_union_s": abs(ub - ua)})
+rows.sort(key=lambda r: r["abs_delta_union_s"], reverse=True)
+```
+
+Print duration A vs B + speedup; dropped warnings per side (and asymmetric
+completeness caveat); delta table sorted by `|Δ union|` (skip `route handler`);
+top remaining costs on slower side; biggest absolute deltas.
