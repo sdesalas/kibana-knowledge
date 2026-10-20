@@ -13,3 +13,4 @@ skills/model-explorer/
 demos/
 issues/
 telemetry/
+__pycache__
