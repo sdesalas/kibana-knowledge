@@ -49,6 +49,28 @@ qaf elastic-cloud deployments create --help
 
 Flags and env vars are the same knobs. `create --help` shows the mapping (`--plan` / `EC_PLAN`, `--kb-docker-image` / `KIBANA_DOCKER_IMAGE`, …).
 
+### CLI Help (QAF 26.7.0)
+
+Output from `qaf ... deployments create --help` command:
+
+| Flag | Env | Notes |
+| --- | --- | --- |
+| `--stack-version` *(required)* | `STACK_VERSION` | e.g. `9.6.0-SNAPSHOT` |
+| `--deployment-name` | `EC_DEPLOYMENT_NAME` | Becomes APM environment if the plan templates it |
+| `--environment` | `EC_ENV` | default `qa` → use `production` |
+| `--region` | `EC_REGION` | default `aws-eu-west-1` → use `gcp-us-west2` for CFT / custom Kibana YAML |
+| `--plan` | `EC_PLAN` | loads `~/.qaf/config/cloud_plans/<plan>.yml` |
+| `--autoscaling` / `--no-autoscaling` | `EC_AUTOSCALING_ENABLED` | default **on** → pass `--no-autoscaling` |
+| `--sso` / `--no-sso` | `EC_SSO_ENABLED` | default **on** → pass `--no-sso` |
+| `--solution-type` | `EC_SOLUTION_TYPE` | `classic` (default) \| `search` \| `observability` \| `security` |
+| `--kb-docker-image` | `KIBANA_DOCKER_IMAGE` | `kibana-ci/kibana-cloud:<stack>-<sha>` |
+| `--es-docker-image` | `ELASTICSEARCH_DOCKER_IMAGE` | rarely needed |
+| `--no-snapshot-repo` | `ADD_QAF_SNAPSHOT_REPO=false` | **Skip if Vault is not logged in.** Without this, create can fail *after* the cluster is already up/healthy while adding the GCS snapshot SA. |
+| `--no-stack-api-key` | `CREATE_QAF_STACK_API_KEY=false` | default creates `elastic-qaf` key |
+| `--self-monitoring` | `EC_SELF_MONITORING_ENABLED` | default off |
+
+Optional: `EC_API_TRANSPORT_DELAY_ENABLED=true` (jitter on Cloud API calls).
+
 ## 2. Before you create anything
 
 One-time, from the upstream install guide:
