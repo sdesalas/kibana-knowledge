@@ -200,6 +200,10 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 
 ### Call shape / N+1
 
+**Problem:** Work that should be one (or a few) round-trips is done once per
+item instead. Cost scales with input size through chatty ES/HTTP calls, missing
+bulk APIs, or unbounded parallel fan-out that floods the cluster.
+
 | Pattern | What it looks like in APM |
 | --- | --- |
 | **N+1 ES/HTTP** | Same call × hundreds/thousands (`_has_privileges`, per-item `_update_by_query`, per-doc get) |
@@ -207,6 +211,11 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 | **Unbounded fan-out** | Huge parallel `pMap` / many siblings with no obvious concurrency cap |
 
 ### Wall time vs parallel work
+
+**Reading:** How overlapping spans relate to the request clock. Some work is
+truly on the critical path (union ≈ sum); some is already parallel (high sum,
+lower union); some parent/child pairs are the same work counted twice — don’t
+add their unions.
 
 | Pattern | What it looks like |
 | --- | --- |
@@ -216,12 +225,20 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 
 ### Skip / noop / overwrite waste
 
+**Problem:** The API outcome says nothing changed (skipped / unchanged), but the
+server still does expensive writes or fetches. Or there is no short-circuit when
+the incoming entity matches what’s already stored, so every item is rewritten.
+
 | Pattern | What it looks like |
 | --- | --- |
 | **Skip-path waste** | API says skipped/unchanged but heavy spans still run (exceptions overwrite, connectors, asset fetches) |
 | **Missing noop short-circuit** | Full rewrite of unchanged entities (no equality / hash bailout) |
 
 ### Batching & payload
+
+**Problem:** Batch size and document shape are wrong for the work. Too many
+medium round-trips, one oversized bulk that dominates the txn, or fat docs
+(e.g. change-history bloat) that make each write slow.
 
 | Pattern | What it looks like |
 | --- | --- |
@@ -231,6 +248,10 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 
 ### Authz / security / keys
 
+**Problem:** Privilege checks and API-key lifecycle run far more often than
+needed. Same authz question asked per item instead of once per request, or keys
+created / granted / invalidated on paths that don’t need new credentials.
+
 | Pattern | What it looks like |
 | --- | --- |
 | **Authz N+1** | Repeat per/item authentication, such as `_has_privileges` / Fleet / Endpoint authz |
@@ -238,6 +259,10 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 | **API-key churn** | Mass `createAPIKey` / `grant` / invalidate on paths that don’t need new keys |
 
 ### Scheduling & side effects
+
+**Problem:** Background scheduling or telemetry runs per item or for subsystems
+that aren’t part of the user’s scenario. Often high span count with little
+wall-clock impact — don’t let it steal the ranking from real critical-path work.
 
 | Pattern | What it looks like |
 | --- | --- |
@@ -247,12 +272,20 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 
 ### Read amplification
 
+**Problem:** The same data is fetched over and over within one request —
+config/assets per batch, or the same search/`_mget` lookups repeated — instead
+of once and reused.
+
 | Pattern | What it looks like |
 | --- | --- |
 | **Repeated fetches** | Same prebuilt/asset/config fetch per batch instead of once per request |
 | **Search amplification** | Repeated `_search` / `_mget` for the same lookups |
 
 ### Code-shaped (APM hints; confirm in code if top-ranked)
+
+**Problem:** Structure in application code that APM only hints at: nested loops,
+awaits that serialize independent work, or missing caps on payload/result size.
+Confirm in code before treating as proven.
 
 | Pattern | What it looks like |
 | --- | --- |
@@ -261,6 +294,11 @@ Cost should scale predictably with input size; hot-path work should be deliberat
 | **Missing bounds** | Huge result sets / imports with no cap (often config: payload bytes, max import size) |
 
 ### Instrumentation caveats (not product wins)
+
+**Problem:** APM itself is incomplete or uneven — not a product optimization.
+High dropped spans mean rankings lie; compare sides with different drop rates
+make call-count deltas misleading. Prefer higher `transactionMaxSpans`, re-run,
+then re-analyze.
 
 | Pattern | What it looks like |
 | --- | --- |
