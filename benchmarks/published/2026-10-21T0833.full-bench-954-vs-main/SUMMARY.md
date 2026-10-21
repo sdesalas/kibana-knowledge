@@ -27,18 +27,18 @@ Exception fixtures for C1/C2: each shared list has **50 items** (1000 items acro
 
 | # | Scenario | Related PRs |
 |---|---|---|
-| 1 | Create 1,000 disabled rules. | 🔴 #275695 |
-| 2 | Create 1,000 enabled rules. | 🔴 #275695, 🟠 #290306 |
+| 1 | Import → Create 1,000 disabled rules. | 🔴 #275695 |
+| 2 | Import → Create 1,000 enabled rules. | 🔴 #275695, 🟠 #290306 |
 | 3 | Enable 1,000 existing disabled rules, with no other changes. | 🟤 #291560, 🟠 #290306 |
 | 4 | Edit 1,000 enabled rules by adding a tag. | 🟤 #291560, 🟠 #290306 |
-| 5 | Fully update 1,000 rules while they remain enabled. | 🟤 #291560, 🟠 #290306 |
-| 6 | Update 1,000 rules where only one has a real update and the other 999 are unchanged. | 🟤 #291560, 🟠 #290306, 🟡 #293948 |
+| 5 | Import → Fully update 1,000 rules while they remain enabled. | 🟤 #291560, 🟠 #290306 |
+| 6 | Import → Update 1,000 rules where only one has a real update and the other 999 are unchanged. | 🟤 #291560, 🟠 #290306, 🟡 #293948 |
 | 7 | Disable 1,000 existing enabled rules, with no other changes. | 🟤 #291560, 🟠 #290306 |
 | 8 | Delete 1,000 rules with no gaps. | 🔵 #287065 |
-| 9 | Create 1,000 enabled rules with a single connector. | 🔴 #275695, 🟠 #290306 |
-| 10 | Create 1,000 rules with 20 shared exception lists (50 items each). | 🔴 #275695, 🟠 #290306 |
-| 11 | Update 1,000 rules by adding one more shared exception list (to 21; 50 items each), with no other changes. | 🟤 #291560, 🟠 #290306 |
-| 12 | Update 1,000 rules by adding an extra connector, with no other changes. | 🟤 #291560, 🟠 #290306 |
+| 9 | Import → Create 1,000 enabled rules with a single connector. | 🔴 #275695, 🟠 #290306 |
+| 10 | Import → Create 1,000 rules with 20 shared exception lists (50 items each). | 🔴 #275695, 🟠 #290306 |
+| 11 | Import → Update 1,000 rules by adding one more shared exception list (to 21; 50 items each), with no other changes. | 🟤 #291560, 🟠 #290306 |
+| 12 | Import → Update 1,000 rules by adding an extra connector, with no other changes. | 🟤 #291560, 🟠 #290306 |
 | 13 | Delete 1,000 rules with existing gaps. | 🔵 #287065 |
 | 14 | Delete 21 shared exception lists after deleting the rules that used them. | 🟢 #285608 |
 
