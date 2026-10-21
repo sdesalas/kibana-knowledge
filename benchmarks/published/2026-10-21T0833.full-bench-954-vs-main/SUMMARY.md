@@ -363,9 +363,9 @@ Same shape as A8 (no-gaps delete). Batched gap soft-delete is only **~0.4s** —
 
 **Highest leverage for C3:** same as A8 — batch `untrackRuleAlerts` + collapse per-rule UbQ + shrink conflict-retry. Gap batching (#287065) is already winning.
 
-### Recurring themes (big cross-scenario wins)
+## Recurring performance themes (big cross-scenario wins)
 
-These show up in multiple digs. Ordered by breadth × wall impact on **main**.
+These show up in multiple investigations. Ordered by breadth × wall impact on **main**.
 
 | Theme | Where it hurts | Typical union (main) | Why it’s a big win |
 |---|---|---|---|
@@ -379,6 +379,21 @@ These show up in multiple digs. Ordered by breadth × wall impact on **main**.
 **Not the main leftover (already improved or inherent):** gap soft-delete on C3; SO `_bulk` / `bulkCreateRulesSo` on creates (real work); skip-unchanged on A6 (already ~8s).
 
 **Suggested attack order:** (1) authz cache → (2) conditional API keys → (3) capabilities/space cache → (4) connector read dedupe → (5) delete untrack/UbQ batching. That stack covers every digged scenario above ~15s except pure create SO time.
+
+### Relevant tickets and coverage
+
+Ticket mappings below distinguish direct implementation coverage, related work and audit homes. The proposed savings still need validation; span durations overlap and must not be added together.
+
+| Theme | Relevant tickets | Coverage and remaining questions |
+|---|---|---|
+| **1. Request-scoped privilege cache** | [#298458 — Skip Endpoint authz without response actions](https://github.com/elastic/kibana/issues/298458); [#298302 — Import audit](https://github.com/elastic/kibana/issues/298302); [#298350 — Editing audit](https://github.com/elastic/kibana/issues/298350) | **Partial direct match:** #298458 removes unnecessary Endpoint authorization calls and discusses request-scoped caching when response actions exist. It does not establish coverage of every `_has_privileges` source seen in these traces. Attribute the remaining calls through the import/edit audits before extending the fix. |
+| **2. Conditional API-key rotation** | [#264911 — Params-only upgrade path](https://github.com/elastic/kibana/issues/264911); [#298281 — Alerting performance epic](https://github.com/elastic/kibana/issues/298281) | **Related work, no exact dedicated match found:** #264911 discusses avoiding key rotation for params-only prebuilt upgrades. It does not cover all tag edits, import overwrites or connector changes here. Investigate which changes can safely retain credentials, including ownership and authorization semantics, and track any new Alerting work under #298281. |
+| **3. Capabilities and space-document cache** | [#298302 — Import audit](https://github.com/elastic/kibana/issues/298302) | **Audit home:** no dedicated implementation issue found. Identify the callers responsible for repeated capability resolution and space GETs in A5/C2, then determine the appropriate request-scoped cache. |
+| **4. Connector/action read deduplication** | [#273680 — Bulk action validation](https://github.com/elastic/kibana/issues/273680) | **Direct match for repeated connector reads:** batches/deduplicates `actionsClient.getBulk` and `listTypes` calls. Confirm the overwrite path is included. The repeated Cases searches in B1/B2 also need attribution; their elimination is not explicit in this ticket's acceptance criteria. |
+| **5. Bulk deletion side effects** | [#264895 — Bulk alert untracking and task lookups](https://github.com/elastic/kibana/issues/264895); [#298304 — Deletion audit](https://github.com/elastic/kibana/issues/298304) | **Direct match:** #264895 batches task lookups and alert untracking, including the per-rule `setAlertsToUntracked` / `updateByQuery` pattern, and wires it into delete/disable/enable. Use #298304 to investigate the conflict-retry envelope and repeated rule collection; two wrapper spans alone do not prove two actual conflict retries. |
+| **6. Exception overwrite cost** | [#249176 — Exception-heavy import timeouts](https://github.com/elastic/kibana/issues/249176); [#298302 — Import audit](https://github.com/elastic/kibana/issues/298302) | **Existing problem ticket:** #249176 covers slow exception imports. Add the C2 evidence there: approximately 28s before the first rule-import batch, followed by rule-update key/authz costs. Separate exception item/list writes from rule-reference updates when investigating; themes 1–3 overlap with this cost. |
+
+[#273675 — Bulk creation of rule API keys](https://github.com/elastic/kibana/issues/273675) is a separate optimization for grants that remain necessary; it does not cover skipping unnecessary rotation in theme 2.
 
 ### Trace index
 
