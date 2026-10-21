@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 #
-# Scenarios #15–#16: delete exception lists via
-#   POST /internal/api/exception_lists/_bulk_action
-# for every TARGET, in parallel.
+# Delete exception lists for every TARGET, in parallel.
+#
+# Preferred path (9.6+ / #285608):
+#   POST /internal/api/exception_lists/_bulk_action  (≤100 ids/batch)
+# Fallback when bulk returns 404 (e.g. 9.5.4):
+#   loop DELETE /api/exception_lists?id=…&namespace_type=single
+# so C4 can still be timed and compared (bulk vs single-delete loop).
 #
 # Finds list saved-object ids via /api/exception_lists/_find, optionally filters
-# by list type client-side (API ignores type=), then deletes in batches of ≤100.
-# Requires elastic-api-version: 1 (9.6+).
-# Lists referenced by rules return per-id 409 — delete rules first (scenario #14).
+# by list type client-side (API ignores type=).
+# Lists referenced by rules return per-id 409 — delete rules first.
 #
 # Requires: curl, jq
 #
@@ -125,7 +128,84 @@ delete_one() {
   fi
 
   local batch_n=0 succeeded=0 failed=0 elapsed_s=0 stats http_code time_total
-  local offset=0 batch_ids body resp batch_ok batch_fail
+  local offset=0 batch_ids body resp batch_ok batch_fail mode=bulk
+
+  # Probe bulk with first batch; on 404 fall back to single-DELETE loop for all ids.
+  batch_ids="$(sed -n "1,${BATCH_SIZE}p" "$ids_file")"
+  body="$(printf '%s\n' "$batch_ids" | jq -Rsc \
+    '{action:"delete", ids: (split("\n") | map(select(length>0))), namespace_type:"single"}')"
+  resp="$(mktemp -t exc_list_bulk_XXXX)"
+  stats="$(curl -sS -o "$resp" -w '%{http_code} %{time_total}' \
+    -X POST \
+    -u "$auth" \
+    -H 'kbn-xsrf: true' \
+    -H 'content-type: application/json' \
+    -H "elastic-api-version: ${BULK_API_VERSION}" \
+    -H 'x-elastic-internal-origin: Kibana' \
+    --data "$body" \
+    "${kbn_url}${BULK_PATH}")" \
+    || { echo "[$label] bulk curl failed"; rm -f "$resp" "$ids_file"; printf '%s\tERROR\t-\t%s\n' "$label" "$id_count" >>"$summary_file"; return 1; }
+
+  http_code="${stats% *}"
+  time_total="${stats##* }"
+
+  if [[ "$http_code" == "404" ]]; then
+    mode=single
+    echo "[$label] bulk HTTP 404 — falling back to single DELETE loop (${id_count} lists)"
+    rm -f "$resp"
+    elapsed_s=0
+    succeeded=0
+    failed=0
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      resp="$(mktemp -t exc_list_del_XXXX)"
+      stats="$(curl -sS -o "$resp" -w '%{http_code} %{time_total}' \
+        -X DELETE \
+        -u "$auth" \
+        -H 'kbn-xsrf: true' \
+        -H "elastic-api-version: ${FIND_API_VERSION}" \
+        "${kbn_url}/api/exception_lists?id=${id}&namespace_type=single")" \
+        || { echo "[$label] single DELETE curl failed id=$id"; rm -f "$resp"; failed=$((failed + 1)); continue; }
+      http_code="${stats% *}"
+      time_total="${stats##* }"
+      elapsed_s="$(awk -v a="$elapsed_s" -v b="$time_total" 'BEGIN { printf "%.6f", a+b }')"
+      if [[ "$http_code" == "200" ]]; then
+        succeeded=$((succeeded + 1))
+        echo "[$label] DELETE id=${id} ok ${time_total}s"
+      else
+        failed=$((failed + 1))
+        echo "[$label] DELETE id=${id} HTTP ${http_code}: $(head -c 200 "$resp")"
+      fi
+      rm -f "$resp"
+    done <"$ids_file"
+    rm -f "$ids_file"
+    echo "[$label] done mode=single succeeded=${succeeded} failed=${failed} time=${elapsed_s}s"
+    printf '%s\tsingle\t%ss\t%s\n' "$label" "$elapsed_s" "$succeeded" >>"$summary_file"
+    [[ "$failed" -gt 0 ]] && return 1
+    return 0
+  fi
+
+  if [[ "$http_code" != "200" ]]; then
+    echo "[$label] bulk HTTP ${http_code}: $(head -c 400 "$resp")"
+    rm -f "$resp" "$ids_file"
+    printf '%s\t%s\t%ss\t0\n' "$label" "$http_code" "$time_total" >>"$summary_file"
+    return 1
+  fi
+
+  # First bulk batch succeeded — continue remaining batches.
+  elapsed_s="$time_total"
+  batch_ok="$(jq -r '.summary.succeeded // 0' "$resp")"
+  batch_fail="$(jq -r '.summary.failed // 0' "$resp")"
+  succeeded=$((succeeded + batch_ok))
+  failed=$((failed + batch_fail))
+  batch_n=1
+  if [[ "$batch_fail" -gt 0 ]]; then
+    echo "[$label] batch ${batch_n}: ok=${batch_ok} fail=${batch_fail} ${time_total}s sample=$(jq -c '[.errors[:2][]?]' "$resp")"
+  else
+    echo "[$label] batch ${batch_n}: ok=${batch_ok} ${time_total}s"
+  fi
+  rm -f "$resp"
+  offset=$BATCH_SIZE
 
   while [[ "$offset" -lt "$id_count" ]]; do
     batch_ids="$(sed -n "$((offset + 1)),$((offset + BATCH_SIZE))p" "$ids_file")"
@@ -170,7 +250,7 @@ delete_one() {
 
   rm -f "$ids_file"
 
-  echo "[$label] done batches=${batch_n} succeeded=${succeeded} failed=${failed} time=${elapsed_s}s"
+  echo "[$label] done mode=bulk batches=${batch_n} succeeded=${succeeded} failed=${failed} time=${elapsed_s}s"
   printf '%s\t200\t%ss\t%s\n' "$label" "$elapsed_s" "$succeeded" >>"$summary_file"
 
   if [[ "$failed" -gt 0 ]]; then
