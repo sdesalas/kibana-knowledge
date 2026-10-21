@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Scenario #15: delete exception lists via
+# Scenarios #15–#16: delete exception lists via
 #   POST /internal/api/exception_lists/_bulk_action
 # for every TARGET, in parallel.
 #
-# Finds list saved-object ids via /api/exception_lists/_find, then deletes in
-# batches of ≤100 (API max). Requires elastic-api-version: 1 (9.6+).
+# Finds list saved-object ids via /api/exception_lists/_find, optionally filters
+# by list type client-side (API ignores type=), then deletes in batches of ≤100.
+# Requires elastic-api-version: 1 (9.6+).
 # Lists referenced by rules return per-id 409 — delete rules first (scenario #14).
 #
 # Requires: curl, jq
@@ -15,10 +16,13 @@
 # Env:
 #   BATCH_SIZE   default 100 (max allowed by API)
 #   PER_PAGE     find page size, default 100
+#   TYPE         optional list type filter: detection | rule_default | …
+#                empty = delete all found lists (pre-wipe)
 #
 # Usage:
 #   ./parallel_delete_exception_lists.sh
-#   PARALLEL_ENV_FILE=/tmp/local.env.sh ./parallel_delete_exception_lists.sh
+#   TYPE=detection ./parallel_delete_exception_lists.sh
+#   TYPE=rule_default PARALLEL_ENV_FILE=/tmp/local.env.sh ./parallel_delete_exception_lists.sh
 #
 set -u
 
@@ -26,6 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${PARALLEL_ENV_FILE:-${SCRIPT_DIR}/.env.sh}"
 BATCH_SIZE="${BATCH_SIZE:-100}"
 PER_PAGE="${PER_PAGE:-100}"
+TYPE="${TYPE:-}"
 FIND_API_VERSION='2023-10-31'
 BULK_API_VERSION='1'
 BULK_PATH='/internal/api/exception_lists/_bulk_action'
@@ -91,7 +96,12 @@ delete_one() {
       return 1
     fi
     total="$(jq -r '.total // 0' "$chunk")"
-    jq -r '.data[]? | .id' "$chunk" >>"$ids_file"
+    # _find has no reliable type= filter — filter client-side when TYPE is set.
+    if [[ -n "$TYPE" ]]; then
+      jq -r --arg t "$TYPE" '.data[]? | select(.type == $t) | .id' "$chunk" >>"$ids_file"
+    else
+      jq -r '.data[]? | .id' "$chunk" >>"$ids_file"
+    fi
     rm -f "$chunk"
     if [[ $((page * PER_PAGE)) -ge "$total" ]]; then
       break
@@ -101,7 +111,11 @@ delete_one() {
 
   local id_count
   id_count="$(wc -l <"$ids_file" | tr -d ' ')"
-  echo "[$label] lists=${id_count} (find.total=${total})"
+  if [[ -n "$TYPE" ]]; then
+    echo "[$label] lists=${id_count} type=${TYPE} (find.total=${total})"
+  else
+    echo "[$label] lists=${id_count} (find.total=${total})"
+  fi
 
   if [[ "$id_count" -eq 0 ]]; then
     echo "[$label] nothing to delete"
@@ -165,7 +179,11 @@ delete_one() {
   return 0
 }
 
-echo "delete exception lists  batch_size=${BATCH_SIZE}  targets=${#TARGETS[@]}"
+if [[ -n "$TYPE" ]]; then
+  echo "delete exception lists  type=${TYPE}  batch_size=${BATCH_SIZE}  targets=${#TARGETS[@]}"
+else
+  echo "delete exception lists  type=ALL  batch_size=${BATCH_SIZE}  targets=${#TARGETS[@]}"
+fi
 echo
 
 pids=()

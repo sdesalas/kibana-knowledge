@@ -197,12 +197,23 @@ hit_import() {
   http_code="${stats% *}"
   time_total="${stats##* }"
 
-  local preview
+  local preview rules_summary
   preview="$(head -c 80 "$tmp_body" | tr '\n' ' ')"
-  echo "[$label] <- HTTP ${http_code} in ${time_total}s | ${preview}"
+  if command -v jq >/dev/null 2>&1; then
+    rules_summary="$(jq -c '.rules_summary // empty' "$tmp_body" 2>/dev/null || true)"
+  fi
+  if [[ -n "${rules_summary:-}" ]]; then
+    echo "[$label] <- HTTP ${http_code} in ${time_total}s | rules_summary=${rules_summary}"
+  else
+    echo "[$label] <- HTTP ${http_code} in ${time_total}s | ${preview}"
+  fi
   rm -f "$tmp_body"
 
-  printf '%s\t%s\t%ss\n' "$label" "$http_code" "$time_total" >>"$summary_file"
+  if [[ -n "${rules_summary:-}" ]]; then
+    printf '%s\t%s\t%ss\t%s\n' "$label" "$http_code" "$time_total" "$rules_summary" >>"$summary_file"
+  else
+    printf '%s\t%s\t%ss\n' "$label" "$http_code" "$time_total" >>"$summary_file"
+  fi
 }
 
 run_delete_in_parallel() {
@@ -275,7 +286,7 @@ run_import_in_parallel() {
   done
 
   echo "--- import timings ---"
-  printf 'target\thttp\ttime\n'
+  printf 'target\thttp\ttime\trules_summary\n'
   for sf in "${summary_files[@]}"; do
     cat "$sf"
     rm -f "$sf"
