@@ -6,7 +6,7 @@
 
 ---
 
-**Scale:** Substantive (32 files, −138 / +74, cross-team)
+**Scale:** Substantive (80 files, −319 / +451, cross-team) — grew after Sep 28 follow-ups (required `ChangeTrackingService` cascaded into many alerting unit-test fixtures)
 
 ---
 
@@ -154,29 +154,31 @@ flowchart TB
 
 ### Risks
 
-1. **(Low — pre-existing, not introduced by this PR)** **Scope ↔ UI mismatch.** Security UI/API only check the advanced setting — they never read alerting `scope`. If someone sets `scope: []`, the UI still shows History (advanced setting defaults to true), the API calls `getHistory()`, `ChangeTrackingService` finds no client for `'security'` (never registered), and throws → **500** with `Unable to get history. Change history client not initialized for [security, alerting-rules]`. User sees a generic error toast. Write path is fine (silently skips). Requires deliberate admin misconfiguration of a key that defaults to `['security']`. See **Follow-up #1** for the full trace. **(Error-handling note — activity #4)** The old cluster-wide off (`enabled: false`) threw the exported `RuleChangeTrackingDisabledError` ("Rule change tracking is disabled."). The remaining off (`scope` excludes the module) throws an untyped `Error` with no `statusCode`, so `transformError` is guaranteed 500. Same status, worse message, no `instanceof` hook. See **Risk #5**.
+1. ~~**(Low — pre-existing)** **Scope ↔ UI mismatch → 500.**~~ **(RESOLVED — Sep 28)** `ChangeTrackingService.getHistory` now throws `RuleChangeTrackingDisabledError`; Security history/restore routes `instanceof`-map it to **403**; UI shows a disabled placeholder (no toast). Menu/tab can still appear when advanced setting is on and `scope` excludes `security` — but no more crash. See **activity #12**. Residual nit: API body still says *"You may enable it in Advanced Settings"* even when the cause is `scope` (UI copy is better — *"Contact your administrator"*).
 
-2. **(Low)** **Serverless tests newly enabled.** Suite moves `@skipInServerless` → `@serverless`. The `getUsername()` change is correct for SAML auth. Worth watching for flakes from timing or data-stream initialization in serverless environments.
+2. ~~**(Low)** **Serverless tests newly enabled.**~~ **(RESOLVED)** Flaky runner [#14580](https://buildkite.com/elastic/kibana-flaky-test-suite-runner/builds/14580): **50/50 passed**. You replied "feel free to ignore."
 
 3. **(Low)** **Routes always registered.** Setting off → 403, not "route missing." This is fine — client also drops the React route in `routes.tsx`, and server handlers + `change_tracking_disabled` tests align. No behavioral change for users.
 
-4. ~~**(Nit)** **`ruleChangeTracking.scope` is undocumented.** Now the only alerting-side control, but has no inline comment in `config.ts`, no README mention, and no entry in the `unused()` deprecation message for the removed `enabled` key. Operator reading `kibana.yml` has no guidance on what `scope` does or what `[]` means.~~ **Dropped — pre-existing gap, not introduced by this PR.** `scope` was already undocumented before this PR; asking the author to fix it here is a drive-by. The [official docs](https://www.elastic.co/docs/solutions/security/detect-and-alert/view-rule-changes-history) only mention the advanced setting as the off switch, which is correct for users. See activity #3.
+4. ~~**(Nit)** **`ruleChangeTracking.scope` is undocumented.**~~ **Dropped — pre-existing gap.** See activity #3.
 
-5. **(Low)** **`RuleChangeTrackingDisabledError` is a dead production contract.** Exported from `@kbn/alerting-plugin/server`, thrown only when `context.changeTrackingService` is null (`get_rule_history.ts:73–74`). This PR always constructs the service, so that path no longer fires in production — only in tests that omit the service. JSDoc now says "unavailable" but the default message still says "disabled." No Security (or other) caller `instanceof`-checks it; the route just `transformError`s. The real remaining off-switch (`scope` excludes the module) throws a generic `Error` from `ChangeTrackingService.getHistory` (`service.ts:184–188`) instead. See **activity #4**, **Open questions #1–2**.
+5. ~~**(Low)** **`RuleChangeTrackingDisabledError` is a dead production contract.**~~ **(RESOLVED — Sep 28)** Moved to `change_tracking/errors.ts`; thrown from `getHistory` when the module was never registered; dead "service missing on context" path removed; service is required end-to-end. Note: class still has **no `statusCode` property** — Security maps via `instanceof` instead (same 403 outcome for our routes).
 
-6. **(Low)** **Setting-off API suite still ESS-only.** Happy-path `change_tracking.ts` is now `@ess @serverless`. `change_tracking_disabled.ts` stays `@ess @skipInServerless` (separate ESS config with `uiSettings.overrides`). The remaining user-facing off switch is untested in serverless. Skip reason was the old flags — those are gone. See **activity #6**, **Open question #5**.
+6. **(Low)** **Setting-off API suite still ESS-only.** Happy-path `change_tracking.ts` is `@ess @serverless`. `change_tracking_disabled.ts` still `@ess @skipInServerless`. Still open — not a merge blocker. See **Open question #5**.
 
-7. **(Nit)** **Always-true `changeTrackingService` guards.** Constructor always assigns the service, but `plugin.ts` still types it optional and keeps `if (this.changeTrackingService)` / `changeTrackingService?.initialize`. The false path is dead. **Prototyped locally — see activity #8. Not on the PR.**
+7. ~~**(Nit)** **Always-true `changeTrackingService` guards.**~~ **(RESOLVED — Sep 28)** Field required; dead `if` / `?.initialize` gone; factory + `RulesClientContext` required too. Cascaded into ~lots of alerting unit-test fixtures adding the mock.
+
+8. **(Nit / process)** **PR queue hygiene.** [@banderror](https://github.com/elastic/kibana/pull/278197#issuecomment-) (2026-10-14) flagged the review queue as stale and asked to reopen after FF. Latest commit is `75165b35` (2026-09-28); CI last ran green-but-flaky Scout lanes (2026-10-12). May need a re-trigger / nudge before merge.
 
 ---
 
 ### Open questions
 
-1. Is `ruleChangeTracking.scope: []` the intended cluster-wide off switch now that `enabled` is gone? If so, should Security UI/API check it too (or at least return a clear error instead of an uninitialized-client crash)? *(Suggested reading — activity #4: `scope: []` / omitting `'security'` is the only remaining cluster-wide off, and it does **not** throw `RuleChangeTrackingDisabledError`. Security can't cheaply read alerting config; a clearer error would mean `ChangeTrackingService.getHistory` throwing a typed / `statusCode` 4xx when the module was never registered, so `transformError` doesn't default to 500.)*
-2. Should `RuleChangeTrackingDisabledError` get renamed? Production alerting always builds the service now; the error fires only when `changeTrackingService` is null on the `RulesClientContext`, which shouldn't happen with this PR. *(Suggested reading — activity #4: renaming alone doesn't fix it. Options: throw it — or a 4xx sibling — when the module isn't registered, or delete it if "service missing on context" is only a test / programming error. JSDoc already says "unavailable" while the default message still says "disabled.")*
+1. ~~Is `ruleChangeTracking.scope: []` the intended cluster-wide off switch… clear error instead of 500?~~ **(RESOLVED)** Now 403 + disabled UI placeholder. Scope remains the cluster gate; advanced setting remains the per-space gate.
+2. ~~Should `RuleChangeTrackingDisabledError` get renamed / moved?~~ **(RESOLVED)** Moved + reused for unregistered module. Name kept.
 3. Do any Cloud/ECE/helm templates outside this repo still set `ruleChangeTracking.enabled`? The `unused()` deprecation handles it gracefully, but those templates should get cleaned up too.
-4. Should the `unused()` message for `ruleChangeTracking.enabled` tell the operator what replaced it (`scope` + advanced setting)? *(Suggested reading — activity #10: local prototype on `config_deprecations.ts:15` + snapshot. Still the author's call.)*
-5. Should `change_tracking_disabled` run in serverless now that the flags that kept it skipped are gone? *(Suggested reading — activity #6: the happy path is already `@serverless`; the setting-off 403 / no-write cases are the remaining gate and only run on ESS.)*
+4. ~~Should the `unused()` message tell the operator what replaced it?~~ **(RESOLVED)** Custom message: *"Use the `securitySolution:enableRuleChangesHistory` advanced setting…"* (matches your suggestion; does not mention `scope`).
+5. Should `change_tracking_disabled` run in serverless now that the flags that kept it skipped are gone? *(Still open, low priority.)*
 
 ---
 
@@ -265,6 +267,32 @@ flowchart TB
 
 11. **Manual test plan.** Six walk-throughs for the remaining gates + upgrade leftovers. See **Manual test plan** below.
 
+12. **Delta re-review (2026-10-16) — current PR vs Sep 25 review comments.**
+
+    Pulled all inline review comments + Maxim’s Sep 28 replies + full diff (80 files, +451/−319). Verdict: **your Sep 25 feedback round is fully addressed.** Mapping:
+
+    | Your comment | Maxim’s response / code |
+    |---|---|
+    | Flaky runner on serverless `change_tracking` | [#14580](https://buildkite.com/elastic/kibana-flaky-test-suite-runner/builds/14580) 50/50; you said ignore |
+    | `scope: []` → History 500 / toast | `getHistory` throws `RuleChangeTrackingDisabledError`; Security routes → 403; UI disabled prompt; no toast; no retry on 403 |
+    | Move error into change_tracking + throw from `getHistory` | `errors.ts` + throw; removed dead null-service path entirely |
+    | Require `changeTrackingService` (plugin field / `if` / `?.initialize`) | Required end-to-end including factory + `RulesClientContext`; many test fixtures updated |
+    | Drop leftover `use_experimental_features` mock | Removed |
+    | Rename `config_with_change_tracking_enabled.ts` | → `config_with_change_tracking.ts` |
+    | Assert setting always registered | New `ui_settings.test.ts` case |
+    | Custom `unused()` deprecation message | Exact message you suggested |
+
+    **New surface since last review (worth a glance, not blockers):**
+    - Security history/restore routes now specially-case `RuleChangeTrackingDisabledError` → 403 (unit tests added).
+    - `use_infinite_change_history` + `changes_history.tsx` handle 403 as a stable disabled state (new unit tests).
+    - Bulk of file-count growth is alerting unit tests wiring the now-required service mock.
+
+    **Still open / residual:**
+    - Open Q #5 — `change_tracking_disabled` still ESS-only.
+    - Risk #1 residual — 403 body blames Advanced Settings even when cause is `scope`.
+    - Risk #8 — banderror stale-queue note; may need CI re-trigger.
+    - Manual test plan scenario **5** should now expect **403 + disabled placeholder**, not 500 + toast.
+
 ---
 
 ### Manual test plan
@@ -319,17 +347,17 @@ What this checks: upgrade leftover. Old `xpack.alerting.ruleChangeTracking.enabl
 
 Pass: warning, no crash, history still writes/reads. Fail: startup crash, or `enabled: false` silently turns tracking off.
 
-#### 5. `scope: []` — writes skip, History 500s
+#### 5. `scope: []` — writes skip, History 403 + disabled placeholder *(updated post–Sep 28)*
 
-What this checks: remaining cluster gate + Risk #1. Deliberate misconfig.
+What this checks: remaining cluster gate after Risk #1 fix.
 
 1. Set `xpack.alerting.ruleChangeTracking.scope: []` in `kibana.yml`. Restart. Keep the advanced setting **on**.
 2. Edit the rule again.
 3. History menu still shows (setting is on). Open it.
-4. Expect a fetch error toast (`HISTORY_FETCH_ERROR`). Network: `GET .../history/_list` → **500** `Change history client not initialized for [security, alerting-rules]`.
+4. Expect the **disabled** empty prompt (`ruleChangesHistoryDisabled`) — *not* a toast. Network: `GET .../history/_list` → **403**.
 5. Rows from earlier scenarios may still exist in the index; new edits should **not** appear.
 
-Pass: 500 + toast, no new write. Fail: 403/empty-200 (would mean they already fixed Risk #1), or a new row after the edit (scope ignored).
+Pass: 403 + disabled placeholder, no toast, no new write. Fail: 500/toast (regression), or a new row after the edit (scope ignored).
 
 Reset: drop `scope: []` (or restore `['security']`) and restart.
 
