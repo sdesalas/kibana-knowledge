@@ -1,0 +1,77 @@
+diff --git a/src/core/packages/http/server-internal/src/http_server.ts b/src/core/packages/http/server-internal/src/http_server.ts
+index a158f27d6413..94d0c8168a88 100644
+--- a/src/core/packages/http/server-internal/src/http_server.ts
++++ b/src/core/packages/http/server-internal/src/http_server.ts
+@@ -68,6 +68,15 @@ import { getEcsResponseLog, getSlimInfoResponseLog } from './logging';
+ import { type InternalStaticAssets, StaticAssets } from './static_assets';
+ import { createSelfCallPreHandler, createSelfCallPreResponseHandler } from './self_client_observer';
+ 
++/** TEMP LOCAL ONLY — do not commit. */
++function tempRandomHex(n: number): string {
++  let out = '';
++  while (out.length < n) {
++    out += Math.floor(Math.random() * 16).toString(16);
++  }
++  return out.slice(0, n);
++}
++
+ /**
+  * Adds ELU timings for the executed function to the current's context transaction
+  *
+@@ -606,7 +615,21 @@ export class HttpServer {
+ 
+       const stop = app.measureElu;
+ 
++      const endForcedImportTxn = () => {
++        const forced = (
++          app as KibanaRequestState & { tempForcedImportTxn?: { end: (result?: string) => void } }
++        ).tempForcedImportTxn;
++        if (forced) {
++          const outcome = isBoom(request.response) ? 'failure' : 'success';
++          forced.end(outcome);
++          (
++            app as KibanaRequestState & { tempForcedImportTxn?: unknown }
++          ).tempForcedImportTxn = undefined;
++        }
++      };
++
+       if (!stop) {
++        endForcedImportTxn();
+         return responseToolkit.continue;
+       }
+ 
+@@ -628,10 +651,12 @@ export class HttpServer {
+       if (isBoom(request.response)) {
+         stop();
+         app.otelSubSpan?.end();
++        endForcedImportTxn();
+       } else {
+         request.response.events.once('finish', () => {
+           stop();
+           app.otelSubSpan?.end();
++          endForcedImportTxn();
+         });
+       }
+ 
+@@ -701,6 +726,21 @@ export class HttpServer {
+       app.basePath = `${serverBasePath}${spaceBasePath}`;
+       app.rewrittenUrl = request.url !== originalUrl ? originalUrl : undefined;
+       app.measureElu = stop;
++      // TEMP LOCAL ONLY — do not commit. Force a root APM txn for rules/_import so
++      // pre-route + handler share one trace (localhost boot-trace leakage otherwise).
++      const pathname = request.url.pathname ?? request.path ?? '';
++      if (pathname.includes('/api/detection_engine/rules/_import')) {
++        const childOf = `00-${tempRandomHex(32)}-${tempRandomHex(16)}-01`;
++        const forced = apm.startTransaction(
++          'POST /api/detection_engine/rules/_import',
++          'request',
++          { childOf }
++        );
++        (app as KibanaRequestState & { tempForcedImportTxn?: typeof forced }).tempForcedImportTxn =
++          forced;
++        this.log.info(`TEMP forced APM txn for rules/_import at onRequest childOf=${childOf}`);
++      }
++
+       // Kibana stores trace.id until https://github.com/elastic/apm-agent-nodejs/issues/2353 is resolved
+       // The current implementation of the APM agent ends a request transaction before "response" log is emitted.
+       app.traceId = apm.currentTraceIds['trace.id'] ?? trace.getActiveSpan()?.spanContext().traceId;
