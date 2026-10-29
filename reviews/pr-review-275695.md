@@ -221,7 +221,7 @@ Georgii approved 2026-09-14 after a local review of the create path. Two finding
 
 Nits were addressed the next day and pushed as [9452e6a](https://github.com/elastic/kibana/commit/9452e6a009a3) (including deleting the leftover `logic/import/import_rules.ts` pass-through so the route calls the DRC method directly).
 
-12. **Keep DRC batching so #275695 can merge (15 Sep).** [DM](https://elastic.slack.com/archives/D09DQRW6Z88/p1789463332737809?thread_ts=1789374469.548209). [Comment](https://github.com/elastic/kibana/commit/3f244b7b3e672c780b0be19d7400f0ef3e0eba27). Patch parked at `.knowledge/patches/import_rules.batching.surfaced.to.route.ts.patch`.
+12. **Keep DRC batching so #275695 can merge (15 Sep).** [DM](https://elastic.slack.com/archives/D09DQRW6Z88/p1789463332737809?thread_ts=1789374469.548209). [Comment](https://github.com/elastic/kibana/commit/3f244b7b3e672c780b0be19d7400f0ef3e0eba27). Patch parked at `.knowledge/patches/2026-09-15.import_rules.batching.surfaced.to.route.ts.patch`.
 
 - After 9452e6a, Steven wanted to reverse Georgii’s encapsulate-batching nit: chunk in `route.ts` so a later change can stream the file instead of holding every rule in memory. Route still fully parses NDJSON first (exceptions/connectors sit at the end of the file), so that move would not stream today — it only sets the layering.
 - `create_rules` forwards the 200 constant as `bulkCreateRules` `batchSize`, including leftover chunks of 1–9. Alerting requires `batchSize` in 10–500; 200 is inside that. We need to be careful not to pass `bulkInputs.length` in the future, because alerting `bulkCreateRules()` throws below 10 and 400s those leftover rules via the outer catch. That code is not on the PR so not a problem.

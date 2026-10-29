@@ -3,7 +3,7 @@
 ## Context
 - Repo: `~/Code/sdesalas/kibana-6th` (Kibana)
 - Branch: `bulk-create-enable-alert-rules-feedback-with-wiring`
-- Plan: `.knowledge/plans/bulk-create-verify-batches_480a1ffe.plan.md`
+- Plan: `.knowledge/plans/2026-05-28.bulk-create-verify-batches_480a1ffe.plan.md`
 - Work focused on the alerting plugin's `bulkCreateRules` flow under
   `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/`,
   plus its consumers in the security solution's detection rules client.
@@ -68,7 +68,7 @@ No explicit focus given. Most natural next steps, in priority order:
 - `/babysit` — once a PR is opened, to keep CI and review comments moving.
 
 ## Artifacts
-- Plan: `.knowledge/plans/bulk-create-verify-batches_480a1ffe.plan.md`
+- Plan: `.knowledge/plans/2026-05-28.bulk-create-verify-batches_480a1ffe.plan.md`
 - Primary code:
   - `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts`
   - `x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts`

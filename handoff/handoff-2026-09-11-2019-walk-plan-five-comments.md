@@ -21,8 +21,8 @@ This session:
 - **“The section Maxim PRs Steven reviewed (that are not related to change history) is not needed.”**
   - *Insight:* keep the listing feature-only.
 
-- **“Move the file to ../reports, call it pr-listing-change-history.md”** then **“put a full list of affected files at the end… renamed → current main path; deleted → ignore”** then **“Rename change-history-pr-listing-affected-files.md”**
-  - *Insight:* **canonical listing** is `kibana-knowledge/reports/change-history-pr-listing-affected-files.md` (405 lines: PRs + 279 current files). Stale copies may still sit in the editor: `reports/pr-listing-change-history.md` (102 lines, no file list), `reviews/pr-274337-commits.md`. Prefer the 405-line file.
+- **“Move the file to ../reports, call it pr-listing-change-history.md”** then **“put a full list of affected files at the end… renamed → current main path; deleted → ignore”** then **“Rename 2026-09-11.change-history-pr-listing-affected-files.md”**
+  - *Insight:* **canonical listing** is `kibana-knowledge/reports/2026-09-11.change-history-pr-listing-affected-files.md` (405 lines: PRs + 279 current files). Stale copies may still sit in the editor: `reports/pr-listing-change-history.md` (102 lines, no file list), `reviews/pr-274337-commits.md`. Prefer the 405-line file.
 
 - **“/handoff , next agent is going to open this file and then do some deep research against the current test plan… walk through all the change history related files… also look at PRD, RFC and one pager and come up with a list of 5 things to comment on. The most important ones. Make sure each of those things explain why we need to make that comment. Then add them to the PR review in progress”** + attached review / one-pager / PRD / RFC / plan.
   - *Insight:* **not** a one-at-a-time interview this time. Deliver **exactly 5** new comments, each with why, then **post them onto the existing pending review**. Same bar as before: missing/wrong **test-plan scenario** (or wrong Gherkin), not nits, not “FTR already exists”. Do **not** submit the review.
@@ -36,7 +36,7 @@ Voice when posting: British English, technical, no humour, no AI-speak. `/voice`
 - **PR** [elastic/kibana#274337](https://github.com/elastic/kibana/pull/274337) @maximpn. Head **`002a4b97f87a320805579df7f7c9ad14090a049c`**. One file: `x-pack/solutions/security/plugins/security_solution/docs/testing/test_plans/detection_response/rule_management/rule_changes_history.md` (752 lines). Local file = GitHub RIGHT line numbers. GitHub raw/WebFetch strips HTML comments and shifts lines — **do not use that**.
 - **Pending review:** id **`5181813426`**, state `PENDING`, **11** draft comments. URL: https://github.com/elastic/kibana/pull/274337#pullrequestreview-5181813426
 - **Recreate source:** `/Users/sdesalas/Code/sdesalas/kibana-3rd/.agents/tmp/pr-274337-review.json` (summary + 11 comments, no `event`).
-- **Listing:** `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/change-history-pr-listing-affected-files.md` — walk table (feature PRs from `#256385` through `#277380`), platform `@kbn/change-history` PRs, 279 current `main` paths.
+- **Listing:** `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/2026-09-11.change-history-pr-listing-affected-files.md` — walk table (feature PRs from `#256385` through `#277380`), platform `@kbn/change-history` PRs, 279 current `main` paths.
 - **Product calls already made (do not re-litigate):** `enabled` = state not content; restore **should not** require enable/disable privilege (commented; `restore_rule_state.ts` still passes `enabled` today); rewrite stale UI scenarios, don’t delete them; test-plan comments are not “point at existing FTR”.
 - **Already posted (do not duplicate):** L580 unreadable snapshot; L290 “N changes”; L293–307 first *diffable* auto-select; L348–359 rewrite `+N`; L383 enabled unchanged on restore; L453/L459 `changeId` 404; L473 deleted recreate disabled; L531 typo; L532 feature-off 403s restore; L722–737 drop enable/disable privilege from restore RBAC.
 - **Interview drops (do not resurrect unless new evidence from PRD/RFC/files):** L108 terminology; L187/L261 “bulk edit” wording; L398 duplicate enabled; L156/L378 “FTR already exists”; L179 alerting actions missing from capture table; L234 pre-tracking e2e count.
@@ -80,7 +80,7 @@ To add the 5:
 ### Current state
 
 **Done**
-- Inventory + 279-file list in `change-history-pr-listing-affected-files.md`.
+- Inventory + 279-file list in `2026-09-11.change-history-pr-listing-affected-files.md`.
 - Pending review `5181813426` with 11 drafts. Not submitted.
 - Interview decisions in `pr-review-274337.md` activity 2 and `pr-274337-comments.md`.
 
@@ -98,7 +98,7 @@ To add the 5:
 ### Next session focus
 
 1. **Do not re-review the PR from scratch.** Load this handoff + review doc + comments file + listing.
-2. **Open the listing first:** `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/change-history-pr-listing-affected-files.md`. Use the walk-table PRs and the affected-file list (skip “Other” incidental: `yarn.lock`, CODEOWNERS, workflow tests, alerting_v2) as the file set.
+2. **Open the listing first:** `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/2026-09-11.change-history-pr-listing-affected-files.md`. Use the walk-table PRs and the affected-file list (skip “Other” incidental: `yarn.lock`, CODEOWNERS, workflow tests, alerting_v2) as the file set.
 3. **Read the plan** at the real path (not `.agents/tmp/pr-274337.md`):  
    `x-pack/solutions/security/plugins/security_solution/docs/testing/test_plans/detection_response/rule_management/rule_changes_history.md`
 4. **Read product docs** (local copies; treat as intent, not as “must match every FR if 9.5 didn’t ship it”):
@@ -122,7 +122,7 @@ To add the 5:
 
 ### Artifacts
 
-- **Start here:** `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/change-history-pr-listing-affected-files.md`
+- **Start here:** `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reports/2026-09-11.change-history-pr-listing-affected-files.md`
 - Prior handoffs: `handoff-2026-09-11-1823-pr-274337-comment-triage.md`, `handoff-2026-09-11-1949-change-history-missed-tests.md`
 - Review: `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reviews/pr-review-274337.md`
 - Interview log: `/Users/sdesalas/Code/sdesalas/kibana-knowledge/reviews/pr-274337-comments.md`

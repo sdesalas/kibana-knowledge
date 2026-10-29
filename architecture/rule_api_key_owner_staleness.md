@@ -114,7 +114,7 @@ fixed both problem cases above.
 [#293948](https://github.com/elastic/kibana/pull/293948) skips unchanged rules, so their keys are no longer refreshed.
 
 A possible follow-up, not part of the PR and not decided yet, is an **ownership check**
-(see [diff](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/no-op-force-key-refresh-when-ownership-changes.diff)): if an unchanged rule is enabled and its key belongs to someone other
+(see [diff](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/2026-10-01.no-op-force-key-refresh-when-ownership-changes.patch)): if an unchanged rule is enabled and its key belongs to someone other
 than the person importing, **rewrite it anyway**. That gives the rule a new key owned
 by the importer, so an admin or CI pipeline that re-imports someone else's rules
 still takes them over.

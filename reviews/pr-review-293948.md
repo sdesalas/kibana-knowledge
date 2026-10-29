@@ -181,7 +181,7 @@ The first pass only read the `createNewAPIKeySet` call site. This time I traced 
 
 Looked at whether import could still rotate keys for the main DaC case: a pipeline or admin re-imports rules owned by someone else. It can, by comparing the rule's `apiKeyOwner` with the importing user.
 
-- An enabled, unchanged rule whose `apiKeyOwner` isn't the importer is rewritten through `bulkUpdateRules()`, which mints a new key under the importer. Patch: [no-op-force-key-refresh-when-ownership-changes.diff](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/no-op-force-key-refresh-when-ownership-changes.diff).
+- An enabled, unchanged rule whose `apiKeyOwner` isn't the importer is rewritten through `bulkUpdateRules()`, which mints a new key under the importer. Patch: [2026-10-01.no-op-force-key-refresh-when-ownership-changes.patch](https://github.com/sdesalas/kibana-knowledge/blob/main/patches/2026-10-01.no-op-force-key-refresh-when-ownership-changes.patch).
 - The comparison is like for like: Alerting stamps `apiKeyOwner` from `core.security.authc.getCurrentUser(request).username` (`rules_client_factory.ts` L454-457, `api_key_as_alert_attributes.ts` L82), the same call Security makes on the same request.
 - **Skipped.** Deleting a user or changing their roles doesn't change what an existing API key can do (see activity #9), so a stale key owner is less of a problem than it looked. Not worth the extra complexity. Ownership rotation stays with **Update API key**.
 

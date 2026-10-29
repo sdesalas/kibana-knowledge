@@ -85,7 +85,7 @@ Fixes the validation mismatch that blocked resolving `required_fields` conflicts
 
 ### Review activities
 
-1. **Compared independent fix to this PR.** Reproduced #232614 on fresh `main` and landed a fix documented in `.knowledge/reports/prebuilt-rule-upgrade-required-fields-ecs.md`. Same core change as the PR (override `DiffableUpgradableFields.required_fields` → `RequiredFieldInput`). Independent fix also called `addEcsToRequiredFields()` in `get_value_for_field` on RESOLVED `required_fields`; the PR does not.
+1. **Compared independent fix to this PR.** Reproduced #232614 on fresh `main` and landed a fix documented in `.knowledge/reports/2026-07-17.prebuilt-rule-upgrade-required-fields-ecs.md`. Same core change as the PR (override `DiffableUpgradableFields.required_fields` → `RequiredFieldInput`). Independent fix also called `addEcsToRequiredFields()` in `get_value_for_field` on RESOLVED `required_fields`; the PR does not.
 
 2. **Checked whether early `addEcsToRequiredFields` in `get_value_for_field` is needed.** Intermediate upgrade asset is `PrebuiltRuleAsset` / create-shaped (`required_fields: RequiredFieldInput[]`, no `ecs`). Persistence already stamps `ecs` via `applyRuleDefaults` / `convertRuleResponseToAlertingRule`. Dry-run only returns `id` / `rule_id` / `version`, not the field list. Conclusion: early compute is redundant; schema override alone is the right fix. Drafted PR comment along those lines — not posted; tone still wrong.
 

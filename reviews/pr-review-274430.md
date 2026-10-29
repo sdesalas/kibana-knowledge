@@ -53,7 +53,7 @@ Same fix, two reviewers. The PR is internally consistent for the hand-maintained
 
 ## Tie-in with the CODEOWNERS quick-wins research
 
-This consolidation PR touches *exactly* the peripheral lines the [quick-wins report](https://github.com/sdesalas/kibana-knowledge/blob/main/reports/codeowners-review/codeowners_quick_wins.md) recommends trimming — so it's a natural moment to fold in those removals rather than carry the review load forward under the new team name. Overlap between the leftover/edited lines and the report's Tier-1 candidates:
+This consolidation PR touches *exactly* the peripheral lines the [quick-wins report](https://github.com/sdesalas/kibana-knowledge/blob/main/reports/codeowners-review/2026-05-14.codeowners_quick_wins.md) recommends trimming — so it's a natural moment to fold in those removals rather than carry the review load forward under the new team name. Overlap between the leftover/edited lines and the report's Tier-1 candidates:
 
 | Path | This PR | Quick-wins recommendation |
 | ---- | ------- | ------------------------- |

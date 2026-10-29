@@ -144,7 +144,7 @@ The author's PR comment says: "Just a related improvement that could be added in
 
 ### 2. `addGeneratedActionValues` double-call — resolved by PR discussion
 
-The reviewer (@cnasikas) raised this as a nit, suggesting the A1 results be carried through to avoid the second call in B1. The author provided a [memory impact estimation](https://github.com/sdesalas/kibana-knowledge/blob/main/reports/bulk-create-rules/bulk-create-dedup-action-values-memory.md) showing the extra memory from carrying enriched data through the pipeline outweighs the cost of the redundant call. The reviewer accepted: "Good point, ok let's leave it as it is." **Resolved — not a concern.**
+The reviewer (@cnasikas) raised this as a nit, suggesting the A1 results be carried through to avoid the second call in B1. The author provided a [memory impact estimation](https://github.com/sdesalas/kibana-knowledge/blob/main/reports/bulk-create-rules/2026-06-16.bulk-create-dedup-action-values-memory.md) showing the extra memory from carrying enriched data through the pipeline outweighs the cost of the redundant call. The reviewer accepted: "Good point, ok let's leave it as it is." **Resolved — not a concern.**
 
 ### 3. `batchSize` JSDoc — minor doc drift
 

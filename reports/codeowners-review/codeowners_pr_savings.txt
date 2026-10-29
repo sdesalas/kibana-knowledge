@@ -2,7 +2,7 @@ Loading CODEOWNERS -> file map for @elastic/security-detection-rule-management .
   Files team-owned: 2257
 Loading 6 months ago of commits on main ...
   Commits: 9668
-Wrote per-candidate PR lists -> codeowners_pr_savings_links.md
+Wrote per-candidate PR lists -> 2026-06-02.codeowners_pr_savings_links.md
 
 === 6 months ago (6 months) ===
 Commits on main:                                9668

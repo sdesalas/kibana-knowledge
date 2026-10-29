@@ -27,12 +27,12 @@ Kibana Security Solution, detection rules **change history** UI. A first-time ru
 
 ## Current state
 - Branch: `optimize-rule-bulk-import-create-path`. **Working tree clean** — session code edits were not committed; the patch file is the canonical, tested implementation.
-- Fix captured at `.knowledge/patches/273581-misleading-import-message.patch` (single-file change to `changes_diff.tsx`).
+- Fix captured at `.knowledge/patches/2026-07-02.273581-misleading-import-message.patch` (single-file change to `changes_diff.tsx`).
 - No tests added yet. No PR yet. Issue #273581 still open, assigned to `maximpn`.
 
 ## Next session focus
 Put together the PR to fix #273581 and close it.
-1. Apply `.knowledge/patches/273581-misleading-import-message.patch` to `changes_diff.tsx` (or re-implement equivalently; a top-level `hasNoDiff(item)` fn form was also trialled — either is fine).
+1. Apply `.knowledge/patches/2026-07-02.273581-misleading-import-message.patch` to `changes_diff.tsx` (or re-implement equivalently; a top-level `hasNoDiff(item)` fn form was also trialled — either is fine).
 2. Add Jest coverage in `changes_diff.test.tsx`: (a) `ruleImport` + null `old_values` + `created_at === updated_at` → **no** `ruleChangesHistoryNoDiffCallout`, renders insertion; (b) `ruleImport` + null `old_values` + `created_at !== updated_at` → callout **shown**; (c) regression: `ruleUpdate`/`ruleRevert` with old timestamps still show callout.
 3. Run `node scripts/jest x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_diff/changes_diff.test.tsx`.
 4. Open PR (target the issue's branch/version), link and close #273581.
@@ -42,7 +42,7 @@ Put together the PR to fix #273581 and close it.
 - `/pr-review` — sanity-check the diff before pushing.
 
 ## Artifacts
-- `.knowledge/patches/273581-misleading-import-message.patch` — final tested fix (source of truth).
+- `.knowledge/patches/2026-07-02.273581-misleading-import-message.patch` — final tested fix (source of truth).
 - Issue: https://github.com/elastic/kibana/issues/273581 — bug report + matching root-cause analysis + repro table + expected behavior.
 - `x-pack/solutions/security/plugins/security_solution/public/detection_engine/rule_details_ui/components/changes_diff/changes_diff.tsx` — file to change (+ `changes_diff.test.tsx` for tests).
 - Origin commit of the feature/classification: `fb7b562` (PR #269617, "[Security Solution] Add MVP UI for rule changes history").
