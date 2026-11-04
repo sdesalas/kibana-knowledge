@@ -34,12 +34,13 @@ Elasticsearch**.
 12. [Prebuilt Detection Rules](#12-prebuilt-detection-rules)
 13. [Alerts as Data](#13-alerts-as-data)
 14. [Persistence in Elasticsearch (the full picture)](#14-persistence-in-elasticsearch-the-full-picture)
-15. [Experimental Feature Flags](#15-experimental-feature-flags-security-solution-only)
-16. [Request Flow (HTTP → ES)](#16-request-flow-http--es)
-17. [Execution Flow (Task Manager → Alerts)](#17-execution-flow-task-manager--alerts)
-18. [Key Files Index](#18-key-files-index)
-19. [Cheat-sheet — "If I want to…"](#19-cheat-sheet--if-i-want-to)
-20. [Summary](#20-summary)
+15. [Rule Changes History](#15-rule-changes-history)
+16. [Experimental Feature Flags](#16-experimental-feature-flags-security-solution-only)
+17. [Request Flow (HTTP → ES)](#17-request-flow-http--es)
+18. [Execution Flow (Task Manager → Alerts)](#18-execution-flow-task-manager--alerts)
+19. [Key Files Index](#19-key-files-index)
+20. [Cheat-sheet — "If I want to…"](#20-cheat-sheet--if-i-want-to)
+21. [Summary](#21-summary)
 
 ---
 
@@ -1943,52 +1944,75 @@ Configuration constants: `SIGNALS_INDEX_KEY = 'signalsIndex'`,
 
 ## 14. Persistence in Elasticsearch (the full picture)
 
-> **In plain terms:** A working detection engine writes to *six* different
+> **In plain terms:** A working detection engine writes to several different
 > kinds of Elasticsearch storage, each tuned for a very different
 > read/write pattern. It helps to keep them separate in your head:
 >
-> - **Rule config** (the rule itself, scheduled tasks) → `.kibana_*` SO indices
-> - **Rule content catalogue** (prebuilt rule assets, exception lists) → `.kibana_security_solution`
-> - **Schedules** (one per running rule) → `.kibana_task_manager`
+> - **Rule config + connectors + ad-hoc runs** → `.kibana_alerting_cases`
+> - **Prebuilt rule content catalogue + exception list SOs** → `.kibana_security_solution`
+> - **Schedules** → `.kibana_task_manager`
+> - **ES API keys** (the real keys) → `.security` (Elasticsearch-managed)
 > - **Alerts the rules find** → `.alerts-security.alerts-<space>`
-> - **Execution audit / metrics** → `.kibana-event-log-*`
-> - **Big value lists** referenced by exceptions → `lists` / `list-items` ES indices
+> - **Execution audit / gaps** → `.kibana-event-log-*`
+> - **Change history snapshots** → `.kibana_change_history`
+> - **Big value lists** → `.lists-*` / `.items-*`
 >
 > Each lives in its own index because each has a wildly different read
 > pattern (single-doc vs bulk write, frequent vs rare, encrypted vs not,
-> per-space vs space-agnostic).
+> per-space vs space-agnostic, Kibana SO vs ES system index).
 
-There are **three distinct categories of data** persisted by the detection
-engine, each in its own ES index family:
+There are several distinct categories of data. Subsections below walk each
+family; §14.8 is the one-page inventory of every index involved.
 
 ### 14.1 The "Saved Object" indices (configuration)
 
-All Kibana SO indices live in `.kibana*`. The detection engine touches three of
-them:
+All Kibana SO indices live under `.kibana*`. Detection rules and their
+immediate dependencies primarily use three of them (plus the main `.kibana`
+index only for incidental shared objects such as some data views):
 
 | SO type | Owning index alias | Visibility | Purpose |
 |---------|--------------------|------------|---------|
-| `alert` (constant `RULE_SAVED_OBJECT_TYPE`) | `.kibana_alerting_cases` | hidden, multi-isolated | The runnable rule (one per detection rule). Stores: `name`, `enabled`, `tags`, `alertTypeId` (`siem.queryRule`/…), `consumer` (`'siem'`), `schedule`, `actions[]`, **`params`** (the type-specific parameters: query, index, threshold, …, plus `ruleId`/`immutable`/`ruleSource`/`exceptionsList`/`maxSignals`), `apiKey` (encrypted), `notifyWhen`, `throttle`, `meta`, `mappedParams`. **Encrypted attributes**: `apiKey`, `uiamApiKey`. AAD includes most static fields (see `RuleAttributesIncludedInAAD`). |
-| `security-rule` (`PREBUILT_RULE_ASSETS_SO_TYPE`) | `.kibana_security_solution` | not hidden, agnostic, model versions V1→V3 | Prebuilt rule **content** assets, one document per `(rule_id, version)`. |
-| `exception-list` & `exception-list-agnostic` | `.kibana_security_solution` | not hidden, multi-isolated / agnostic | Exception list containers and items (distinguished by `list_type`). |
+| `alert` (`RULE_SAVED_OBJECT_TYPE`) | `.kibana_alerting_cases` | hidden, multi-isolated | The runnable rule. Stores: `name`, `enabled`, `tags`, `alertTypeId` (`siem.queryRule`/…), `consumer` (`'siem'`), `schedule`, `actions[]`, **`params`** (type-specific + `ruleId`/`immutable`/`ruleSource`/`exceptionsList`/`maxSignals`), encrypted `apiKey`/`uiamApiKey`, `notifyWhen`, `throttle`, `meta`, `mappedParams`. |
+| `action` (+ connector credential / token / signing-key SOs) | `.kibana_alerting_cases` | hidden | Connectors referenced by rule `actions[]`. Registered by the Actions plugin with `indexPattern: ALERTING_CASES_SAVED_OBJECT_INDEX` — **not** `.kibana`. |
+| `ad_hoc_run_params` | `.kibana_alerting_cases` | — | Manual `run` / `fill_gaps` backfill params. |
+| `security-rule` (`PREBUILT_RULE_ASSETS_SO_TYPE`) | `.kibana_security_solution` | not hidden, agnostic, MV V1→V3 | Prebuilt content, one doc per `(rule_id, version)`. |
+| `exception-list` / `exception-list-agnostic` | `.kibana_security_solution` | multi-isolated / agnostic | Exception containers + items (`list_type`). |
+| `task` | `.kibana_task_manager` | — | Schedule for each enabled rule (`taskType: alerting:siem.*`) and for ad-hoc backfills. |
 
-Plus the platform's own:
-
-| | |
-|--|--|
-| `.kibana_task_manager` | Holds the `task` SO that schedules each rule run (`taskType: 'alerting:siem.queryRule'` etc.). |
-| `.kibana_alerting_cases` | Also holds `ad_hoc_run_params` SOs (used by `bulk run` and `fill_gaps`). |
-| `.kibana-event-log-*` data stream | Audit trail of every rule execution: outcome, duration, gaps (when `storeGapsInEventLogEnabled`), warnings/errors. Source for `execution_summary`. |
-
-Index pattern constants:
+Index pattern constants
+(`src/core/packages/saved-objects/server/src/saved_objects_index_pattern.ts`):
 - `MAIN_SAVED_OBJECT_INDEX = '.kibana'`
 - `ALERTING_CASES_SAVED_OBJECT_INDEX = '.kibana_alerting_cases'`
 - `SECURITY_SOLUTION_SAVED_OBJECT_INDEX = '.kibana_security_solution'`
 - `TASK_MANAGER_SAVED_OBJECT_INDEX = '.kibana_task_manager'`
 
-(See `src/core/packages/saved-objects/server/src/saved_objects_index_pattern.ts`.)
+### 14.2 Elasticsearch `.security` — where API keys actually live
 
-### 14.2 The "Alerts as Data" indices (security alerts)
+Easy to conflate two stores:
+
+1. **Rule SO** (`.kibana_alerting_cases`) — ESO-encrypted attributes
+   `apiKey` / `uiamApiKey` on the `alert` document (plus AAD binding). This
+   is what Task Runner decrypts to run *as the user*.
+2. **Elasticsearch API key document** — the live key managed by the ES
+   Security plugin in the **system** index alias **`.security`** (concrete
+   primary **`.security-7`**). Defined in Elasticsearch as
+   `SECURITY_MAIN_ALIAS = ".security"` /
+   `MAIN_INDEX_CONCRETE_NAME = ".security-7"` in
+   `x-pack/plugin/security/.../SecuritySystemIndices.java`. Mappings include
+   `api_key_hash`, `api_key_invalidated`, role descriptors, expiration, etc.
+
+Alerting creates and invalidates keys via `security.authc.apiKeys.*`; Kibana
+never writes `.security` as a normal SO index — Elasticsearch owns it.
+Related ES system indices in the same family (not rule-owned, but nearby):
+`.security-tokens`, `.security-profile`.
+
+If Kibana encryption keys rotate without `decryptionOnlyKeys`, decrypt of
+the SO blob fails and the rule keeps retrying (see
+[rule_so_task_consistency.md](./rule_so_task_consistency.md) row 12). If the
+ES key is invalidated but the SO still points at it, executions fail until
+re-enable regenerates a key.
+
+### 14.3 The "Alerts as Data" indices (security alerts)
 
 Created by `RuleDataService.initializeIndex()` at setup, written to per
 execution by `alertWithPersistence()` from the persistence wrapper.
@@ -1997,22 +2021,69 @@ execution by `alertWithPersistence()` from the persistence wrapper.
 |-----------|-------|
 | Context | `security` |
 | Index template name | `.alerts-security.alerts` |
-| Backing index pattern | `.alerts-security.alerts-default-<NNNNNN>` |
+| Backing index pattern | `.internal.alerts-security.alerts-default-*` (and similar) |
 | Read alias (per space) | `.alerts-security.alerts-<namespace>` |
-| Secondary alias | `.siem-signals-<namespace>` (controlled by `xpack.securitySolution.signalsIndex`) |
+| Secondary alias | `.siem-signals-<namespace>` (`xpack.securitySolution.signalsIndex`, default `.siem-signals`) |
 | Preview alias | `.preview.alerts-security.alerts-<namespace>` (no secondary alias) |
-| ILM | Managed by the framework; rollovers tracked via `kibana.alert.rule.execution.uuid`/`kibana.version` |
-| Field map | `securityRuleTypeFieldMap` (see §12) |
+| Field map | `securityRuleTypeFieldMap` (see §13) |
 
-### 14.3 The "Exception list value lists" indices (lists plugin)
+### 14.4 Execution audit — Event Log (and gaps)
 
-The lists plugin can also create `lists` and `list_items` ES indices to store
-**big value lists** referenced by exception items (e.g. ip ranges, hashes,
-domains). These are **regular ES indices** (not SOs) — see the lists plugin
-configuration for index names; they are referenced from exception-list-item
-entries via `entries[].list = { id, type }`.
+Every rule run appends to the Event Log data stream
+**`.kibana-event-log-*`** / **`.kibana-event-log-ds`**: outcome, duration,
+search metrics, warnings/errors. This is the source of
+`RuleResponse.execution_summary` (computed on read, not stored on the rule SO).
 
-### 14.4 Diagram — the persistence map
+**Gaps** have no dedicated index. When `storeGapsInEventLogEnabled` is on,
+remaining gap after catch-up is stored as Event Log fields
+(`gap_duration_s`, `gap_range`, optional `gap_reason`). The Gaps UI and
+`fill_gaps` bulk action read those events, then schedule
+`ad_hoc_run_params` (+ TM tasks) for remediation. Catch-up itself writes
+nothing extra — it only adds search windows inside the late run. See §8.1
+and [rule_gaps_and_catchup.md](./rule_gaps_and_catchup.md).
+
+### 14.5 Change history snapshots — `.kibana_change_history`
+
+Rule **create / update / enable / disable / delete** (when change tracking
+is enabled) appends a post-change snapshot to the shared system data stream
+**`.kibana_change_history`** via `@kbn/change-history`. That stream is
+config history for the Changes History UI / restore — not execution audit.
+Behaviour, gates, and restore flow are covered in §15.
+
+### 14.6 Exception list value lists (lists plugin)
+
+`.lists-<space>` / `.items-<space>` (defaults `.lists` / `.items`) store
+**big value lists** referenced by exception items
+(`entries[].list = { id, type }`). These are regular ES indices (not SOs).
+Exception **list SOs** themselves stay in `.kibana_security_solution`
+(§14.1).
+
+### 14.7 Runtime query targets (not owned by the engine)
+
+Executors also **read** customer data at run time: the rule's source
+indices / data view, threat-intel indices (`threat_index` on threat_match),
+and ML anomaly indices/jobs. Those are not detection-engine indices; they
+are whatever the rule (and the user's API key) can see.
+
+### 14.8 Index inventory (complete list)
+
+| Index / alias / pattern | Owner | Role for detection rules |
+|-------------------------|-------|--------------------------|
+| **`.kibana_alerting_cases`** | Alerting / Actions / Cases | Rules (`alert`); connectors (`action` + related SOs); `ad_hoc_run_params`. Holds ESO-encrypted API key *blobs* on the rule. |
+| **`.kibana_security_solution`** | Security Solution / Lists | Prebuilt assets (`security-rule`); exception list SOs. |
+| **`.kibana_task_manager`** | Task Manager | Schedule tasks for enabled rules and backfills. |
+| **`.kibana`** | Core SO | Incidental shared SOs (e.g. some data views) — not the primary rule store. |
+| **`.security`** → **`.security-7`** | **Elasticsearch** Security | Live **API key** documents. Kibana creates/invalidates via ES APIs only. |
+| **`.security-tokens`** / **`.security-profile`** | Elasticsearch Security | Related ES security system indices. |
+| **`.alerts-security.alerts-<space>`** | Rule Registry / Alerting | Primary alerts-as-data read alias (backing under `.internal.alerts-security.*`). |
+| **`.siem-signals-<space>`** | Security Solution (legacy) | Secondary alias on the same alerts data. |
+| **`.preview.alerts-security.alerts-<space>`** | Rule Registry | Rule preview alerts. |
+| **`.kibana-event-log-*`** / **`.kibana-event-log-ds`** | Event Log | Execution audit; **gap** fields; `execution_summary` source. |
+| **`.kibana_change_history`** | `@kbn/change-history` | Config change snapshots (§15). |
+| **`.lists-<space>`** / **`.items-<space>`** | Lists plugin | Value-list containers and entries. |
+| User **source / threat / ML** indices | Customer data | Queried at runtime by executors. |
+
+### 14.9 Diagram — the persistence map
 
 ```
                 ┌────────────────────────────────────────────────────────────────────┐
@@ -2027,49 +2098,120 @@ entries via `entries[].list = { id, type }`.
                          ▼                                       ▼
                   RulesClient (alerting)                exception-list[/-agnostic]
                   ┌───────────────────────┐                       │
-                  │ SO type 'alert'       │                       │
-                  │ params.{type, index,  │                       │
-                  │   query, threshold,   │       ┌───────────────┴────────────────┐
-                  │   exceptionsList,     │       │  exception-list (containers)   │
-                  │   ruleSource, ...}    │       │  exception-list (items)        │
-                  │ apiKey (encrypted)    │       │  list_type ∈ {'list', 'item'}  │
+                  │ SO type 'alert'       │       ┌───────────────┴────────────────┐
+                  │ params + actions refs │       │  exception-list (containers)   │
+                  │ apiKey (ESO ciphertext)│       │  exception-list (items)        │
                   └─────────┬─────────────┘       └────────────────┬───────────────┘
                             │                                      │
-                            ▼                                      ▼
-            .kibana_alerting_cases               .kibana_security_solution
-                            │                                      ▲
-                            │ schedules                            │
-                            ▼                                      │
-                  Task Manager task SO                             │
-                  ┌──────────────────────┐                         │
-                  │ taskType:            │                         │
-                  │   'alerting:siem.*'  │                         │
-                  └─────────┬────────────┘                         │
-                            │                                      │
-                            ▼ runs                                 │
-                  Task Runner → SecurityRuleTypeWrapper            │
-                            │ pre-execution loads exceptions  ◀────┘
-                            │  (via getExceptions / buildExceptionFilter)
-                            ▼
-                  Detection executor (eql/esql/query/...)
-                            │ ES search
-                            ▼ produces alerts via alertsClient.report()
-                  Persistence wrapper → RuleDataClient
-                            │
-                            ▼
-                  .alerts-security.alerts-<namespace>     (primary)
-                  .siem-signals-<namespace>               (legacy alias)
-                            │
-                            ▼ post-execution audit
-                  .kibana-event-log-*   (rule status, gaps, metrics)
-                            │
-                            ▼ surfaced as
-                  RuleResponse.execution_summary  (on next read)
+              ┌─────────────┼──────────────────┐                   ▼
+              ▼             ▼                  ▼     .kibana_security_solution
+   .kibana_alerting_cases   │         .kibana_change_history
+   (rules, connectors,      │         (config snapshots, §15)
+    ad_hoc_run_params)      │
+              │             │ create/invalidate API key
+              │             ▼
+              │      .security / .security-7   ← Elasticsearch-managed
+              │             │
+              │ schedules   │
+              ▼             │
+   .kibana_task_manager     │
+              │             │
+              ▼ runs        │ decrypt SO key → use ES key
+   Task Runner → SecurityRuleTypeWrapper
+              │ load exceptions ◀── .kibana_security_solution (+ .lists/.items)
+              ▼
+   Detection executor → ES search (source / threat / ML indices)
+              │
+              ▼ alertsClient.report() → RuleDataClient
+   .alerts-security.alerts-<ns> (primary) + .siem-signals-<ns> (legacy)
+              │
+              ▼ post-execution
+   .kibana-event-log-*  (rule status, gaps, metrics)
+              │
+              ▼ surfaced as
+   RuleResponse.execution_summary  (on next read)
 ```
 
 ---
 
-## 15. Experimental Feature Flags (Security-Solution-only)
+## 15. Rule Changes History
+
+> **In plain terms:** When someone creates, edits, enables, disables, or
+> deletes a detection rule, Alerting can append a **point-in-time snapshot**
+> of the rule (post-change) to a shared data stream. The Changes History UI
+> on Rule Details browses those snapshots, diffs consecutive versions, and
+> can restore an earlier revision (including recreating a deleted rule).
+> This is **config history**, not the Execution Log.
+
+### What it is
+
+- Platform package: `@kbn/change-history` (`x-pack/platform/packages/shared/kbn-change-history/`)
+- Shared data stream: **`.kibana_change_history`** (system data stream; DSL
+  enabled, **no retention by default** — kept indefinitely until an admin
+  configures retention)
+- Alerting wrapper: `ChangeTrackingService` + `logRuleChanges` on write paths
+- Security read/restore: `IDetectionRulesClient.getHistoryForRule` /
+  `restoreRuleFromHistory`; UI under
+  `public/detection_engine/rule_details_ui/…/changes_history*`
+
+Each document stores `object.snapshot` (rule after the change), `event.action`
+(e.g. create/update/enable/delete), user metadata, and optional
+`object.sequence`. There is no separate "before" image — diffs compare
+consecutive snapshots.
+
+### How it turns on
+
+Two gates, both required for Security:
+
+1. **Alerting config** — `xpack.alerting.ruleChangeTracking.scope` must
+   include `'security'` or `'all'`. On rule-type registration, Alerting sets
+   `ruleType.trackChanges = true` for matching `solution` values and
+   registers a change-history client for that module
+   (`alerting/server/plugin.ts`).
+2. **Security Advanced Setting** —
+   `securitySolution:enableRuleChangesHistory`
+   (`ENABLE_RULE_CHANGES_HISTORY_SETTING`). History API returns 403 when
+   off; `logRuleChanges` also checks this for `solution === 'security'`.
+
+Detection rule types declare `solution: 'security'`, so they participate
+when both gates are open.
+
+### Read / restore path
+
+```
+Rule Details → Changes History UI
+       │
+       ▼
+GET …/rules/{ruleId}/_history   (internal; gated by Advanced Setting)
+       │
+       ▼
+IDetectionRulesClient.getHistoryForRule
+       │  module: 'security'
+       ▼
+RulesClient.getHistory → ChangeTrackingService → .kibana_change_history
+
+Restore → restoreRuleFromHistory
+       │  concurrency check on current revision
+       │  live rule → update from snapshot
+       │  deleted rule → recreate with initialRevision = snapshot.revision + 1
+       ▼
+RulesClient write (+ new change-history entry)
+```
+
+Sensitive fields in snapshots are hashed/redacted by `@kbn/change-history`
+before write; restore must not invent redacted values back.
+
+### Not to confuse with
+
+| This | That |
+|------|------|
+| `version` on the rule SO | Elastic prebuilt rule version number |
+| `revision` on the rule SO | Monotonic edit counter used for OCC / history ordering hints — not a full history store by itself |
+| Prebuilt three-way diff | Upgrade vs base/current/target assets — different feature |
+
+---
+
+## 16. Experimental Feature Flags (Security-Solution-only)
 
 > **In plain terms:** Security Solution has its own private list of "feature
 > toggles" that you can flip in `kibana.yml`. They're checked by Security
@@ -2116,7 +2258,7 @@ Detection-rule-relevant flags:
 
 ---
 
-## 16. Request Flow (HTTP → ES)
+## 17. Request Flow (HTTP → ES)
 
 > **In plain terms:** Follow what happens when a user clicks **Save** in the
 > rule editor. The request travels through six layers — versioned route →
@@ -2162,7 +2304,7 @@ Key files:
 
 ---
 
-## 17. Execution Flow (Task Manager → Alerts)
+## 18. Execution Flow (Task Manager → Alerts)
 
 > **In plain terms:** This is the *runtime* counterpart of §16. Every
 > `interval` (e.g. every 5 minutes), Task Manager finds the rule's task,
@@ -2203,7 +2345,7 @@ Key files:
 
 ---
 
-## 18. Key Files Index
+## 19. Key Files Index
 
 ### Security Solution plugin
 - Plugin entry: `x-pack/solutions/security/plugins/security_solution/server/plugin.ts`
@@ -2295,7 +2437,7 @@ Key files:
 
 ---
 
-## 19. Cheat-sheet — "If I want to…"
+## 20. Cheat-sheet — "If I want to…"
 
 | Goal | Where to look |
 |------|----------------|
@@ -2312,10 +2454,12 @@ Key files:
 | Add a new rule-edit field with read-only RBAC | `mergers/apply_rule_update.ts` + `methods/rbac_methods/update_rule_with_read_privileges.ts` |
 | Investigate why a rule isn't firing | Rule details page → Execution log table; inspect `.kibana-event-log-*`; check `rule.params.exceptionsList` and `RuleSource.is_customized`; inspect `.alerts-security.alerts-<ns>` for documents |
 | Understand late runs vs Gaps / catch-up | §8.1 + [rule_gaps_and_catchup.md](./rule_gaps_and_catchup.md); code in `rule_types/utils/utils.ts` (`getRuleRangeTuples`) |
+| See every index the engine touches | §14 (complete list in §14.8) |
+| Rule Changes History / restore | §15; `@kbn/change-history`; Advanced Setting `securitySolution:enableRuleChangesHistory` |
 
 ---
 
-## 20. Summary
+## 21. Summary
 
 - Detection rules are **security-domain rules** that compose three layers:
   the platform **alerting** plugin (scheduling + persistence of `alert` SOs),
@@ -2358,11 +2502,16 @@ Key files:
   `PrebuiltRuleAsset` schema (a strict subset of `BaseCreateProps +
   TypeSpecificCreatePropsInternal`). They are installed/upgraded/reverted
   through `IDetectionRulesClient`; a three-way diff drives the upgrade UI.
-- **Persistence** spans three index families: SO indices
-  (`.kibana_alerting_cases` for `alert`/`ad_hoc_run_params`,
-  `.kibana_security_solution` for `security-rule`/`exception-list*`,
-  `.kibana_task_manager` for schedules), alerts-as-data
-  (`.alerts-security.alerts-<ns>` with legacy `.siem-signals-<ns>` alias),
-  and the Event Log data stream `.kibana-event-log-*` (execution audit).
+- **Persistence** spans Kibana SO indices (`.kibana_alerting_cases` for
+  rules/connectors/`ad_hoc_run_params`, `.kibana_security_solution` for
+  prebuilt assets/exception lists, `.kibana_task_manager` for schedules),
+  Elasticsearch `.security` for live API keys, alerts-as-data
+  (`.alerts-security.alerts-<ns>` + legacy `.siem-signals-<ns>`), Event Log
+  (`.kibana-event-log-*`, including gaps), change-history
+  (`.kibana_change_history`), and value lists (`.lists-*` / `.items-*`).
+  Full inventory: §14.8.
+- **Rule Changes History** (§15) stores config snapshots in
+  `.kibana_change_history` (gated by alerting `ruleChangeTracking.scope` and
+  Advanced Setting `securitySolution:enableRuleChangesHistory`).
 - **Experimental feature flags** are scoped to `xpack.securitySolution.*` and
   are checked exclusively in security_solution code.
