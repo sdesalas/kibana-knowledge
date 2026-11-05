@@ -142,15 +142,21 @@ If no target is stated, **ask first**:
 
 Then follow the matching subsection.
 
-Do **not** rely on Buildkite for this. Version lists and SHAs come from the public Artifacts API (same data the unified snapshot feed is built from).
+For **main / released snapshots**, version lists and SHAs come from the public Artifacts API (same data the unified snapshot feed is built from) — do **not** guess from Buildkite for those.
 
-For **snapshots / PRs**, Kibana CI publishes a custom image (from `.buildkite/scripts/steps/cloud/build_cloud_image.sh` / `artifacts/cloud.sh`):
+For **PR builds**, the published image lives in a **different** repo and the SHA is whatever Buildkite built (often not the current PR head). Prefer the image string from the PR’s Buildkite cloud step over constructing a tag yourself.
+
+Two image repos (do not mix them up):
 
 ```text
+# main / snapshot tip (Artifacts API SHA)
 docker.elastic.co/kibana-ci/kibana-cloud:<stack_version>-<kibana_commit>
+
+# PR cloud builds (Buildkite SHA — may lag PR head)
+docker.elastic.co/kibana-ci/kibana-cloud-pr:<stack_version>-<kibana_commit>
 ```
 
-`STACK_VERSION` is the snapshot train, e.g. `9.6.0-SNAPSHOT`. The commit must already have a published `kibana-cloud` image — check with `docker manifest inspect` before you create. Released stacks skip this image (see below).
+`STACK_VERSION` is the snapshot train, e.g. `9.7.0-SNAPSHOT`. Confirm with `docker manifest inspect` before you create. Released stacks skip a custom image (see below).
 
 ### Latest snapshot on `main`
 
@@ -202,16 +208,27 @@ A non-SNAPSHOT train on Artifacts is **not** the same as that day’s `*-SNAPSHO
 
 ### A PR (or any other commit)
 
-Same tag shape. SHA is the PR head:
+PR cloud images use **`kibana-cloud-pr`**, not `kibana-cloud`. A tag built from `pulls/<n>.head.sha` against `kibana-cloud` will usually **404** even when CI is green.
+
+Prefer the image string from Buildkite (cloud / artifacts step on the PR’s `kibana-pull-request` build), e.g.:
+
+```text
+docker.elastic.co/kibana-ci/kibana-cloud-pr:9.7.0-SNAPSHOT-bb0663f23163454f8fabe0f09d63a205b13d23e2
+```
+
+That SHA is the commit Buildkite built — it can lag the current PR head if more commits landed after the cloud image job. Ask the user for the Buildkite image string when unsure; do not invent `kibana-cloud` + head SHA.
+
+If you only have a PR number and must construct a candidate:
 
 ```bash
+# head SHA — may not match the published image if CI has not rebuilt
 SHA=$(gh api "repos/elastic/kibana/pulls/<pr-number>" --jq .head.sha)
 SNAP=$(jq -r .version package.json)-SNAPSHOT   # from that PR’s checkout, or the API train above
-IMAGE="docker.elastic.co/kibana-ci/kibana-cloud:${SNAP}-${SHA}"
+IMAGE="docker.elastic.co/kibana-ci/kibana-cloud-pr:${SNAP}-${SHA}"
 docker manifest inspect "$IMAGE"
 ```
 
-If inspect fails, the cloud image for that SHA is not published yet (PR cloud build has not finished).
+If inspect fails: either the cloud image job has not finished, or the published tag is an older commit on the PR — dig the real tag out of Buildkite, then re-inspect.
 
 ## 5. Create a deployment
 
