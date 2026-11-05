@@ -136,20 +136,21 @@ QAF also passes `deployment_name`, `stack_version`, `region`, `autoscaling_enabl
 If no target is stated, **ask first**:
 
 - latest snapshot of `main`?
+- a released stack version (e.g. `9.5.4`)?
 - a specific PR (number)?
 - both (baseline + PR), or more than one PR?
 
 Then follow the matching subsection.
 
-Image tag (Kibana CI publishes this from `.buildkite/scripts/steps/cloud/build_cloud_image.sh` / `artifacts/cloud.sh`):
+Do **not** rely on Buildkite for this. Version lists and SHAs come from the public Artifacts API (same data the unified snapshot feed is built from).
+
+For **snapshots / PRs**, Kibana CI publishes a custom image (from `.buildkite/scripts/steps/cloud/build_cloud_image.sh` / `artifacts/cloud.sh`):
 
 ```text
 docker.elastic.co/kibana-ci/kibana-cloud:<stack_version>-<kibana_commit>
 ```
 
-`STACK_VERSION` is the snapshot train, e.g. `9.6.0-SNAPSHOT`. The commit must already have a published `kibana-cloud` image. Check with `docker manifest inspect` on the tag before you create.
-
-Do **not** rely on Buildkite for this. The SHA is in the public Artifacts API (same data the unified snapshot feed is built from).
+`STACK_VERSION` is the snapshot train, e.g. `9.6.0-SNAPSHOT`. The commit must already have a published `kibana-cloud` image — check with `docker manifest inspect` before you create. Released stacks skip this image (see below).
 
 ### Latest snapshot on `main`
 
@@ -182,6 +183,22 @@ If you already have a Kibana checkout of `main`, `jq -r .version package.json` p
 ### A specific day
 
 `GET /v1/versions/${SNAP}/builds` returns many build ids. Fetch a few until `.build.start_time` is the day you want, then use that build’s `.build.projects.kibana.commit_hash`. Confirm the image with `docker manifest inspect`.
+
+### A released version
+
+Use the non-SNAPSHOT version string as `STACK_VERSION` (e.g. `9.5.4`). **Do not** set `--kb-docker-image` / `KIBANA_DOCKER_IMAGE` — ECH serves the released stack. `kibana-ci/kibana-cloud:<version>-<sha>` tags usually do not exist for releases.
+
+```bash
+VER=9.5.4
+curl -sS https://artifacts-api.elastic.co/v1/versions | jq -r --arg v "$VER" '.versions[] | select(. == $v)'
+# optional: pin SHA for docs / naming (not passed to create)
+BUILD=$(curl -sS "https://artifacts-api.elastic.co/v1/versions/${VER}/builds" | jq -r '.builds[0]')
+SHA=$(curl -sS "https://artifacts-api.elastic.co/v1/versions/${VER}/builds/${BUILD}" \
+  | jq -r '.build.projects.kibana.commit_hash')
+echo "$VER" "$SHA"
+```
+
+A non-SNAPSHOT train on Artifacts is **not** the same as that day’s `*-SNAPSHOT` tip (different Kibana SHA). Git `vX.Y.Z` may also lag Artifacts on release day — prefer the version string over the git tag.
 
 ### A PR (or any other commit)
 
@@ -227,6 +244,8 @@ STACK_VERSION=9.6.0-SNAPSHOT \
 
 Only `EC_DEPLOYMENT_NAME` / `--deployment-name` and the image (and maybe `STACK_VERSION`) need to change between deploys. Keep plan, region, and the APM settings identical if you want a fair comparison.
 
+For a released version, drop the image env/flag and set `STACK_VERSION` / `--stack-version` to the release (e.g. `9.5.4`).
+
 ### Naming patterns
 
 These are examples, not a required pair.
@@ -234,6 +253,7 @@ These are examples, not a required pair.
 | Kind | Name idea | Image |
 | --- | --- | --- |
 | Baseline on `main` | `main-at-<short-sha>` | Artifacts API latest (or dated) snapshot commit |
+| Released stack | `kibana-9.5.4` | none — `STACK_VERSION=9.5.4` only |
 | One PR | `<user>.pr.<number>.<slug>` | that PR’s published `kibana-cloud` commit |
 | Extra compare | whatever you will recognise in APM | same plan/region as the others |
 
