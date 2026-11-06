@@ -189,3 +189,57 @@ Longest matching HTTP transaction per exclusive UTC window (`service.environment
 | 17 | Enable 1,000 with connectors. | 18.9s | 4102 | — | [`92f0e8892cb52feac093d497e47e8b4e`](https://monitoring-cluster-for-local-kibana-develop-d7b1ce.kb.us-west2.gcp.elastic-cloud.com/app/apm/services/kibana/transactions/view?anomalyThreshold=major&comparisonEnabled=true&environment=ENVIRONMENT_ALL&kuery=&latencyAggregationType=avg&offset=1d&rangeFrom=2026-11-06T13%3A31%3A00.000Z&rangeTo=2026-11-06T13%3A51%3A00.000Z&serviceGroup=&showCriticalPath=&transactionType=request&transactionName=POST%20/api/detection_engine/rules/_bulk_action&traceId=92f0e8892cb52feac093d497e47e8b4e&transactionId=08d4977abadd9ab9) | [🔍](../../../docs/benchmarks/published/2026-11-06T1331.full-bench-pr-300213-b758fc70/apm/17-enable-1000-with-connectors.html) |
 | 18 | Delete 1,000 by ids (no gaps). | 24.6s | 4107 | — | [`9f1b4e7b0f5aae83e134567bf1f41280`](https://monitoring-cluster-for-local-kibana-develop-d7b1ce.kb.us-west2.gcp.elastic-cloud.com/app/apm/services/kibana/transactions/view?anomalyThreshold=major&comparisonEnabled=true&environment=ENVIRONMENT_ALL&kuery=&latencyAggregationType=avg&offset=1d&rangeFrom=2026-11-06T13%3A31%3A00.000Z&rangeTo=2026-11-06T13%3A51%3A00.000Z&serviceGroup=&showCriticalPath=&transactionType=request&transactionName=POST%20/api/detection_engine/rules/_bulk_action&traceId=9f1b4e7b0f5aae83e134567bf1f41280&transactionId=0b0f17864e5c7770) | [🔍](../../../docs/benchmarks/published/2026-11-06T1331.full-bench-pr-300213-b758fc70/apm/18-delete-1000-by-ids-no-gaps.html) |
 | 19 | Delete 1,000 with active alerts. | 17.4s | 3093 | — | [`3bde137ba694753b7ea64c1ab2cf99b5`](https://monitoring-cluster-for-local-kibana-develop-d7b1ce.kb.us-west2.gcp.elastic-cloud.com/app/apm/services/kibana/transactions/view?anomalyThreshold=major&comparisonEnabled=true&environment=ENVIRONMENT_ALL&kuery=&latencyAggregationType=avg&offset=1d&rangeFrom=2026-11-06T13%3A31%3A00.000Z&rangeTo=2026-11-06T13%3A51%3A00.000Z&serviceGroup=&showCriticalPath=&transactionType=request&transactionName=POST%20/api/detection_engine/rules/_bulk_action&traceId=3bde137ba694753b7ea64c1ab2cf99b5&transactionId=d1fa323c5b512ee6) | [🔍](../../../docs/benchmarks/published/2026-11-06T1331.full-bench-pr-300213-b758fc70/apm/19-delete-1000-with-active-alerts.html) |
+
+
+## Recurring themes (`_import` + `_bulk_action`)
+
+APM dig on this stamp (`sdesalas.pr.300213.import-apm`, `b758fc70`). Unions overlap — do **not** add rows. Numbers are **union wall** / **% of APM txn** unless noted.
+
+| Theme | Ticket | Scenarios | Impact (this dig) |
+|---|---|---|---|
+| Request-scoped `_has_privileges` cache | [#298458](https://github.com/elastic/kibana/issues/298458) | `#1`, `#2`, `#5`, `#9`, `#10`, `#11`, `#12` | **~4.4–19.5s / ~18–46%** (n≈1k–5k) |
+| Dedupe connector / action `_mget` | [#273680](https://github.com/elastic/kibana/issues/273680) | `#9`, `#12` | **~9.1–12.3s / ~23–32%** (n≈1.5k–2.0k) |
+| Skip API-key rotate when authz unchanged | [#264911](https://github.com/elastic/kibana/issues/264911) | `#5`, `#11`, `#12` | **invalidate ~10.1–10.1s / ~11–26%** |
+| Cache `resolveCapabilities` | [#299794](https://github.com/elastic/kibana/issues/299794) | `#11` (mild `#5`) | **~5.4–16.1s / ~14–18%** |
+| Bulk-generate remaining keys | [#273675](https://github.com/elastic/kibana/issues/273675) + [#299787](https://github.com/elastic/kibana/issues/299787) | `#2`, `#9`, `#10` (also churn on updates) | **grant ~4.0–5.6s / ~15–22%** @ ~1k–2k spans |
+| **Bulk `untrackRuleAlerts`** | [#264895](https://github.com/elastic/kibana/issues/264895) | `#8`, `#13`, `#18`, `#19` | **~3.9–9.1s / ~20–35%** (n=1000, mostly serial) |
+| **Core legacy URL-alias UbQ** | [#141136](https://github.com/elastic/kibana/issues/141136) | `#8`, `#13`, `#18`, `#19` | **~0.95–1.07s / ~4–6%** (n=1000 `@ ~10-wide`) |
+| **Event loop `ruleDomainSchema.validate`** | [#302840](https://github.com/elastic/kibana/issues/302840) | Delete / enable / disable (`#3`, `#7`, `#8`, `#13`, `#18`, `#19`, …) | **~0.5s event-loop block** (local A/B); **not a named APM span** on this dig |
+
+### Bulk `untrackRuleAlerts` ([#264895](https://github.com/elastic/kibana/issues/264895))
+
+**What:** per-rule `untrackRuleAlerts` on delete (1000 spans). Union ≈ sum → mostly serial.
+
+**Breadcrumb:** `_bulk_action` delete → … → `untrackRuleAlerts` (often with task-manager `GET` children).
+
+| Scenario | APM txn | n | Union | % txn | Trace |
+|---|---:|---:|---:|---:|---|
+| #8 Delete 1,000 (no gaps) | 16.4s | 1000 | **3.90s** | **23.9%** | `c1c5957b…` |
+| #13 Delete 1,000 (with gaps) | 25.8s | 1000 | **9.12s** | **35.3%** | `20a96faa…` |
+| #18 Delete 1,000 by `ids` | 24.6s | 1000 | **4.88s** | **19.8%** | `9f1b4e7b…` |
+| #19 Delete 1,000 (active alerts) | 17.4s | 1000 | **4.49s** | **25.8%** | `3bde137b…` |
+
+### Core legacy URL-alias UbQ ([#141136](https://github.com/elastic/kibana/issues/141136))
+
+**What:** `unsecuredSavedObjectsClient.bulkDelete` fires one `POST /.kibana_9.7.0/_update_by_query` per deleted rule (legacy URL aliases). Runs ~10-wide → union ≪ sum.
+
+**Breadcrumb:** `_bulk_action` delete → `unsecuredSavedObjectsClient.bulkDelete` → `Elasticsearch: POST /.kibana_9.7.0/_update_by_query` ×1000.
+
+| Scenario | APM txn | n | Union | % txn | Sum |
+|---|---:|---:|---:|---:|---:|
+| #8 Delete 1,000 (no gaps) | 16.4s | 1000 | **1.04s** | **6.4%** | 10.1s |
+| #13 Delete 1,000 (with gaps) | 25.8s | 1000 | **0.98s** | **3.8%** | 9.5s |
+| #18 Delete 1,000 by `ids` | 24.6s | 1000 | **1.07s** | **4.3%** | 10.3s |
+| #19 Delete 1,000 (active alerts) | 17.4s | 1000 | **0.95s** | **5.4%** | 9.2s |
+
+### Event loop block on `ruleDomainSchema.validate` ([#302840](https://github.com/elastic/kibana/issues/302840))
+
+**What:** after Alerting `bulkDeleteRules` / `bulkEnableRules` / `bulkDisableRules`, `ruleDomainSchema.validate` runs synchronously on each returned rule (~1000×). Local A/B on an M4: **~0.5s** event-loop block; result is only used to log a warning.
+
+**APM on this dig:** there is **no** span named `ruleDomainSchema.validate` (or similar) under `#3` / `#7` / `#8` / `#13` / `#18` / `#19`. So ECH waterfalls will not show this cost as a named row — treat the **~0.5s / &lt;5% of a ~12–26s txn** figure from [#302840](https://github.com/elastic/kibana/issues/302840) as the measurement, and use these scenarios to reproduce (enable / disable / delete 1000 rules).
+
+| Scenario | APM txn | Role |
+|---|---:|---|
+| #3 Enable 1,000 disabled rules | 14.9s | enable path |
+| #7 Disable 1,000 enabled rules | 12.7s | disable path |
+| #8 / #13 / #18 / #19 | 16.4–25.8s | delete paths |
