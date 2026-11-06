@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APM waterfalls — 2026-11-06T1027 full-bench PR #300213 (b758fc70)</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f7f8fc;
+  --bg-hover: #eef3fc;
+  --text: #1d2a3e;
+  --muted: #5a6d8c;
+  --border: #e3e8f2;
+  --tag-bg: #e3e8f2;
+  --link: #0b64dd;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1628;
+    --bg-alt: #111c2e;
+    --bg-hover: #17253c;
+    --text: #dfe5ef;
+    --muted: #8e9fbc;
+    --border: #23314a;
+    --tag-bg: #23314a;
+    --link: #61a2ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+header { padding: 20px 24px 12px; border-bottom: 1px solid var(--border); }
+h1 { font-size: 18px; margin: 0 0 8px; font-weight: 600; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); }
+.meta a { color: var(--link); }
+.pill {
+  display: inline-flex; align-items: center;
+  padding: 0 7px; border-radius: 3px; font-size: 11px; line-height: 18px;
+  background: var(--tag-bg); color: var(--text); white-space: nowrap;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+main { padding: 16px 24px 32px; max-width: 1100px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+tr:hover td { background: var(--bg-hover); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.idx { color: var(--muted); width: 2.5em; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.note { margin-top: 16px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>APM waterfalls — full bench PR #300213</h1>
+  <div class="meta">
+    <span class="pill mono">2026-11-06T1027</span>
+    <span class="pill mono">b758fc70</span>
+    <span class="pill">sdesalas.pr.300213.import-apm</span>
+    <span>1,000 rules · 2 GB Kibana · monitoring <span class="mono">d7b1ce</span></span>
+    <a href="https://github.com/elastic/kibana/pull/300213">PR #300213</a>
+    <a href="https://github.com/sdesalas/kibana-knowledge/blob/main/benchmarks/published/2026-11-06T1027.full-bench-pr-300213-b758fc70/SUMMARY.md#apm-transactions">SUMMARY § APM</a>
+  </div>
+</header>
+<main>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Scenario</th>
+        <th class="num">APM dur</th>
+        <th class="num">spans</th>
+        <th>Waterfall</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="idx">1</td>
+        <td>Import → Create 1,000 disabled rules.</td>
+        <td class="num mono">13.4s</td>
+        <td class="num mono">1245</td>
+        <td><a href="apm/01-import-1000-disabled.html">01-import-1000-disabled.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">2</td>
+        <td>Import → Create 1,000 enabled rules.</td>
+        <td class="num mono">17.3s</td>
+        <td class="num mono">3275</td>
+        <td><a href="apm/02-import-1000-enabled.html">02-import-1000-enabled.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">3</td>
+        <td>Enable 1,000 existing disabled rules, with no other changes.</td>
+        <td class="num mono">12.6s</td>
+        <td class="num mono">3103</td>
+        <td><a href="apm/03-enable-1000-disabled.html">03-enable-1000-disabled.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">4</td>
+        <td>Edit 1,000 enabled rules by adding a tag.</td>
+        <td class="num mono">21.3s</td>
+        <td class="num mono">3208</td>
+        <td><a href="apm/04-edit-1000-add-tag.html">04-edit-1000-add-tag.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">5</td>
+        <td>Import → Fully update 1,000 rules while they remain enabled.</td>
+        <td class="num mono">29.8s</td>
+        <td class="num mono">3723</td>
+        <td><a href="apm/05-import-full-update-1000-enabled.html">05-import-full-update-1000-enabled.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">6</td>
+        <td>Import → Update 1,000 rules where only one has a real update and the other 999 are unchanged.</td>
+        <td class="num mono">7.2s</td>
+        <td class="num mono">221</td>
+        <td><a href="apm/06-import-update-1-of-1000.html">06-import-update-1-of-1000.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">7</td>
+        <td>Disable 1,000 existing enabled rules, with no other changes.</td>
+        <td class="num mono">13.2s</td>
+        <td class="num mono">114</td>
+        <td><a href="apm/07-disable-1000-enabled.html">07-disable-1000-enabled.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">8</td>
+        <td>Delete 1,000 rules with no gaps.</td>
+        <td class="num mono">14.3s</td>
+        <td class="num mono">3094</td>
+        <td><a href="apm/08-delete-1000-no-gaps.html">08-delete-1000-no-gaps.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">9</td>
+        <td>Import → Create 1,000 enabled rules with a single connector.</td>
+        <td class="num mono">26.0s</td>
+        <td class="num mono">9285</td>
+        <td><a href="apm/09-import-1000-enabled-single-connector.html">09-import-1000-enabled-single-connector.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">10</td>
+        <td>Import → Create 1,000 rules with 20 shared exception lists (50 items each).</td>
+        <td class="num mono">23.5s</td>
+        <td class="num mono">3298</td>
+        <td><a href="apm/10-import-1000-with-20-exception-lists.html">10-import-1000-with-20-exception-lists.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">11</td>
+        <td>Import → Update 1,000 rules by adding one more shared exception list (to 21; 50 items each), with no other changes.</td>
+        <td class="num mono">81.5s</td>
+        <td class="num mono">8804</td>
+        <td><a href="apm/11-import-update-add-21st-exception-list.html">11-import-update-add-21st-exception-list.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">12</td>
+        <td>Import → Update 1,000 rules by adding an extra connector, with no other changes.</td>
+        <td class="num mono">44.0s</td>
+        <td class="num mono">11505</td>
+        <td><a href="apm/12-import-update-add-extra-connector.html">12-import-update-add-extra-connector.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">13</td>
+        <td>Delete 1,000 rules with existing gaps.</td>
+        <td class="num mono">18.9s</td>
+        <td class="num mono">3093</td>
+        <td><a href="apm/13-delete-1000-with-gaps.html">13-delete-1000-with-gaps.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">14</td>
+        <td>Delete 21 shared exception lists after deleting the rules that used them.</td>
+        <td class="num mono">5.5s</td>
+        <td class="num mono">1380</td>
+        <td><a href="apm/14-delete-21-exception-lists.html">14-delete-21-exception-lists.html</a></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">Durations and span counts from the published SUMMARY APM table for this bench. Each waterfall is a static export of the matching monitoring transaction.</p>
+</main>
+</body>
+</html>
