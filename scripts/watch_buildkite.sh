@@ -29,7 +29,8 @@ while (( $(date +%s) < deadline )); do
 
   failed=$(jq -r '[.jobs[] | select(.type=="script" and (.state=="failed" or .state=="timed_out"))] | length' <<<"$json")
   running=$(jq -r '[.jobs[] | select(.type=="script" and (.state=="running" or .state=="scheduled" or .state=="assigned" or .state=="waiting"))] | length' <<<"$json")
-  echo "[$(date +%H:%M:%S)] state=$state running=$running failed=$failed"
+  retried=$(jq -r '[.jobs[] | select(.type=="script" and (.retries_count // 0) > 0)] | length' <<<"$json")
+  echo "[$(date +%H:%M:%S)] state=$state running=$running failed=$failed retried=$retried"
 
   case "$state" in
     passed) say_it "Build $build passed."; exit 0 ;;
