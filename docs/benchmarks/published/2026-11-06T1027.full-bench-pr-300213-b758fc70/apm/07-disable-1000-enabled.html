@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>#7 Disable 1,000 existing enabled rules, with no other changes</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f7f8fc;
+  --bg-hover: #eef3fc;
+  --text: #1d2a3e;
+  --muted: #5a6d8c;
+  --border: #e3e8f2;
+  --grid: #edf0f5;
+  --bar: #16c5c0;
+  --bar-root: #16c5c0;
+  --chip-bg: #ffffff;
+  --chip-border: #cad3e2;
+  --tag-bg: #e3e8f2;
+  --dot: #54b399;
+  --ok-bg: #24c292;
+  --ok-text: #0b3b2c;
+  --fail: #e7664c;
+  --match: #fff3c4;
+  --link: #0b64dd;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1628;
+    --bg-alt: #111c2e;
+    --bg-hover: #17253c;
+    --text: #dfe5ef;
+    --muted: #8e9fbc;
+    --border: #23314a;
+    --grid: #1a273d;
+    --chip-bg: #0b1628;
+    --chip-border: #34445f;
+    --tag-bg: #23314a;
+    --match: #4a3f12;
+    --link: #61a2ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+header { padding: 16px 16px 8px; border-bottom: 1px solid var(--border); }
+h1 { font-size: 16px; margin: 0 0 6px; font-weight: 600; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; color: var(--muted); }
+.meta a { color: var(--link); }
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 6px; border-radius: 3px; font-size: 11px; line-height: 18px;
+  background: var(--tag-bg); color: var(--text); white-space: nowrap;
+}
+.pill.ok { background: var(--ok-bg); color: var(--ok-text); }
+.pill.fail { background: var(--fail); color: #fff; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.toolbar button, .toolbar input {
+  font: inherit; color: var(--text); background: var(--chip-bg);
+  border: 1px solid var(--chip-border); border-radius: 4px; padding: 3px 8px;
+}
+.toolbar button { cursor: pointer; }
+.toolbar input { width: 260px; max-width: 100%; }
+.legend { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot); display: inline-block; flex: none; }
+
+#wf { --gutter: 48px; position: relative; padding: 0 16px 24px; }
+.axis {
+  position: sticky; top: 0; z-index: 2; height: 26px;
+  display: flex; background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.axis .track, .row .track { position: relative; flex: 1; margin-right: 40px; }
+.axis .gut, .row .gut { width: var(--gutter); flex: none; }
+.tick { position: absolute; top: 8px; transform: translateX(-50%); color: var(--muted); font-size: 10px; white-space: nowrap; }
+.tick:first-child { transform: none; }
+.tick.end { transform: translateX(-100%); color: var(--text); font-weight: 600; }
+.grid { position: absolute; top: 26px; bottom: 24px; left: calc(16px + var(--gutter)); right: 56px; pointer-events: none; }
+.grid i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+
+.row { display: flex; height: 33px; border-bottom: 1px solid var(--border); position: relative; }
+.row:nth-child(even) { background: var(--bg-alt); }
+.row:hover { background: var(--bg-hover); }
+.row.match { background: var(--match); }
+.row .gut { display: flex; align-items: center; color: var(--muted); font-size: 10px; }
+.toggle {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px 3px; border-radius: 3px; color: var(--muted);
+}
+.toggle:hover, .toggle:focus-visible { background: var(--tag-bg); color: var(--text); }
+.toggle svg { transition: transform .1s; }
+.toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.bar { position: absolute; top: 4px; height: 8px; min-width: 1px; background: var(--bar); border-radius: 1px; }
+.bar.fail { background: var(--fail); }
+.bar.ghost { background: transparent; border: 1px dashed var(--muted); }
+.row.missing .name { color: var(--muted); font-style: italic; }
+.pill.warn { background: #fdecc8; color: #6a4a00; }
+.label {
+  position: absolute; top: 14px; display: flex; align-items: center; gap: 5px;
+  white-space: nowrap; font-size: 11px;
+}
+.label.flip { flex-direction: row-reverse; }
+.label .name { overflow: hidden; text-overflow: ellipsis; max-width: 520px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 5px; line-height: 15px;
+  border: 1px solid var(--chip-border); border-radius: 3px; background: var(--chip-bg); font-size: 10px;
+}
+.tag { padding: 0 5px; line-height: 15px; border-radius: 3px; background: var(--tag-bg); font-size: 10px; }
+.icon { color: var(--muted); flex: none; }
+.outcome { font-size: 10px; color: var(--muted); }
+.empty { padding: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="meta" id="meta"></div>
+</header>
+<div class="toolbar">
+  <button type="button" id="expand">Expand all</button>
+  <button type="button" id="collapse">Collapse all</button>
+  <button type="button" id="reset">Default view</button>
+  <input type="search" id="filter" placeholder="Filter spans by name…" aria-label="Filter spans by name">
+  <span id="count" class="outcome"></span>
+  <span class="legend" id="legend"></span>
+</div>
+<div id="wf">
+  <div class="axis"><div class="gut"></div><div class="track" id="ticks"></div></div>
+  <div class="grid" id="grid"></div>
+  <div id="rows"></div>
+</div>
+<script id="data" type="application/json">{"title":"#7 Disable 1,000 existing enabled rules, with no other changes","trace_id":"805114410aed40441101c5e00c9b2183","kibana_url":"https://monitoring-cluster-for-local-kibana-develop-d7b1ce.kb.us-west2.gcp.elastic-cloud.com/app/apm/services/kibana/transactions/view?anomalyThreshold=major&comparisonEnabled=true&environment=ENVIRONMENT_ALL&kuery=&latencyAggregationType=avg&offset=1d&rangeFrom=2026-11-06T10%3A27%3A00.000Z&rangeTo=2026-11-06T10%3A41%3A00.000Z&serviceGroup=&showCriticalPath=&transactionName=POST+%2Fapi%2Fdetection_engine%2Frules%2F_bulk_action&transactionType=request&traceId=805114410aed40441101c5e00c9b2183&transactionId=8783009d190fe2e6","transaction":{"id":"8783009d190fe2e6","name":"POST /api/detection_engine/rules/_bulk_action","type":"request","result":"success","duration_us":13150454,"timestamp_us":1793961171747001,"timestamp":"2026-11-06T10:32:51.747Z","span_count":{"started":114},"status_code":200,"method":"POST","url":"https://sdesalas-pr-300213-import-apm-3dfe03.kb.us-west2.gcp.elastic-cloud.com/api/detection_engine/rules/_bulk_action?dry_run=false","service":"kibana","environment":"sdesalas.pr.300213.import-apm","agent":"nodejs","outcome":"unknown"},"spans":[{"id":"2befa34ee736ff1a","parent":"8783009d190fe2e6","name":"pre-route handler middlewares","type":"custom","subtype":null,"start_us":402,"duration_us":11505,"outcome":"success","sync":false,"service":"kibana","agent":"nodejs"},{"id":"6ef3391760952b05","parent":"2befa34ee736ff1a","name":"Elasticsearch: GET /_security/_authenticate","type":"db","subtype":"elasticsearch","start_us":2109,"duration_us":2893,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"27414812c4e893c3","parent":"2befa34ee736ff1a","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":6503,"duration_us":4952,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"93a40177361f3339","parent":"8783009d190fe2e6","name":"route handler","type":"custom","subtype":null,"start_us":11996,"duration_us":12017374,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f2fd6a7283ea3a29","parent":"93a40177361f3339","name":"resolve capabilities","type":"capabilities","subtype":null,"start_us":20692,"duration_us":67490,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"b2de4fcdfa161959","parent":"f2fd6a7283ea3a29","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":22659,"duration_us":44014,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"d18218049d978bc0","parent":"f2fd6a7283ea3a29","name":"Elasticsearch: GET /.kibana_9.7.0/_doc/space%3Adefault","type":"db","subtype":"elasticsearch","start_us":66913,"duration_us":3667,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"13cad77e1ab45087","parent":"f2fd6a7283ea3a29","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":73560,"duration_us":10836,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"22d5e1dbf069c840","parent":"93a40177361f3339","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":89264,"duration_us":4405,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"528cf9fc7305718c","parent":"93a40177361f3339","name":"Elasticsearch: GET /.kibana_9.7.0/_doc/space%3Adefault","type":"db","subtype":"elasticsearch","start_us":93860,"duration_us":3911,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"b754fd4feff5aa3a","parent":"93a40177361f3339","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":99674,"duration_us":4217,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"61a35c1530d84152","parent":"93a40177361f3339","name":"Elasticsearch: GET /.kibana_9.7.0/_doc/space%3Adefault","type":"db","subtype":"elasticsearch","start_us":104083,"duration_us":3056,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"d09e11560d967292","parent":"93a40177361f3339","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":108820,"duration_us":4276,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"d9b42743eef027ad","parent":"93a40177361f3339","name":"ruleManagement.fetchRulesByQueryOrIds","type":"securitySolution","subtype":null,"start_us":114674,"duration_us":251393,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f2eae8d2b0b74552","parent":"d9b42743eef027ad","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":115439,"duration_us":4391,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"d1aaf6cd0c680573","parent":"d9b42743eef027ad","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":123301,"duration_us":153741,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"2b5f6eb23a31dd9a","parent":"d9b42743eef027ad","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":357107,"duration_us":5652,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e9d6d76a2989a375","parent":"93a40177361f3339","name":"ruleManagement.bulkEnableDisableRules","type":"securitySolution","subtype":null,"start_us":366335,"duration_us":11655741,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"33af9bbf2d25b355","parent":"e9d6d76a2989a375","name":"resolve capabilities","type":"capabilities","subtype":null,"start_us":368605,"duration_us":31585,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"7e8b35817b688e25","parent":"33af9bbf2d25b355","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":371252,"duration_us":5612,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"722555a0ebb0fbcd","parent":"33af9bbf2d25b355","name":"Elasticsearch: GET /.kibana_9.7.0/_doc/space%3Adefault","type":"db","subtype":"elasticsearch","start_us":377076,"duration_us":3505,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"96525e37b7ccc3e5","parent":"33af9bbf2d25b355","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":383051,"duration_us":13137,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"9e450fe8015ce19a","parent":"e9d6d76a2989a375","name":"Elasticsearch: GET /_ml/info","type":"db","subtype":"elasticsearch","start_us":400339,"duration_us":4292,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"6b0d64f36d635695","parent":"e9d6d76a2989a375","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":405661,"duration_us":4956,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"1328e3a4f586f810","parent":"e9d6d76a2989a375","name":"Elasticsearch: GET /.kibana_9.7.0/_doc/space%3Adefault","type":"db","subtype":"elasticsearch","start_us":410842,"duration_us":3343,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"34e13ce24a56ffd4","parent":"e9d6d76a2989a375","name":"RulesClient.bulkDisableRules","type":"rules","subtype":null,"start_us":414870,"duration_us":11607130,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f8cb7907442dff0a","parent":"34e13ce24a56ffd4","name":"authorization.getFindAuthorizationFilter","type":"rules","subtype":null,"start_us":416284,"duration_us":6109,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"a2c22ce932f32bc9","parent":"f8cb7907442dff0a","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":416832,"duration_us":4893,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"ea8930eb364f4dbd","parent":"34e13ce24a56ffd4","name":"unsecuredSavedObjectsClient.find","type":"rules","subtype":null,"start_us":422474,"duration_us":161556,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"977eeeea627941b2","parent":"ea8930eb364f4dbd","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":470646,"duration_us":113260,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"476af74872a9d2bc","parent":"34e13ce24a56ffd4","name":"authorization.bulkEnsureAuthorized","type":"rules","subtype":null,"start_us":584131,"duration_us":23340,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"aab9fffa3666c810","parent":"476af74872a9d2bc","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":584650,"duration_us":22584,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"5518fdc772399f41","parent":"34e13ce24a56ffd4","name":"retryIfBulkOperationConflicts","type":"rules","subtype":null,"start_us":607527,"duration_us":9646560,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"90dbb4e9450d4141","parent":"5518fdc772399f41","name":"retryIfBulkOperationConflicts","type":"rules","subtype":null,"start_us":607725,"duration_us":9646319,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e2708fd8284073b5","parent":"90dbb4e9450d4141","name":"encryptedSavedObjectsClient.createPointInTimeFinderDecryptedAsInternalUser","type":"rules","subtype":null,"start_us":608116,"duration_us":170,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"3077e5cce9819cc2","parent":"90dbb4e9450d4141","name":"Get rules, collect them and their attributes","type":"rules","subtype":null,"start_us":608330,"duration_us":3866220,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"037ff344e8553d45","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_pit","type":"db","subtype":"elasticsearch","start_us":608582,"duration_us":6572,"outcome":"success","sync":false,"service":"kibana","agent":"nodejs"},{"id":"22d5ebea3b47e2de","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":658816,"duration_us":132800,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"403cfaed7b4dc8e2","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":953460,"duration_us":11931,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"1fa0afaa158d856e","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":954270,"duration_us":5295,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"57f3481a1f2ed65d","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":962143,"duration_us":7556,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f7beca2c56261702","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":1018167,"duration_us":118146,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"21bf8ec37a61ab23","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":1294906,"duration_us":10349,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e4f2cacecdef8589","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":1295664,"duration_us":6435,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"ac25d67c8d58a9bf","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":1304530,"duration_us":6419,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"b4aa4c8877ac157b","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":1361330,"duration_us":119775,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"3fe56b2b250416a3","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":1638870,"duration_us":9433,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"ea3687cb006d4dad","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":1639658,"duration_us":5624,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"7af96b82dfe45460","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":1647632,"duration_us":4422,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e7a101c29620fe0e","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":1698788,"duration_us":118153,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"8f54caccba8188df","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":1979153,"duration_us":9751,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"b8816665e390eb30","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":1979960,"duration_us":9355,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"98c03a8f8240b08f","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":1991722,"duration_us":10694,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"cd8b0fd3feb76ad8","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":2047321,"duration_us":131622,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"99233f0549cd639c","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":2346505,"duration_us":10404,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"83c39fde90993308","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":2347498,"duration_us":5036,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"eec128365a1bacc2","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":2355994,"duration_us":8343,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"7da371925e1300cd","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":2426815,"duration_us":87500,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"ddc6104c9797b86c","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":2678803,"duration_us":5659,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"10868e591f31372e","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":2679545,"duration_us":8249,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"bba3ecb0bb574c11","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":2690015,"duration_us":6973,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"200f566d6d25b84f","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":2739377,"duration_us":166810,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"454447f8ccfd236d","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":3167546,"duration_us":49259,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"32a80eccbded0dc3","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":3168101,"duration_us":48975,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"534b0f929a690eb2","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":3219213,"duration_us":17658,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"539749728d624a1c","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":3282305,"duration_us":112402,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"9046cf717fa8a822","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":3566555,"duration_us":14104,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"aafc33a12198c139","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":3567282,"duration_us":10070,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"55bfea35202ff89b","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":3579750,"duration_us":8332,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"b4e035f1fa0dcf17","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":3633671,"duration_us":123026,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f6f6bf67fa208998","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":3923923,"duration_us":11410,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"9d202e1219bdc7ce","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":3924636,"duration_us":7800,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"c654cd5949f404ca","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":3934646,"duration_us":5792,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e856fed12ae0e5af","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":3982459,"duration_us":127378,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e6a8b1f2fa89e363","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":4272857,"duration_us":7880,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"58452081fe74d609","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":4273775,"duration_us":7414,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"ecb72e0bf155e144","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":4283719,"duration_us":7535,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e0b306126caa53fd","parent":"3077e5cce9819cc2","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":4340753,"duration_us":120027,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e976ebd72f4bb422","parent":"3077e5cce9819cc2","name":"Elasticsearch: DELETE /_pit","type":"db","subtype":"elasticsearch","start_us":4461105,"duration_us":13343,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"38939347be4ede47","parent":"90dbb4e9450d4141","name":"unsecuredSavedObjectsClient.bulkCreate","type":"rules","subtype":null,"start_us":4474614,"duration_us":3772195,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"be7dc6f85d450977","parent":"38939347be4ede47","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":4478058,"duration_us":127621,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"1bc082bf7dedc56c","parent":"38939347be4ede47","name":"Elasticsearch: POST /_bulk","type":"db","subtype":"elasticsearch","start_us":6877751,"duration_us":1350737,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"8d5dd56a586c7385","parent":"90dbb4e9450d4141","name":"change_history.log_bulk.build_documents","type":"app","subtype":null,"start_us":8314150,"duration_us":101043,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"c48d64ee9aaf0d6a","parent":"90dbb4e9450d4141","name":"change_history.log_bulk.es_bulk_create","type":"db","subtype":"elasticsearch","start_us":8415277,"duration_us":312963,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"3766ff8840aa158e","parent":"c48d64ee9aaf0d6a","name":"Elasticsearch: POST /.kibana_change_history/_bulk","type":"db","subtype":"elasticsearch","start_us":8416823,"duration_us":311368,"outcome":"success","sync":false,"service":"kibana","agent":"nodejs"},{"id":"b4edaccb1229e1db","parent":"90dbb4e9450d4141","name":"encryptedSavedObjectsClient.createPointInTimeFinderDecryptedAsInternalUser","type":"rules","subtype":null,"start_us":9039199,"duration_us":179,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"3baa42e3d4594eab","parent":"90dbb4e9450d4141","name":"Get rules, collect them and their attributes","type":"rules","subtype":null,"start_us":9039435,"duration_us":71636,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"82864f23b87e7a1d","parent":"3baa42e3d4594eab","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_pit","type":"db","subtype":"elasticsearch","start_us":9039572,"duration_us":4221,"outcome":"success","sync":false,"service":"kibana","agent":"nodejs"},{"id":"47f6cf551149aba5","parent":"3baa42e3d4594eab","name":"Elasticsearch: POST /_search","type":"db","subtype":"elasticsearch","start_us":9045380,"duration_us":11810,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"5827d09f18ff2c0e","parent":"3baa42e3d4594eab","name":"Elasticsearch: DELETE /_pit","type":"db","subtype":"elasticsearch","start_us":9057691,"duration_us":2099,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f8eacb26fa96dfff","parent":"3baa42e3d4594eab","name":"Elasticsearch: POST /.kibana_security_solution_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":9095843,"duration_us":11218,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"7f4d1e1bbbe57f08","parent":"3baa42e3d4594eab","name":"Elasticsearch: POST /_security/user/_has_privileges","type":"db","subtype":"elasticsearch","start_us":9096645,"duration_us":6255,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"180e8ba93a98609c","parent":"3baa42e3d4594eab","name":"Elasticsearch: POST /.kibana_alerting_cases_9.7.0/_search","type":"db","subtype":"elasticsearch","start_us":9106399,"duration_us":4152,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"050250c4b66f5182","parent":"90dbb4e9450d4141","name":"unsecuredSavedObjectsClient.bulkCreate","type":"rules","subtype":null,"start_us":9111138,"duration_us":1125241,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"046db745674604b6","parent":"050250c4b66f5182","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":9111852,"duration_us":5124,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"8f799070db64e75a","parent":"050250c4b66f5182","name":"Elasticsearch: POST /_bulk","type":"db","subtype":"elasticsearch","start_us":9191521,"duration_us":1044338,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"950d70df8fbb57bc","parent":"90dbb4e9450d4141","name":"change_history.log_bulk.build_documents","type":"app","subtype":null,"start_us":10238035,"duration_us":1915,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"a06435123178617f","parent":"90dbb4e9450d4141","name":"change_history.log_bulk.es_bulk_create","type":"db","subtype":"elasticsearch","start_us":10239995,"duration_us":13590,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"be4e00e5bc0d0626","parent":"a06435123178617f","name":"Elasticsearch: POST /.kibana_change_history/_bulk","type":"db","subtype":"elasticsearch","start_us":10240117,"duration_us":13429,"outcome":"success","sync":false,"service":"kibana","agent":"nodejs"},{"id":"65f12001d27a9c9b","parent":"34e13ce24a56ffd4","name":"taskManager.bulkDisable","type":"rules","subtype":null,"start_us":10254359,"duration_us":185354,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"70d797e0e5c28759","parent":"34e13ce24a56ffd4","name":"taskManager.bulkRemove","type":"rules","subtype":null,"start_us":10254765,"duration_us":3596,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"6cd0675407f83271","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10255712,"duration_us":11208,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"3f7079727c39a737","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10256144,"duration_us":20598,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"541e07582d2431c5","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10256408,"duration_us":14505,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"c107a8101de93151","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10256683,"duration_us":16123,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e6f5a2dba45dd52b","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10256949,"duration_us":23687,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"e1636023127ea7c9","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10257174,"duration_us":17670,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"930efdfd1a69df5b","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10257517,"duration_us":7372,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"78625d3713b7dcc4","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10257754,"duration_us":27531,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"6490bc2ef5575104","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10258009,"duration_us":11004,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"f1f88581b8f39554","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10258214,"duration_us":20421,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"67c6232761465397","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_mget","type":"db","subtype":"elasticsearch","start_us":10299486,"duration_us":35261,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"fe7c484cc09d2e30","parent":"65f12001d27a9c9b","name":"Elasticsearch: POST /_bulk","type":"db","subtype":"elasticsearch","start_us":10371861,"duration_us":56803,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"},{"id":"9970fe9dbbca40ee","parent":"34e13ce24a56ffd4","name":"bulkDisableRules.toRuleDomain","type":"rules","subtype":null,"start_us":10439819,"duration_us":1578516,"outcome":"success","sync":true,"service":"kibana","agent":"nodejs"}]}</script>
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById('data').textContent);
+  const { transaction: txn, spans } = DATA;
+  const total = txn.duration_us;
+  const AUTO_COLLAPSE_CHILDREN = 10;
+  const SYNC_DEFAULT_AGENTS = new Set(['nodejs', 'js-base', 'rum-js']);
+
+  const fmtDur = (us) => {
+    if (us < 1000) return `${Math.round(us)} μs`;
+    const ms = us / 1000;
+    if (ms < 10) return `${ms.toFixed(1)} ms`;
+    if (ms < 10000) return `${Math.round(ms).toLocaleString('en-US')} ms`;
+    return `${Math.round(ms / 1000)} s`;
+  };
+  const fmtOffset = (us) => (us >= 1e6 ? `${(us / 1e6).toFixed(3)} s` : fmtDur(us));
+  const pct = (us) => Math.max(0, Math.min(100, (us / total) * 100));
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const root = {
+    id: txn.id, name: txn.name, start_us: 0, duration_us: total, depth: 0,
+    service: txn.service, outcome: txn.outcome, result: txn.result, isRoot: true, children: [],
+  };
+  const byId = new Map([[root.id, root]]);
+  spans.forEach((s) => byId.set(s.id, { ...s, children: [] }));
+  const missingParents = new Map();
+  spans.forEach((s) => {
+    const node = byId.get(s.id);
+    const parent = byId.get(s.parent);
+    if (parent) {
+      parent.children.push(node);
+      return;
+    }
+    if (!missingParents.has(s.parent)) {
+      missingParents.set(s.parent, {
+        id: `missing-${s.parent}`, name: `missing parent span ${s.parent} (not indexed)`,
+        isMissing: true, start_us: Infinity, end_us: 0, children: [],
+      });
+    }
+    const placeholder = missingParents.get(s.parent);
+    placeholder.children.push(node);
+    placeholder.start_us = Math.min(placeholder.start_us, s.start_us);
+    placeholder.end_us = Math.max(placeholder.end_us, s.start_us + s.duration_us);
+  });
+  missingParents.forEach((p) => {
+    p.duration_us = p.end_us - p.start_us;
+    root.children.push(p);
+  });
+  const orphanCount = [...missingParents.values()].reduce((sum, p) => sum + p.children.length, 0);
+  const notIndexed = (txn.span_count?.started ?? spans.length) - spans.length;
+  const nodes = [];
+  const walk = (node, depth, parent) => {
+    node.depth = depth;
+    node.parentNode = parent;
+    node.children.sort((a, b) => a.start_us - b.start_us);
+    nodes.push(node);
+    node.children.forEach((c) => walk(c, depth + 1, node));
+  };
+  walk(root, 0, null);
+  const maxDepth = Math.max(...nodes.map((n) => n.depth));
+  document.getElementById('wf').style.setProperty('--gutter', `${44 + maxDepth * 10}px`);
+
+  // Auto-collapse N+1 fan-outs: many children drawn from a handful of repeated span names.
+  const isNoisyParent = (n) => {
+    if (n.isMissing) return true;
+    if (n.isRoot || n.children.length < AUTO_COLLAPSE_CHILDREN) return false;
+    const distinctNames = new Set(n.children.map(({ name }) => name)).size;
+    return n.children.length / distinctNames >= 5;
+  };
+  const defaultCollapsed = () => new Set(nodes.filter(isNoisyParent).map((n) => n.id));
+  let collapsed = defaultCollapsed();
+  let filter = '';
+
+  document.title = DATA.title || txn.name;
+  document.getElementById('title').textContent = DATA.title || txn.name;
+  const status = txn.status_code ? `${txn.status_code}${txn.status_code < 400 ? ' OK' : ''}` : txn.result;
+  const meta = [
+    `<span>${esc(new Date(txn.timestamp).toUTCString())}</span>`,
+    `<span>${fmtDur(total)} (100% of trace)</span>`,
+    txn.url ? `<span class="pill mono">${esc(txn.method || '')} ${esc(txn.url)}</span>` : '',
+    status ? `<span class="pill ${txn.status_code >= 400 ? 'fail' : 'ok'}">${esc(status)}</span>` : '',
+    `<span>${spans.length.toLocaleString('en-US')} spans</span>`,
+    notIndexed > 0
+      ? `<span class="pill warn" title="span_count.started minus spans found in ES">⚠ ${notIndexed.toLocaleString('en-US')} of ${txn.span_count.started.toLocaleString('en-US')} started spans not indexed</span>`
+      : '',
+    orphanCount
+      ? `<span class="pill warn">⚠ ${orphanCount.toLocaleString('en-US')} orphan spans under ${missingParents.size} missing parent${missingParents.size > 1 ? 's' : ''}</span>`
+      : '',
+    txn.environment ? `<span>env <span class="mono">${esc(txn.environment)}</span></span>` : '',
+    `<span>trace <span class="mono">${esc(DATA.trace_id)}</span></span>`,
+    DATA.kibana_url ? `<a href="${esc(DATA.kibana_url)}" target="_blank" rel="noopener">Open in Kibana APM ↗</a>` : '',
+  ];
+  document.getElementById('meta').innerHTML = meta.join('');
+  const services = [...new Set(nodes.map((n) => n.service).filter(Boolean))];
+  document.getElementById('legend').innerHTML =
+    `Services ${services.map((s) => `<span class="dot"></span>${esc(s)}`).join(' ')}`;
+
+  const niceStep = (range) => {
+    const raw = range / 5;
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  };
+  const tickLabel = (us) => (total >= 1e6 ? `${+(us / 1e6).toFixed(1)} s` : fmtDur(us));
+  const step = niceStep(total);
+  const tickEls = [];
+  const gridEls = [];
+  for (let t = 0; t < total - step * 0.25; t += step) {
+    tickEls.push(`<span class="tick" style="left:${pct(t)}%">${tickLabel(t)}</span>`);
+    gridEls.push(`<i style="left:${pct(t)}%"></i>`);
+  }
+  tickEls.push(`<span class="tick end" style="left:100%">${fmtDur(total)}</span>`);
+  gridEls.push('<i style="left:100%"></i>');
+  document.getElementById('ticks').innerHTML = tickEls.join('');
+  document.getElementById('grid').innerHTML = gridEls.join('');
+
+  const DB_ICON = '<svg class="icon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2"/></svg>';
+  const TXN_ICON = '<svg class="icon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5h11l-3-3M14 11H3l3 3"/></svg>';
+  const CHEVRON = '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M3.3 5.3a1 1 0 0 1 1.4 0L8 8.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4z"/></svg>';
+
+  const syncTag = (n) => {
+    if (n.sync == null || !n.agent) return '';
+    const syncDefault = SYNC_DEFAULT_AGENTS.has(n.agent);
+    if (n.sync && syncDefault) return '<span class="tag">blocking</span>';
+    if (!n.sync && !syncDefault) return '<span class="tag">async</span>';
+    return '';
+  };
+
+  const tooltip = (n) => [
+    n.name,
+    `start: +${fmtOffset(n.start_us)}`,
+    `duration: ${fmtDur(n.duration_us)} (${pct(n.duration_us).toFixed(1)}% of txn)`,
+    n.type ? `type: ${n.type}${n.subtype ? `/${n.subtype}` : ''}` : '',
+    n.outcome ? `outcome: ${n.outcome}` : '',
+    n.children.length ? `children: ${n.children.length}` : '',
+    `id: ${n.id}`,
+  ].filter(Boolean).join('\n');
+
+  const toggle = (n) => (n.children.length
+    ? `<button class="toggle" data-id="${n.id}" aria-expanded="${!collapsed.has(n.id)}" aria-label="Toggle ${n.children.length} children">${CHEVRON}${n.children.length}</button>`
+    : '');
+
+  const rowHtml = (n) => {
+    const left = pct(n.start_us);
+    const width = pct(n.duration_us);
+    const end = left + width;
+    const flip = left > 55;
+    const failed = n.outcome === 'failure';
+    if (n.isMissing) {
+      return `<div class="row missing" title="${esc(tooltip(n))}">`
+        + `<div class="gut" style="padding-left:${n.depth * 10}px">${toggle(n)}</div>`
+        + `<div class="track"><div class="bar ghost" style="left:${left}%;width:${width}%"></div>`
+        + `<div class="label${flip ? ' flip' : ''}" style="${flip ? `right:${100 - end}%` : `left:${left}%`}">`
+        + `<span class="name">⚠ ${esc(n.name)}</span><span class="chip">⏱ ${fmtDur(n.duration_us)} (children range)</span></div></div></div>`;
+    }
+    const pos = flip ? `right:${100 - end}%` : `left:${left}%`;
+    const icon = n.isRoot ? TXN_ICON : n.type === 'db' ? DB_ICON : '';
+    const outcome = n.isRoot && n.result ? `<span class="outcome">${esc(n.result)}</span>` : '';
+    const service = n.service ? `<span class="chip"><span class="dot"></span>${esc(n.service)}</span>` : '';
+    return `<div class="row${filter && n.name.toLowerCase().includes(filter) ? ' match' : ''}" title="${esc(tooltip(n))}">`
+      + `<div class="gut" style="padding-left:${n.depth * 10}px">${toggle(n)}</div>`
+      + `<div class="track"><div class="bar${failed ? ' fail' : ''}" style="left:${left}%;width:${width}%"></div>`
+      + `<div class="label${flip ? ' flip' : ''}" style="${pos}">${icon}${outcome}<span class="name">${esc(n.name)}</span>`
+      + `${service}<span class="chip">⏱ ${fmtDur(n.duration_us)}</span>${syncTag(n)}</div></div></div>`;
+  };
+
+  const visibleNodes = () => {
+    if (filter) {
+      const keep = new Set();
+      nodes.forEach((n) => {
+        if (!n.name.toLowerCase().includes(filter)) return;
+        for (let p = n; p && !keep.has(p.id); p = p.parentNode) keep.add(p.id);
+      });
+      return nodes.filter((n) => keep.has(n.id));
+    }
+    const out = [];
+    const visit = (n) => {
+      out.push(n);
+      if (!collapsed.has(n.id)) n.children.forEach(visit);
+    };
+    visit(root);
+    return out;
+  };
+
+  const rowsEl = document.getElementById('rows');
+  const countEl = document.getElementById('count');
+  const render = () => {
+    const visible = visibleNodes();
+    rowsEl.innerHTML = visible.length ? visible.map(rowHtml).join('') : '<div class="empty">No spans match.</div>';
+    countEl.textContent = `${visible.length.toLocaleString('en-US')} of ${nodes.length.toLocaleString('en-US')} rows shown`;
+  };
+
+  rowsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.toggle');
+    if (!btn || filter) return;
+    const { id } = btn.dataset;
+    if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+    render();
+  });
+  document.getElementById('expand').onclick = () => { collapsed = new Set(); render(); };
+  document.getElementById('collapse').onclick = () => {
+    collapsed = new Set(nodes.filter((n) => n.children.length && !n.isRoot).map((n) => n.id));
+    render();
+  };
+  document.getElementById('reset').onclick = () => { collapsed = defaultCollapsed(); render(); };
+  let debounce;
+  document.getElementById('filter').addEventListener('input', (e) => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { filter = e.target.value.trim().toLowerCase(); render(); }, 120);
+  });
+  render();
+})();
+</script>
+</body>
+</html>
