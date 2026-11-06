@@ -1,0 +1,57 @@
+{
+  "gaps": [
+    [
+      3,
+      "2141/3103 expected=3103"
+    ],
+    [
+      9,
+      "9170/9282 expected=9282"
+    ],
+    [
+      10,
+      "3277/3297 expected=3297"
+    ],
+    [
+      11,
+      "7007/8838 expected=8838"
+    ],
+    [
+      12,
+      "9460/11577 expected=11577"
+    ],
+    [
+      15,
+      "1941/3144 expected=3144"
+    ],
+    [
+      16,
+      "2954/3102 expected=3102"
+    ],
+    [
+      17,
+      "3121/4102 expected=4102"
+    ]
+  ],
+  "slugs": {
+    "1": "01-import-1000-disabled",
+    "2": "02-import-1000-enabled",
+    "3": "03-enable-1000-disabled",
+    "4": "04-edit-1000-add-tag",
+    "5": "05-import-full-update-1000-enabled",
+    "6": "06-import-update-1-of-1000",
+    "7": "07-disable-1000-enabled",
+    "8": "08-delete-1000-no-gaps",
+    "9": "09-import-1000-enabled-single-connector",
+    "10": "10-import-1000-with-20-exception-lists",
+    "11": "11-import-update-add-21st-exception-list",
+    "12": "12-import-update-add-extra-connector",
+    "13": "13-delete-1000-with-gaps",
+    "14": "14-delete-21-exception-lists",
+    "15": "15-enable-mix-500-disabled-500-enabled",
+    "16": "16-re-enable-kept-scheduled-task-id",
+    "17": "17-enable-1000-with-connectors",
+    "18": "18-delete-1000-by-ids-no-gaps",
+    "19": "19-delete-1000-with-active-alerts"
+  }
+}
