@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f7f8fc;
+  --bg-hover: #eef3fc;
+  --text: #1d2a3e;
+  --muted: #5a6d8c;
+  --border: #e3e8f2;
+  --grid: #edf0f5;
+  --bar: #16c5c0;
+  --bar-root: #16c5c0;
+  --chip-bg: #ffffff;
+  --chip-border: #cad3e2;
+  --tag-bg: #e3e8f2;
+  --dot: #54b399;
+  --ok-bg: #24c292;
+  --ok-text: #0b3b2c;
+  --fail: #e7664c;
+  --match: #fff3c4;
+  --link: #0b64dd;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1628;
+    --bg-alt: #111c2e;
+    --bg-hover: #17253c;
+    --text: #dfe5ef;
+    --muted: #8e9fbc;
+    --border: #23314a;
+    --grid: #1a273d;
+    --chip-bg: #0b1628;
+    --chip-border: #34445f;
+    --tag-bg: #23314a;
+    --match: #4a3f12;
+    --link: #61a2ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+header { padding: 16px 16px 8px; border-bottom: 1px solid var(--border); }
+h1 { font-size: 16px; margin: 0 0 6px; font-weight: 600; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; color: var(--muted); }
+.meta a { color: var(--link); }
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 6px; border-radius: 3px; font-size: 11px; line-height: 18px;
+  background: var(--tag-bg); color: var(--text); white-space: nowrap;
+}
+.pill.ok { background: var(--ok-bg); color: var(--ok-text); }
+.pill.fail { background: var(--fail); color: #fff; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.toolbar button, .toolbar input {
+  font: inherit; color: var(--text); background: var(--chip-bg);
+  border: 1px solid var(--chip-border); border-radius: 4px; padding: 3px 8px;
+}
+.toolbar button { cursor: pointer; }
+.toolbar input { width: 260px; max-width: 100%; }
+.legend { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot); display: inline-block; flex: none; }
+
+#wf { --gutter: 48px; position: relative; padding: 0 16px 24px; }
+.axis {
+  position: sticky; top: 0; z-index: 2; height: 26px;
+  display: flex; background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.axis .track, .row .track { position: relative; flex: 1; margin-right: 40px; }
+.axis .gut, .row .gut { width: var(--gutter); flex: none; }
+.tick { position: absolute; top: 8px; transform: translateX(-50%); color: var(--muted); font-size: 10px; white-space: nowrap; }
+.tick:first-child { transform: none; }
+.tick.end { transform: translateX(-100%); color: var(--text); font-weight: 600; }
+.grid { position: absolute; top: 26px; bottom: 24px; left: calc(16px + var(--gutter)); right: 56px; pointer-events: none; }
+.grid i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+
+.row { display: flex; height: 33px; border-bottom: 1px solid var(--border); position: relative; }
+.row:nth-child(even) { background: var(--bg-alt); }
+.row:hover { background: var(--bg-hover); }
+.row.match { background: var(--match); }
+.row .gut { display: flex; align-items: center; color: var(--muted); font-size: 10px; }
+.toggle {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px 3px; border-radius: 3px; color: var(--muted);
+}
+.toggle:hover, .toggle:focus-visible { background: var(--tag-bg); color: var(--text); }
+.toggle svg { transition: transform .1s; }
+.toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.bar { position: absolute; top: 4px; height: 8px; min-width: 1px; background: var(--bar); border-radius: 1px; }
+.bar.fail { background: var(--fail); }
+.bar.ghost { background: transparent; border: 1px dashed var(--muted); }
+.row.missing .name { color: var(--muted); font-style: italic; }
+.pill.warn { background: #fdecc8; color: #6a4a00; }
+.label {
+  position: absolute; top: 14px; display: flex; align-items: center; gap: 5px;
+  white-space: nowrap; font-size: 11px;
+}
+.label.flip { flex-direction: row-reverse; }
+.label .name { overflow: hidden; text-overflow: ellipsis; max-width: 520px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 5px; line-height: 15px;
+  border: 1px solid var(--chip-border); border-radius: 3px; background: var(--chip-bg); font-size: 10px;
+}
+.tag { padding: 0 5px; line-height: 15px; border-radius: 3px; background: var(--tag-bg); font-size: 10px; }
+.icon { color: var(--muted); flex: none; }
+.outcome { font-size: 10px; color: var(--muted); }
+.empty { padding: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="meta" id="meta"></div>
+</header>
+<div class="toolbar">
+  <button type="button" id="expand">Expand all</button>
+  <button type="button" id="collapse">Collapse all</button>
+  <button type="button" id="reset">Default view</button>
+  <input type="search" id="filter" placeholder="Filter spans by name…" aria-label="Filter spans by name">
+  <span id="count" class="outcome"></span>
+  <span class="legend" id="legend"></span>
+</div>
+<div id="wf">
+  <div class="axis"><div class="gut"></div><div class="track" id="ticks"></div></div>
+  <div class="grid" id="grid"></div>
+  <div id="rows"></div>
+</div>
+<script id="data" type="application/json">/*__DATA__*/null</script>
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById('data').textContent);
+  const { transaction: txn, spans } = DATA;
+  const total = txn.duration_us;
+  const AUTO_COLLAPSE_CHILDREN = 10;
+  const SYNC_DEFAULT_AGENTS = new Set(['nodejs', 'js-base', 'rum-js']);
+
+  const fmtDur = (us) => {
+    if (us < 1000) return `${Math.round(us)} μs`;
+    const ms = us / 1000;
+    if (ms < 10) return `${ms.toFixed(1)} ms`;
+    if (ms < 10000) return `${Math.round(ms).toLocaleString('en-US')} ms`;
+    return `${Math.round(ms / 1000)} s`;
+  };
+  const fmtOffset = (us) => (us >= 1e6 ? `${(us / 1e6).toFixed(3)} s` : fmtDur(us));
+  const pct = (us) => Math.max(0, Math.min(100, (us / total) * 100));
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const root = {
+    id: txn.id, name: txn.name, start_us: 0, duration_us: total, depth: 0,
+    service: txn.service, outcome: txn.outcome, result: txn.result, isRoot: true, children: [],
+  };
+  const byId = new Map([[root.id, root]]);
+  spans.forEach((s) => byId.set(s.id, { ...s, children: [] }));
+  const missingParents = new Map();
+  spans.forEach((s) => {
+    const node = byId.get(s.id);
+    const parent = byId.get(s.parent);
+    if (parent) {
+      parent.children.push(node);
+      return;
+    }
+    if (!missingParents.has(s.parent)) {
+      missingParents.set(s.parent, {
+        id: `missing-${s.parent}`, name: `missing parent span ${s.parent} (not indexed)`,
+        isMissing: true, start_us: Infinity, end_us: 0, children: [],
+      });
+    }
+    const placeholder = missingParents.get(s.parent);
+    placeholder.children.push(node);
+    placeholder.start_us = Math.min(placeholder.start_us, s.start_us);
+    placeholder.end_us = Math.max(placeholder.end_us, s.start_us + s.duration_us);
+  });
+  missingParents.forEach((p) => {
+    p.duration_us = p.end_us - p.start_us;
+    root.children.push(p);
+  });
+  const orphanCount = [...missingParents.values()].reduce((sum, p) => sum + p.children.length, 0);
+  const notIndexed = (txn.span_count?.started ?? spans.length) - spans.length;
+  const nodes = [];
+  const walk = (node, depth, parent) => {
+    node.depth = depth;
+    node.parentNode = parent;
+    node.children.sort((a, b) => a.start_us - b.start_us);
+    nodes.push(node);
+    node.children.forEach((c) => walk(c, depth + 1, node));
+  };
+  walk(root, 0, null);
+  const maxDepth = Math.max(...nodes.map((n) => n.depth));
+  document.getElementById('wf').style.setProperty('--gutter', `${44 + maxDepth * 10}px`);
+
+  // Auto-collapse N+1 fan-outs: many children drawn from a handful of repeated span names.
+  const isNoisyParent = (n) => {
+    if (n.isMissing) return true;
+    if (n.isRoot || n.children.length < AUTO_COLLAPSE_CHILDREN) return false;
+    const distinctNames = new Set(n.children.map(({ name }) => name)).size;
+    return n.children.length / distinctNames >= 5;
+  };
+  const defaultCollapsed = () => new Set(nodes.filter(isNoisyParent).map((n) => n.id));
+  let collapsed = defaultCollapsed();
+  let filter = '';
+
+  document.title = DATA.title || txn.name;
+  document.getElementById('title').textContent = DATA.title || txn.name;
+  const status = txn.status_code ? `${txn.status_code}${txn.status_code < 400 ? ' OK' : ''}` : txn.result;
+  const meta = [
+    `<span>${esc(new Date(txn.timestamp).toUTCString())}</span>`,
+    `<span>${fmtDur(total)} (100% of trace)</span>`,
+    txn.url ? `<span class="pill mono">${esc(txn.method || '')} ${esc(txn.url)}</span>` : '',
+    status ? `<span class="pill ${txn.status_code >= 400 ? 'fail' : 'ok'}">${esc(status)}</span>` : '',
+    `<span>${spans.length.toLocaleString('en-US')} spans</span>`,
+    notIndexed > 0
+      ? `<span class="pill warn" title="span_count.started minus spans found in ES">⚠ ${notIndexed.toLocaleString('en-US')} of ${txn.span_count.started.toLocaleString('en-US')} started spans not indexed</span>`
+      : '',
+    orphanCount
+      ? `<span class="pill warn">⚠ ${orphanCount.toLocaleString('en-US')} orphan spans under ${missingParents.size} missing parent${missingParents.size > 1 ? 's' : ''}</span>`
+      : '',
+    txn.environment ? `<span>env <span class="mono">${esc(txn.environment)}</span></span>` : '',
+    `<span>trace <span class="mono">${esc(DATA.trace_id)}</span></span>`,
+    DATA.kibana_url ? `<a href="${esc(DATA.kibana_url)}" target="_blank" rel="noopener">Open in Kibana APM ↗</a>` : '',
+  ];
+  document.getElementById('meta').innerHTML = meta.join('');
+  const services = [...new Set(nodes.map((n) => n.service).filter(Boolean))];
+  document.getElementById('legend').innerHTML =
+    `Services ${services.map((s) => `<span class="dot"></span>${esc(s)}`).join(' ')}`;
+
+  const niceStep = (range) => {
+    const raw = range / 5;
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  };
+  const tickLabel = (us) => (total >= 1e6 ? `${+(us / 1e6).toFixed(1)} s` : fmtDur(us));
+  const step = niceStep(total);
+  const tickEls = [];
+  const gridEls = [];
+  for (let t = 0; t < total - step * 0.25; t += step) {
+    tickEls.push(`<span class="tick" style="left:${pct(t)}%">${tickLabel(t)}</span>`);
+    gridEls.push(`<i style="left:${pct(t)}%"></i>`);
+  }
+  tickEls.push(`<span class="tick end" style="left:100%">${fmtDur(total)}</span>`);
+  gridEls.push('<i style="left:100%"></i>');
+  document.getElementById('ticks').innerHTML = tickEls.join('');
+  document.getElementById('grid').innerHTML = gridEls.join('');
+
+  const DB_ICON = '<svg class="icon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2"/></svg>';
+  const TXN_ICON = '<svg class="icon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 5h11l-3-3M14 11H3l3 3"/></svg>';
+  const CHEVRON = '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M3.3 5.3a1 1 0 0 1 1.4 0L8 8.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4z"/></svg>';
+
+  const syncTag = (n) => {
+    if (n.sync == null || !n.agent) return '';
+    const syncDefault = SYNC_DEFAULT_AGENTS.has(n.agent);
+    if (n.sync && syncDefault) return '<span class="tag">blocking</span>';
+    if (!n.sync && !syncDefault) return '<span class="tag">async</span>';
+    return '';
+  };
+
+  const tooltip = (n) => [
+    n.name,
+    `start: +${fmtOffset(n.start_us)}`,
+    `duration: ${fmtDur(n.duration_us)} (${pct(n.duration_us).toFixed(1)}% of txn)`,
+    n.type ? `type: ${n.type}${n.subtype ? `/${n.subtype}` : ''}` : '',
+    n.outcome ? `outcome: ${n.outcome}` : '',
+    n.children.length ? `children: ${n.children.length}` : '',
+    `id: ${n.id}`,
+  ].filter(Boolean).join('\n');
+
+  const toggle = (n) => (n.children.length
+    ? `<button class="toggle" data-id="${n.id}" aria-expanded="${!collapsed.has(n.id)}" aria-label="Toggle ${n.children.length} children">${CHEVRON}${n.children.length}</button>`
+    : '');
+
+  const rowHtml = (n) => {
+    const left = pct(n.start_us);
+    const width = pct(n.duration_us);
+    const end = left + width;
+    const flip = left > 55;
+    const failed = n.outcome === 'failure';
+    if (n.isMissing) {
+      return `<div class="row missing" title="${esc(tooltip(n))}">`
+        + `<div class="gut" style="padding-left:${n.depth * 10}px">${toggle(n)}</div>`
+        + `<div class="track"><div class="bar ghost" style="left:${left}%;width:${width}%"></div>`
+        + `<div class="label${flip ? ' flip' : ''}" style="${flip ? `right:${100 - end}%` : `left:${left}%`}">`
+        + `<span class="name">⚠ ${esc(n.name)}</span><span class="chip">⏱ ${fmtDur(n.duration_us)} (children range)</span></div></div></div>`;
+    }
+    const pos = flip ? `right:${100 - end}%` : `left:${left}%`;
+    const icon = n.isRoot ? TXN_ICON : n.type === 'db' ? DB_ICON : '';
+    const outcome = n.isRoot && n.result ? `<span class="outcome">${esc(n.result)}</span>` : '';
+    const service = n.service ? `<span class="chip"><span class="dot"></span>${esc(n.service)}</span>` : '';
+    return `<div class="row${filter && n.name.toLowerCase().includes(filter) ? ' match' : ''}" title="${esc(tooltip(n))}">`
+      + `<div class="gut" style="padding-left:${n.depth * 10}px">${toggle(n)}</div>`
+      + `<div class="track"><div class="bar${failed ? ' fail' : ''}" style="left:${left}%;width:${width}%"></div>`
+      + `<div class="label${flip ? ' flip' : ''}" style="${pos}">${icon}${outcome}<span class="name">${esc(n.name)}</span>`
+      + `${service}<span class="chip">⏱ ${fmtDur(n.duration_us)}</span>${syncTag(n)}</div></div></div>`;
+  };
+
+  const visibleNodes = () => {
+    if (filter) {
+      const keep = new Set();
+      nodes.forEach((n) => {
+        if (!n.name.toLowerCase().includes(filter)) return;
+        for (let p = n; p && !keep.has(p.id); p = p.parentNode) keep.add(p.id);
+      });
+      return nodes.filter((n) => keep.has(n.id));
+    }
+    const out = [];
+    const visit = (n) => {
+      out.push(n);
+      if (!collapsed.has(n.id)) n.children.forEach(visit);
+    };
+    visit(root);
+    return out;
+  };
+
+  const rowsEl = document.getElementById('rows');
+  const countEl = document.getElementById('count');
+  const render = () => {
+    const visible = visibleNodes();
+    rowsEl.innerHTML = visible.length ? visible.map(rowHtml).join('') : '<div class="empty">No spans match.</div>';
+    countEl.textContent = `${visible.length.toLocaleString('en-US')} of ${nodes.length.toLocaleString('en-US')} rows shown`;
+  };
+
+  rowsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.toggle');
+    if (!btn || filter) return;
+    const { id } = btn.dataset;
+    if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+    render();
+  });
+  document.getElementById('expand').onclick = () => { collapsed = new Set(); render(); };
+  document.getElementById('collapse').onclick = () => {
+    collapsed = new Set(nodes.filter((n) => n.children.length && !n.isRoot).map((n) => n.id));
+    render();
+  };
+  document.getElementById('reset').onclick = () => { collapsed = defaultCollapsed(); render(); };
+  let debounce;
+  document.getElementById('filter').addEventListener('input', (e) => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { filter = e.target.value.trim().toLowerCase(); render(); }, 120);
+  });
+  render();
+})();
+</script>
+</body>
+</html>

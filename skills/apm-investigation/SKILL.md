@@ -160,6 +160,12 @@ If dropped is high (rough guide: **>100** or **dropped >> started**):
 In **compare** mode, warn **per side**. If only one side is capped, say so —
 cross-env call-count comparisons are misleading when dropped differs a lot.
 
+**Not indexed ≠ dropped.** Also compare `span_count.started` with the actual
+span doc count for the trace. Spans can be started but never stored even when
+`dropped` is missing or 0. Their children then point at a `parent.id` that
+doesn't exist (orphans), so per-parent rollups undercount. Warn the same way:
+`🚨 N of M started spans not indexed (K orphans)`.
+
 ## First-pass analysis
 
 Start with (scripts help; equivalent queries are fine):
@@ -310,6 +316,9 @@ then re-analyze.
 ## Output contract
 
 Lead with what you concluded, not raw script dumps.
+
+To attach a browsable copy of a trace (ticket, PR, bench archive), point the user
+to `/apm-waterfall`.
 
 ### Single
 
