@@ -57,15 +57,16 @@ Run this as the last step, once the task is actually complete. Use the absolute 
 
 ## Include the location (directory + branch)
 
-Always mention *where* the finished work lives (directory name and/or git branch). Inline it as a literal string — no shell expansion:
+Mention *where* the finished work lives (directory name and/or git branch), unless the name itself is long and complex (like a timestamp, or a git commit hash) and unlikely to be understood. Inline it as a literal string — no shell expansion:
 
 ```bash
 /Users/sdesalas/.claude/skills/notify-when-done/scripts/notify.sh "Your PR review task on bulk import create is ready on kibana-6th."
 ```
 
-Phrase it naturally, describing the task and ending with the location:
+Phrase it naturally, and keep it short and simple, describing the task and usually ending with the location:
 - "Your PR review task on bulk import create is ready on kibana-6th."
 - "I have finished the error handling for change tracking on alerting framework, check out kibana-main."
+- "Finished branch A of performance benchmarks, starting branch B."
 
 ## Choosing a different voice
 
