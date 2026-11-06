@@ -60,6 +60,8 @@ Requires on PATH: `bash`, `curl`, `jq`, `uuidgen`, `qaf` (for create/list/descri
 
 ## Scenarios (ids) — what we measure
 
+Source narrative (why each scenario exists): [`../demos/benchmark-scenarios.md`](../demos/benchmark-scenarios.md). This guide keeps the operational ids + driver mapping below.
+
 | # | Scenario | Related PRs |
 |---|---|---|
 | 1 | Import → Create 1,000 disabled rules. | 🔴 #275695 |
