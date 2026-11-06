@@ -10,11 +10,19 @@
 #   EDIT_BODY='[{"type":"add_tags","value":["bench"]}]'
 # Optionally override the full request body with BODY=...
 # Optional: QUERY (default ""), DRY_RUN=true|false (default false)
+# Optional: SELECT=query|ids (default query).
+#   SELECT=ids → per target, _find up to FIND_PER_PAGE rule ids (not timed),
+#   then POST _bulk_action with {"action","ids"} (curl time_total is the action only).
+#   Mutually exclusive with QUERY / a BODY that already sets query or ids.
+# Optional: IDS_LIMIT=N with SELECT=ids — use only the first N ids from _find
+#   (e.g. disable half the rules before a mixed enable).
 #
 # Usage:
 #   ACTION=enable ./parallel_bulk_action.sh
 #   ACTION=disable ./parallel_bulk_action.sh
 #   ACTION=delete ./parallel_bulk_action.sh
+#   ACTION=delete SELECT=ids ./parallel_bulk_action.sh
+#   ACTION=disable SELECT=ids IDS_LIMIT=500 ./parallel_bulk_action.sh
 #   ACTION=edit EDIT_BODY='[{"type":"add_tags","value":["bench"]}]' ./parallel_bulk_action.sh
 #
 set -u
@@ -26,6 +34,9 @@ QUERY="${QUERY:-}"
 DRY_RUN="${DRY_RUN:-false}"
 EDIT_BODY="${EDIT_BODY:-}"
 BODY="${BODY:-}"
+SELECT="${SELECT:-query}"
+FIND_PER_PAGE="${FIND_PER_PAGE:-1000}"
+IDS_LIMIT="${IDS_LIMIT:-}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "env file not found: ${ENV_FILE}" >&2
@@ -52,7 +63,24 @@ case "$ACTION" in
     ;;
 esac
 
-if [[ -z "$BODY" ]]; then
+case "$SELECT" in
+  query|ids) ;;
+  *)
+    echo "SELECT must be query|ids (got: '${SELECT}')" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$SELECT" == "ids" && -n "$QUERY" ]]; then
+  echo "SELECT=ids cannot be combined with QUERY (got QUERY='${QUERY}')" >&2
+  exit 2
+fi
+if [[ "$SELECT" == "ids" && -n "$BODY" ]]; then
+  echo "SELECT=ids builds the body per target; omit BODY" >&2
+  exit 2
+fi
+
+if [[ -z "$BODY" && "$SELECT" == "query" ]]; then
   if [[ "$ACTION" == "edit" && -z "$EDIT_BODY" ]]; then
     echo "ACTION=edit requires EDIT_BODY (JSON array of edit ops)" >&2
     exit 2
@@ -70,6 +98,7 @@ PY
 fi
 
 BULK_PATH="/api/detection_engine/rules/_bulk_action?dry_run=${DRY_RUN}"
+FIND_PATH="/api/detection_engine/rules/_find?per_page=${FIND_PER_PAGE}&page=1"
 API_VERSION='2023-10-31'
 
 USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
@@ -87,6 +116,53 @@ gen_traceparent() {
   printf '00-%s-%s-01' "$(gen_hex 32)" "$(gen_hex 16)"
 }
 
+fetch_rule_ids() {
+  local label="$1"
+  local url="$2"
+  local auth="$3"
+  local out_file="$4"
+
+  local tmp_find
+  tmp_find="$(mktemp -t kbn_${label}_find_XXXX)"
+  local find_code
+  find_code="$(curl -sS \
+    -o "$tmp_find" \
+    -w '%{http_code}' \
+    -u "$auth" \
+    -H 'accept: application/json' \
+    -H "elastic-api-version: ${API_VERSION}" \
+    -H 'kbn-xsrf: true' \
+    -H "user-agent: ${USER_AGENT}" \
+    "${url}${FIND_PATH}")" \
+    || {
+      echo "[$label] _find curl failed" >&2
+      rm -f "$tmp_find"
+      return 1
+    }
+
+  if [[ "$find_code" != "200" ]]; then
+    echo "[$label] _find HTTP ${find_code}: $(head -c 200 "$tmp_find" | tr '\n' ' ')" >&2
+    rm -f "$tmp_find"
+    return 1
+  fi
+
+  python3 - "$tmp_find" "$out_file" "${IDS_LIMIT:-}" <<'PY'
+import json, sys
+src, dst, limit = sys.argv[1], sys.argv[2], sys.argv[3]
+payload = json.load(open(src))
+ids = [r["id"] for r in payload.get("data", []) if r.get("id")]
+if limit:
+    ids = ids[: int(limit)]
+if not ids:
+    raise SystemExit("no rule ids in _find response")
+json.dump(ids, open(dst, "w"), separators=(",", ":"))
+print(len(ids))
+PY
+  local rc=$?
+  rm -f "$tmp_find"
+  return "$rc"
+}
+
 hit_bulk() {
   local label="$1"
   local url="$2"
@@ -99,8 +175,32 @@ hit_bulk() {
     return 0
   fi
 
+  local request_body="$BODY"
+  if [[ "$SELECT" == "ids" ]]; then
+    local ids_file
+    ids_file="$(mktemp -t kbn_${label}_ids_XXXX)"
+    echo "[$label] SELECT=ids → GET ${url}${FIND_PATH} (not timed)"
+    local id_count
+    if ! id_count="$(fetch_rule_ids "$label" "$url" "$auth" "$ids_file")"; then
+      printf '%s\tERROR\t-\n' "$label" >>"$summary_file"
+      rm -f "$ids_file"
+      return 1
+    fi
+    request_body="$(
+      ACTION="$ACTION" IDS_FILE="$ids_file" EDIT_BODY="$EDIT_BODY" python3 - <<'PY'
+import json, os
+body = {"action": os.environ["ACTION"], "ids": json.load(open(os.environ["IDS_FILE"]))}
+if os.environ["ACTION"] == "edit":
+    body["edit"] = json.loads(os.environ["EDIT_BODY"])
+print(json.dumps(body, separators=(",", ":")))
+PY
+    )"
+    rm -f "$ids_file"
+    echo "[$label] collected ${id_count} ids for ${ACTION}"
+  fi
+
   echo "[$label] -> POST ${url}${BULK_PATH}"
-  echo "[$label]    body: ${BODY}"
+  echo "[$label]    body: ${request_body:0:200}$([[ ${#request_body} -gt 200 ]] && echo '…')"
 
   local tmp_body
   tmp_body="$(mktemp -t kbn_${label}_XXXX)"
@@ -134,7 +234,7 @@ hit_bulk() {
     -H 'tracestate: es=s:1' \
     -H "user-agent: ${USER_AGENT}" \
     -H 'x-elastic-internal-origin: Kibana' \
-    --data "$BODY" \
+    --data "$request_body" \
     "${url}${BULK_PATH}")" \
     || {
       echo "[$label] curl failed"
@@ -155,8 +255,12 @@ hit_bulk() {
   printf '%s\t%s\t%ss\n' "$label" "$http_code" "$time_total" >>"$summary_file"
 }
 
-echo "Bulk action: ${ACTION}  dry_run=${DRY_RUN}  targets=${#TARGETS[@]}"
-echo "Body: ${BODY}"
+echo "Bulk action: ${ACTION}  select=${SELECT}  dry_run=${DRY_RUN}  targets=${#TARGETS[@]}"
+if [[ "$SELECT" == "ids" ]]; then
+  echo "Body: (built per target from _find ids)"
+else
+  echo "Body: ${BODY}"
+fi
 echo
 
 pids=()
