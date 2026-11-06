@@ -51,7 +51,6 @@ Exception fixtures for C1/C2: each shared list has **50 items** (1000 items acro
 | 🟤 [#291560](https://github.com/elastic/kibana/pull/291560) `9.5.6` | Routes overwrite imports through `bulkUpdateRules()` and batches enable/disable transitions. |
 | 🟠 [#290306](https://github.com/elastic/kibana/pull/290306) `9.5.5` | Uses `refresh=false` for bulk API-key grants, removing refresh waits. Applies when new keys are minted: enabled creates, updates and enables, including the update step before disabling. For scenarios 6 and 9–12, the benefit depends on enabled state and key creation. |
 | 🟡 [#293948](https://github.com/elastic/kibana/pull/293948) `9.5.6` | Skips unchanged rules during overwrite imports, avoiding writes and API-key rotation for the 999 unchanged rules in scenario 6. |
-| 🟣 [#300213](https://github.com/elastic/kibana/pull/300213) (this build) | Adds APM spans for detection rule import / enable / disable / delete. |
 
 ### `POST /api/detection_engine/rules/_bulk_action`
 
@@ -117,32 +116,33 @@ Clean space before C1 (rules + lists wiped after B2). Shared lists carry **50 it
 
 ## Wall-clock results (curl `time_total`)
 
-All steps HTTP **200**. Reference: published main-only **2026-10-27T1043** (`c4c560f2`, 9.6.0-SNAPSHOT) — same methodology; different stack/SHA.
+All steps HTTP **200**. Reference: widely published `9.5.4` -> `9.5.6` improvement results on main column ([epic comment](https://github.com/elastic/kibana/issues/264906#issuecomment-6313484568)) — same methodology; different stack/SHA.
 
-| Step | # | Scenario | PR #300213 (`b758fc70`) | main `c4c560f2` (ref) |
+| Step | # | Scenario | This PR #300213 (`b758fc70`) | `9.5.4` -> `9.5.6` |
 |---|---|---|---:|---:|
-| A1 | 1 | Create 1,000 disabled rules | **14.2s** | 14.2s |
-| A2 | 3 | Enable 1,000 disabled rules | **19.2s** | 12.2s |
-| A3 | 2 | Create 1,000 enabled rules | **18.0s** | 17.4s |
-| A4 | 4 | Edit 1,000 rules (add tag) | **22.7s** | 20.7s |
-| A5 | 5 | Fully update 1,000 enabled rules | **30.5s** | 33.4s |
-| A6 | 6 | Update 1 of 1,000 (999 unchanged) | **7.8s** | 8.1s |
-| A7 | 7 | Disable 1,000 enabled rules | **14.3s** | 12.8s |
-| A8 | 8 | Delete 1,000 rules (no gaps) | **15.7s** | 18.0s |
-| B1 | 9 | Create 1,000 enabled + 1 connector | **26.7s** | 23.4s |
-| B2 | 12 | Update 1,000 rules (+ extra connector) | **44.8s** | 46.7s |
-| C1 | 10 | Create 1,000 rules + 20 shared lists (50 items each) | **24.3s** | 23.7s |
-| C2 | 11 | Update +1 shared list (to 21; 50 items) | **82.3s** | 94.3s |
-| C3 | 13 | Delete 1,000 rules (with gaps) | **20.3s** | 22.5s |
-| C4 | 14 | Delete 21 shared exception lists (bulk) | **6.1s** | 6.8s |
+| A1 | 1 | Create 1,000 disabled rules | **14.2s** | 13.7s |
+| A2 | 3 | Enable 1,000 disabled rules | **19.2s** | 12.7s |
+| A3 | 2 | Create 1,000 enabled rules | **18.0s** | 16.0s |
+| A4 | 4 | Edit 1,000 rules (add tag) | **22.7s** | 22.4s |
+| A5 | 5 | Fully update 1,000 enabled rules | **30.5s** | 33.8s |
+| A6 | 6 | Update 1 of 1,000 (999 unchanged) | **7.8s** | 8.2s |
+| A7 | 7 | Disable 1,000 enabled rules | **14.3s** | 14.3s |
+| A8 | 8 | Delete 1,000 rules (no gaps) | **15.7s** | 16.2s |
+| B1 | 9 | Create 1,000 enabled + 1 connector | **26.7s** | 25.1s |
+| B2 | 12 | Update 1,000 rules (+ extra connector) | **44.8s** | 49.0s |
+| C1 | 10 | Create 1,000 rules + 20 shared lists (50 items each) | **24.3s** | 24.9s |
+| C2 | 11 | Update +1 shared list (to 21; 50 items) | **82.3s** | 82.6s |
+| C3 | 13 | Delete 1,000 rules (with gaps) | **20.3s** | 19.8s |
+| C4 | 14 | Delete 21 shared exception lists (bulk) | **6.1s** | 6.1s |
 
 ### Notes on wall-clock
 
 - **#6 (A6):** `rules_summary` `updated=1, skipped=999` — skip-unchanged path live.
 - Other timed overwrites: `updated=1000` (A5, B2, C2); creates: `created=1000`.
-- **Slowest:** **C2 (#11)** 82.3s (faster than main ref 94.3s on this n=1).
-- **Next:** B2 44.8s, A5 30.5s, B1 26.7s.
-- **C4:** bulk delete 21 `detection` lists in **6.1s** (one batch).
+- **Slowest:** **C2 (#11)** 82.3s (≈ 0833 main 82.6s on this n=1).
+- **Next:** B2 44.8s (faster than 0833 49.0s), A5 30.5s, B1 26.7s.
+- **A2 (#3)** enable is the clearest regression vs 0833 (19.2s vs 12.7s).
+- **C4:** bulk delete 21 `detection` lists in **6.1s** (matches 0833).
 
 Raw: `timings.tsv`, `windows.tsv`, `logs/`, `driver.log`, `apm/trace-ids.json`.
 
