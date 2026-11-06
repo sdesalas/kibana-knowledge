@@ -380,7 +380,7 @@ run_seed pre-wipe-lists "delete exception lists" \
   ./parallel_delete_exception_lists.sh
 
 log "=== Branch A ==="
-notify "Starting Branch A on ${STAMP} ${BENCH_LABEL} on kibana-main."
+notify "Starting Branch A on kibana-main."
 run_timed A1 1 "Import 1000disabled-rules.ndjson" "--- import timings ---" \
   env DELETE=1 IMPORT_FILE="$DATA/1000disabled-rules.ndjson" ./parallel_import_rules.sh
 run_timed A2 3 "bulk_action enable" "--- enable timings ---" \
@@ -404,7 +404,7 @@ run_timed A7 7 "bulk_action disable" "--- disable timings ---" \
 run_timed A8 8 "bulk_action delete (no gaps)" "--- delete timings ---" \
   env ACTION=delete ./parallel_bulk_action.sh
 
-notify "Branch A finished. Starting Branch B on ${STAMP} ${BENCH_LABEL} on kibana-main."
+notify "Branch A finished. Starting Branch B on kibana-main."
 
 log "=== Branch B ==="
 run_timed B1 9 "Import 1000enabled.rules+connector-email-smtp.ndjson" "--- import timings ---" \
@@ -416,7 +416,7 @@ run_seed C-wipe "delete before Branch C" \
 run_seed C-wipe-lists "exception lists before Branch C" \
   ./parallel_delete_exception_lists.sh
 
-notify "Branch B finished. Starting Branch C on ${STAMP} ${BENCH_LABEL} on kibana-main."
+notify "Branch B finished. Starting Branch C on kibana-main."
 
 log "=== Branch C ==="
 run_timed C1 10 "Import 1000enabled.rules+20exceptionlists.ndjson (20 lists × 50 items)" "--- import timings ---" \
@@ -431,7 +431,7 @@ run_timed C4 14 "Bulk delete 21 shared exception lists (TYPE=detection)" "--- ex
   env TYPE=detection ./parallel_delete_exception_lists.sh
 
 log "=== DONE wall-clock bench ==="
-notify "Wall-clock bench finished. Results in ${STAMP} ${BENCH_LABEL} on kibana-main."
+notify "Wall-clock bench finished. Results in kibana-main."
 echo done > "$RESULTS/DONE.txt"
 ```
 
