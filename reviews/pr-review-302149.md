@@ -20,7 +20,7 @@ DE is on the hook for one constants file. The real DE exposure is indirect — i
 
 ### Context / Motivation
 
-Customer escalation on 9.5.5 ([elastic/sdh-security-team#1870](https://github.com/elastic/sdh-security-team/issues/1870)), tracked as [#302120](https://github.com/elastic/kibana/issues/302120), superseding [#228955](https://github.com/elastic/kibana/issues/228955).
+Recent SDH on 9.5.5 ([elastic/sdh-security-team#1870](https://github.com/elastic/sdh-security-team/issues/1870)), tracked as [#302120](https://github.com/elastic/kibana/issues/302120), superseding [#228955](https://github.com/elastic/kibana/issues/228955).
 
 TI integrations with a latest transform store every indicator twice: every ingested version in the raw `logs-ti_*` data stream (label `"true"`), plus one active copy in a `*_latest` index (label `"false"`). Both match `logs-ti_*`. From the issue:
 
@@ -60,17 +60,17 @@ Matches the issue, with one deliberate extension: the issue only mentions `label
 ### Risks
 
 1. ~~**Stopped or failing transform makes indicators vanish silently.** Before, raw copies would still show. Now all three views depend on the latest index being current, with no hint to the user when it isn't.~~ (LOW PRIORITY) — mostly goes stale rather than vanishing, and prebuilt IM rules already depend on the transform the same way. See Follow-up 1.
-2. **IM-alert duplicates remain** (see DE point 2). The customer who escalated may still see repeated enrichments on IM alerts and read it as "not fixed".
+2. **IM-alert duplicates remain** (see DE point 2). The customer who escalated may still see repeated enrichments on IM alerts and read it as "not fixed". Now tracked in [#304179](https://github.com/elastic/kibana/issues/304179), which only fixes rule runs after it ships, so existing alerts keep their duplicates.
 3. **Counts drop and expired indicators disappear after upgrade.** Intended and in the release note, but expect support questions, especially on a patch backport (9.5.6).
 4. **Old latest indices after package upgrades** still carry `"false"` and keep duplicating. Acknowledged, owned by Integrations.
 
 ### Open questions
 
-- Did Integrations confirm the label contract? Any `ti_*` package using a third label name, or a transform with no label at all?
-- Is there a DE follow-up issue for IM rules (default threat query, rule creation UI, maybe prebuilt rules for the `is_transform_source` packages)? Note IM `threat_query` is KQL, so it can't reuse this DSL constant as-is.
+- ~~Did Integrations confirm the label contract? Any `ti_*` package using a third label name, or a transform with no label at all?~~ (ANSWERED) — no third label; the only unlabeled transforms copy IM alerts, not indicators. See Follow-up 7.
+- ~~Is there a DE follow-up issue for IM rules (default threat query, rule creation UI, maybe prebuilt rules for the `is_transform_source` packages)? Note IM `threat_query` is KQL, so it can't reuse this DSL constant as-is.~~ (ANSWERED) — [#304179](https://github.com/elastic/kibana/issues/304179), see Follow-up 5.
 - ~~Do the prebuilt IM rules for Google TI / Flashpoint / GreyNoise / Cyware exclude `labels.is_transform_source`, or only `labels.is_ioc_transform_source`? The PR description says prebuilt rules "already exclude the raw copies" but doesn't say which label. Needs a check in `elastic/detection-rules`.~~ (ANSWERED — only `is_ioc_transform_source`; Integrations fixing it, see follow-up 2)
 - Is the backwards `"false"` example in `patch_rule_route.schema.yaml` connected to the SDH's "corrected filter direction"? Either way, worth a small DE fix.
-- Was the flyout checked on an indicator match alert, not just a custom query alert?
+- ~~Was the flyout checked on an indicator match alert, not just a custom query alert?~~ (ANSWERED) — code confirms IM-alert enrichments stay duplicated, unchanged by this PR (Follow-up 2); tracked in #304179.
 
 ### Notes for your codebase map
 
@@ -151,3 +151,183 @@ Posted two comment threads on the PR. No replies from the author yet.
 - **[DE follow-up for indicator match rules](https://github.com/elastic/kibana/pull/302149#discussion_r4490983270)** on `common/cti/constants.ts` L68. Quoted the line from [#302120](https://github.com/elastic/kibana/issues/302120) that hands custom IM rules to `@elastic/security-detection-engineering`, and asked @kelvtanv whether DE needs to do extra work to close this, and whether a ticket should be opened since none exists yet.
   - [Follow-up reply in the same thread](https://github.com/elastic/kibana/pull/302149#discussion_r4491011159) adding the supporting notes: custom IM rules default to `@timestamp >= "now-30d/d"` with no transform filter; `filterDuplicateEnrichments` keeps stored rule enrichments that point at raw copies; the new flyout Scout spec uses a custom query rule so doesn't cover IM alerts; not a bug in this PR, but customers may still see dupes on IM alerts until DE follows up.
 - **[Share the repeated test filter](https://github.com/elastic/kibana/pull/302149#discussion_r4491139696)** on `query.threat_intel_source.dsl.test.ts` L32. Pointed out the filter object is repeated across tests and suggested exporting it once from `common/search_strategy/security_solution/cti/index.mock.ts`. Explicitly advised against importing from `cti/constants.ts` so the tests keep validating the real constant (see Follow-up 3).
+
+**5. Author's response and what's left (checked 2026-11-10)**
+
+@kelvtanv replied on 2026-11-09 and pushed one commit (`5140ce0`). Both review threads are now resolved. PR head is `5140ce0`, CI green (21 passed, 8 skipped), mergeable, still `REVIEW_REQUIRED` with no approvals yet.
+
+- **DE follow-up thread — addressed.** Kelvin [replied](https://github.com/elastic/kibana/pull/302149#discussion_r4515222489) that it's not blocking for this PR and opened [#304179](https://github.com/elastic/kibana/issues/304179) ("Indicator match rules match raw indicator copies from threat intel integration transforms"). Labelled `Team:Detection Engineering`, `bug`, unassigned. It covers:
+  - duplicate enrichments on alerts, and raw copies eating into the 200-match cap per alert
+  - extra threat-search work on every rule run
+  - adding both label exclusions to `DEFAULT_THREAT_MATCH_QUERY`
+  - deciding how to reach existing custom rules
+  - handing the prebuilt rules change (add `labels.is_transform_source`) to `elastic/detection-rules`
+- **Shared test mock — addressed as suggested.** `5140ce0` adds `buildTransformSourceExclusionMock()` to `common/search_strategy/security_solution/cti/index.mock.ts` as a hard-coded literal (not a re-export of `IOC_TRANSFORM_SOURCE_QUERY`), with a one-line doc comment saying why. All five test files now use it. No production code changed.
+- **Still open on the PR:** one unresolved Libra bot comment (P3) on `cti_link_panel.spec.ts` L246, suggesting the transform-count scenario move from Scout UI to an API/ES-backed test. No reply from the author. Not a DE concern.
+- **Not raised on the PR (DE-side, optional):**
+  - The backwards `not labels.is_ioc_transform_source:"false"` example in `patch_rule_route.schema.yaml:80`. Still there on upstream main as of 2026-11-10, and not mentioned in #304179.
+  - #304179's prebuilt-rules handoff may not be needed: [elastic/integrations#22249](https://github.com/elastic/integrations/pull/22249) adds `labels.is_ioc_transform_source` to the four `is_transform_source` packages (Follow-up 2). Worth a comment on #304179.
+  - The transform-health troubleshooting line for the Intelligence page docs (Follow-up 1).
+- **Remaining reviewer action:** approve (or not). `common/cti/constants.ts` is DE-owned, so the PR needs a DE codeowner approval. You're still listed as a requested reviewer.
+
+**6. Ownership question raised with the team (by @sdesalas, 2026-11-10)**
+
+Asked the team in [Slack](https://elastic.slack.com/archives/C0B6959RC7K/p1794307281817949) why [#304179](https://github.com/elastic/kibana/issues/304179) (duplicate threat matches from indicator match rules) is DE's to fix rather than Investigations'. The answer decides whether to block this PR until #304179 is fixed or handle it separately. Waiting on replies. The goal is to understand where the boundary is, not to delay the PR.
+
+- **Working hypothesis shared with the team:** DE owns the threat matches because rule execution generates them; Investigations owns only how they're displayed. Linked [`buildEnrichments` on main @ `35ad478`](https://github.com/elastic/kibana/blob/35ad478d2858fd3bd33ba54677a23a707baa03fb/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_types/indicator_match/threat_mapping/enrich_signal_threat_matches.ts#L24-L71), which writes one enrichment per matched indicator doc (`matched.id = threatHit._id`, `type: indicator_match_rule`).
+- **CODEOWNERS split backing it up** (paths under `x-pack/solutions/security/plugins/security_solution/`):
+
+  | Role | Path | Owner |
+  |---|---|---|
+  | Produces rule-time threat matches | `server/lib/detection_engine/rule_types/indicator_match/...` | DE |
+  | Defines their format (`MATCHED_*`, `ENRICHMENT_TYPES`) | `common/cti/constants.ts` | DE |
+  | Rule form default threat query | `public/detection_engine/common/utils.ts` | DE |
+  | Displays them | `public/flyout_v2/document`, `public/flyout/document_details`, `public/timelines/.../renderers/cti` | Investigations |
+  | Flyout live lookup (fixed by this PR) | `server/search_strategy/.../cti/event_enrichment` | `@elastic/security-solution` catch-all (Investigations in practice) |
+
+- **Counterpoint noted:** Investigations could hide duplicates in the flyout by deduping on indicator value instead of doc `_id`. That only fixes what's visible. The 200-match cap per alert and the extra threat-search cost can only be fixed in rule execution.
+- **Inputs for the block-or-not decision:**
+  - #302120 lists the IM-rule part as non-blocking.
+  - Follow-up 2 confirmed this PR doesn't make IM-alert duplicates worse; they exist on `main` today.
+  - The PR is a customer-escalated fix targeting 9.5.6 / 9.6 / 9.7 backports, so blocking delays the customer fix too.
+
+**7. Checking the label contract across all `ti_*` transforms (2026-11-10)**
+
+Scanned every transform under `packages/ti_*/elasticsearch/transform/` on `elastic/integrations` main (69 transforms) for its transform-source label field file.
+
+- **Only two label names exist.** 53 transforms ship `is-ioc-transform-source-false.yml`, 12 ship `is-transform-source-false.yml`. No third variant. `IOC_TRANSFORM_SOURCE_QUERY` covers both.
+- **Four transforms have no label**, and none of them hold indicators: `ti_google_threat_intelligence` `rule`, `rule_ioc_st`, `rule_vuln`, and `ti_greynoise` `rule`. They copy IM alerts (tagged GreyNoise / Google Threat Intelligence) from `.alerts-security.alerts-*` into `logs-ti_*.enriched_ioc` indices. The PR leaves them alone: no label means they're kept both before and after.
+- **Aside (pre-existing, not this PR):** those `enriched_ioc` indices match `logs-ti_*`, so they may show up in the Overview per-feed counts as their own dataset. Not checked further.
+- Integrations never formally confirmed the contract, but [elastic/integrations#22249](https://github.com/elastic/integrations/pull/22249) is converging on `is_ioc_transform_source`, which points the same way.
+
+**8. Local repro + fix verification (2026-11-10)**
+
+Ran the seed + real ES transform path below on a clean CBES stack (`ES` `http://localhost:9203`, Kibana `http://localhost:5604/kbn`). Skipped Fleet/AbuseCH — no API key, and Docker→localhost ES routing was a dead end.
+
+- **Seed:** 2 raw docs into `logs-ti_repro.indicator` only (`constant_keyword` `labels.is_ioc_transform_source: "true"`), same sha256, `NOW` / `EARLIER` timestamps, then start transform `ti_repro_latest` into `logs-ti_repro_latest.indicator` (`"false"` via dest mapping).
+- **ES sanity:** label buckets `true: 2`, `false: 1`. Unfiltered indicator count **3**; PR `must_not` filter count **1**.
+- **UI on PR branch** (`kelvtanv/ti-latest-indicators` @ `5140ce0`): Intelligence → Indicators (Last 24 hours) showed **one** doc for that sha256.
+- **Historical data note:** raw + latest docs stay in ES; this PR only filters at read time. Labeled historical raw copies are hidden the same way as new ones. Already-written IM-alert enrichments are unchanged (#304179).
+- **Not re-checked on `main` in this pass** after the clean restart (same ES data would show 3). Earlier seed runs on `main` had already confirmed the duplicate table behaviour.
+
+Result: local repro matches the issue; fix behaviour matches the PR. Still doesn't cover IM rule enrichments.
+
+### Local manual test (reproduce on `main`, verify on the PR)
+
+Skip the PR’s Fleet/credentials path. Locally: **seed raw source docs only**, let an ES **latest** transform write the `"false"` copies (same dual-write shape as `ti_*` integrations). Then check Intelligence on `main` (dupes) vs the PR branch (deduped).
+
+**Need:** Kibana + ES (`elastic`/`changeme`). Set `ES` to your ES URL (this CBES run: `http://localhost:9203`).
+
+#### 1. Seed source + start transform
+
+Creates a raw index (`is_ioc_transform_source: "true"`), an empty latest dest (`"false"` via mapping), a latest transform, then indexes **only into the source**. Timestamps are generated for default “Last 24 hours”. Sync delay is `1s` (integrations use ~120s).
+
+```bash
+# --- config ---
+ES=http://localhost:9203          # your local ES
+AUTH=elastic:changeme
+# Fresh timestamps so Intelligence "Last 24 hours" picks these up
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+EARLIER=$(date -u -v-1H +"%Y-%m-%dT%H:%M:%S.000Z" 2>/dev/null || date -u -d '1 hour ago' +"%Y-%m-%dT%H:%M:%S.000Z")
+
+# --- cleanup any previous repro run (ok if these 404) ---
+curl -s -u "$AUTH" -X POST "$ES/_transform/ti_repro_latest/_stop?force=true&wait_for_completion=true" >/dev/null
+curl -s -u "$AUTH" -X DELETE "$ES/_transform/ti_repro_latest" >/dev/null
+curl -s -u "$AUTH" -X DELETE "$ES/logs-ti_repro.indicator,logs-ti_repro_latest.indicator" >/dev/null
+
+# --- create SOURCE index (raw copies) ---
+# constant_keyword "true" = every doc in this index is a raw transform source,
+# same as logs-ti_* data streams from integrations
+curl -s -u "$AUTH" -H 'Content-Type: application/json' -X PUT "$ES/logs-ti_repro.indicator" -d '{
+  "settings":{"number_of_shards":1,"number_of_replicas":0},
+  "mappings":{"properties":{
+    "@timestamp":{"type":"date"},
+    "event":{"properties":{
+      "category":{"type":"keyword"},"dataset":{"type":"keyword"},
+      "id":{"type":"keyword"},"type":{"type":"keyword"},"ingested":{"type":"date"}
+    }},
+    "labels":{"properties":{"is_ioc_transform_source":{"type":"constant_keyword","value":"true"}}},
+    "threat":{"properties":{"feed":{"properties":{"name":{"type":"keyword"}}},
+      "indicator":{"properties":{"type":{"type":"keyword"},"first_seen":{"type":"date"},
+        "file":{"properties":{"hash":{"properties":{"sha256":{"type":"keyword"}}}}}}}}}
+  }}
+}'
+
+# --- create DEST index (latest copies) — leave empty; transform writes here ---
+# constant_keyword "false" = docs landing here are the "active" latest copy
+curl -s -u "$AUTH" -H 'Content-Type: application/json' -X PUT "$ES/logs-ti_repro_latest.indicator" -d '{
+  "settings":{"number_of_shards":1,"number_of_replicas":0},
+  "mappings":{"properties":{
+    "@timestamp":{"type":"date"},
+    "event":{"properties":{
+      "category":{"type":"keyword"},"dataset":{"type":"keyword"},
+      "id":{"type":"keyword"},"type":{"type":"keyword"},"ingested":{"type":"date"}
+    }},
+    "labels":{"properties":{"is_ioc_transform_source":{"type":"constant_keyword","value":"false"}}},
+    "threat":{"properties":{"feed":{"properties":{"name":{"type":"keyword"}}},
+      "indicator":{"properties":{"type":{"type":"keyword"},"first_seen":{"type":"date"},
+        "file":{"properties":{"hash":{"properties":{"sha256":{"type":"keyword"}}}}}}}}}
+  }}
+}'
+
+# --- index SOURCE docs only (do this BEFORE starting the transform) ---
+# Two versions of the same indicator (same sha256), as if the feed re-ingested it.
+# Starting the transform on an empty source checkpoints "now" and skips these.
+curl -s -u "$AUTH" -H 'Content-Type: application/x-ndjson' -X POST "$ES/_bulk?refresh=wait_for" --data-binary @- <<EOF
+{"index":{"_index":"logs-ti_repro.indicator","_id":"raw-1"}}
+{"@timestamp":"$EARLIER","event":{"category":"threat","dataset":"ti_repro.indicator","id":"ioc-1","type":"indicator","ingested":"$EARLIER"},"threat":{"feed":{"name":"Repro Feed"},"indicator":{"type":"file","first_seen":"$EARLIER","file":{"hash":{"sha256":"5d1b6a2c0f3e4b7a9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b"}}}}}
+{"index":{"_index":"logs-ti_repro.indicator","_id":"raw-2"}}
+{"@timestamp":"$NOW","event":{"category":"threat","dataset":"ti_repro.indicator","id":"ioc-1","type":"indicator","ingested":"$NOW"},"threat":{"feed":{"name":"Repro Feed"},"indicator":{"type":"file","first_seen":"$EARLIER","file":{"hash":{"sha256":"5d1b6a2c0f3e4b7a9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b"}}}}}
+EOF
+
+# --- create + start the latest transform ---
+# Reads source, keeps one doc per sha256 (newest @timestamp), writes to dest.
+# Dest mapping stamps labels.is_ioc_transform_source:"false" on those docs.
+# frequency/delay are short for local; real packages use ~30s + 120s.
+curl -s -u "$AUTH" -H 'Content-Type: application/json' -X PUT "$ES/_transform/ti_repro_latest" -d '{
+  "source":{"index":["logs-ti_repro.indicator"]},
+  "dest":{"index":"logs-ti_repro_latest.indicator"},
+  "frequency":"5s",
+  "sync":{"time":{"field":"event.ingested","delay":"1s"}},
+  "latest":{"unique_key":["threat.indicator.file.hash.sha256"],"sort":"@timestamp"}
+}'
+curl -s -u "$AUTH" -X POST "$ES/_transform/ti_repro_latest/_start"
+
+# --- wait until the transform has written the latest copy ---
+for i in 1 2 3 4 5 6; do
+  LATEST=$(curl -s -u "$AUTH" "$ES/logs-ti_repro_latest.indicator/_count" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("count",0))')
+  echo "latest docs=$LATEST"
+  [ "$LATEST" -ge 1 ] && break
+  sleep 5
+done
+
+# --- sanity check: 2 raw (true) + 1 latest (false) ---
+curl -s -u "$AUTH" "$ES/logs-ti_repro*/_search?size=0" -H 'Content-Type: application/json' -d '{
+  "aggs":{"by_label":{"terms":{"field":"labels.is_ioc_transform_source"}}}
+}'
+# expect "true": 2, "false": 1
+```
+
+
+#### 2. Reproduce on `main`
+
+http://localhost:5604/kbn/app/security/threat_intelligence/indicators (Last 24 hours)
+
+- **Bug:** sha256 `5d1b6a2c…` appears **3 times** (2 raw + 1 latest). Table shows 3, not 1.
+
+#### 3. Verify on the PR branch
+
+Check out `kelvtanv/ti-latest-indicators`, restart Kibana (same ES).
+
+- **Fixed:** that sha256 appears **once** (latest only).
+
+Cleanup:
+
+```bash
+# stop + delete the transform, then delete both indices
+curl -s -u "$AUTH" -X POST "$ES/_transform/ti_repro_latest/_stop?force=true&wait_for_completion=true"
+curl -s -u "$AUTH" -X DELETE "$ES/_transform/ti_repro_latest"
+curl -s -u "$AUTH" -X DELETE "$ES/logs-ti_repro.indicator,logs-ti_repro_latest.indicator"
+```
+
+Does **not** cover indicator-match rule enrichments (#304179). Intelligence is enough for this PR.
