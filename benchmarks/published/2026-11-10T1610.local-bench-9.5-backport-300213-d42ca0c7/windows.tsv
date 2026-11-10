@@ -1,0 +1,15 @@
+step	scenario	from_utc	to_utc	notes
+A1	1	2026-11-10T16:10:50Z	2026-11-10T16:11:14Z	Import 1000disabled-rules.ndjson
+A2	3	2026-11-10T16:11:14Z	2026-11-10T16:11:24Z	bulk_action enable
+A3	2	2026-11-10T16:11:24Z	2026-11-10T16:11:45Z	Import 1000enabled-rules.ndjson
+A4	4	2026-11-10T16:11:45Z	2026-11-10T16:11:53Z	bulk_action edit add_tags=["bench"]
+A5	5	2026-11-10T16:12:14Z	2026-11-10T16:12:30Z	Import overwrite 1000enabled-rules.all-updated.ndjson
+A6	6	2026-11-10T16:12:50Z	2026-11-10T16:12:52Z	Import overwrite 1000enabled-rules.1-updated.ndjson
+A7	7	2026-11-10T16:13:13Z	2026-11-10T16:13:18Z	bulk_action disable
+A8	8	2026-11-10T16:13:18Z	2026-11-10T16:13:21Z	bulk_action delete (no gaps)
+B1	9	2026-11-10T16:13:27Z	2026-11-10T16:13:46Z	Import 1000enabled.rules+connector-email-smtp.ndjson
+B2	12	2026-11-10T16:13:46Z	2026-11-10T16:14:12Z	Import overwrite +2connectors-email-smtp-cases
+C1	10	2026-11-10T16:14:22Z	2026-11-10T16:14:41Z	Import 1000enabled.rules+20exceptionlists.ndjson (20 lists × 50 items)
+C2	11	2026-11-10T16:14:41Z	2026-11-10T16:15:30Z	Import overwrite +21exceptionlists (21 lists × 50 items)
+C3	13	2026-11-10T16:17:33Z	2026-11-10T16:17:39Z	bulk_action delete (with gaps)
+C4	14	2026-11-10T16:17:39Z	2026-11-10T16:18:21Z	Bulk delete 21 shared exception lists (TYPE=detection)

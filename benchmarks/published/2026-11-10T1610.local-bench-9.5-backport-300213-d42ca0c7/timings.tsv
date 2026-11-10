@@ -1,0 +1,15 @@
+step	scenario	label	http	seconds	rules_summary
+A1	1	localhost_5609_kbn-import	200	11.848767	{"created":1000,"updated":0,"skipped":0,"failed":0}
+A2	3	localhost_5609_kbn-enable	200	6.894736	
+A3	2	localhost_5609_kbn-import	200	6.868122	{"created":1000,"updated":0,"skipped":0,"failed":0}
+A4	4	localhost_5609_kbn-edit	200	7.478821	
+A5	5	localhost_5609_kbn-import	200	15.565819	{"created":0,"updated":1000,"skipped":0,"failed":0}
+A6	6	localhost_5609_kbn-import	200	2.319625	{"created":0,"updated":1,"skipped":999,"failed":0}
+A7	7	localhost_5609_kbn-disable	200	4.694969	
+A8	8	localhost_5609_kbn-delete	200	3.601749	
+B1	9	localhost_5609_kbn-import	200	8.853781	{"created":1000,"updated":0,"skipped":0,"failed":0}
+B2	12	localhost_5609_kbn-import	200	25.020793	{"created":0,"updated":1000,"skipped":0,"failed":0}
+C1	10	localhost_5609_kbn-import	200	8.712153	{"created":1000,"updated":0,"skipped":0,"failed":0}
+C2	11	localhost_5609_kbn-import	200	48.100592	{"created":0,"updated":1000,"skipped":0,"failed":0}
+C3	13	localhost_5609_kbn-delete	200	5.346335	
+C4	14	localhost_5609_	single	41.230573	21
