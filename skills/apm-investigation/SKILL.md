@@ -107,6 +107,15 @@ curl -sS -u "$APM_ES_USER:$APM_ES_PASSWORD" "${APM_ES_URL%/}/_cluster/health"
 `service.environment`; local may only have `service.environment` / `host.hostname`.
 Ask which filter fits if discovery returns nothing.
 
+**Localhost quirk:** on local Kibana, rule `_import` APM transactions often do
+not show as a clean request trace — spans get mixed with boot / long-lived
+transactions. Use cloud / ECH when you need a clean import waterfall.
+
+Local-only patches under `.knowledge/patches/` (kibana-* checkouts):
+
+- `2026-10-28.force-import-apm-txn.http_server.patch` — TEMP, do not commit;
+  forces a root APM txn for `rules/_import`
+
 ## Entry modes
 
 User already ran the op(s). Then pick one:
