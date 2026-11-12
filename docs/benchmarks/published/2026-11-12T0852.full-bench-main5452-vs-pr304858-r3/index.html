@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APM waterfalls — 2026-11-12T0852.full-bench-main5452-vs-pr304858-r3 main vs PR #304858</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f7f8fc;
+  --bg-hover: #eef3fc;
+  --text: #1d2a3e;
+  --muted: #5a6d8c;
+  --border: #e3e8f2;
+  --tag-bg: #e3e8f2;
+  --link: #0b64dd;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1628;
+    --bg-alt: #111c2e;
+    --bg-hover: #17253c;
+    --text: #dfe5ef;
+    --muted: #8e9fbc;
+    --border: #23314a;
+    --tag-bg: #23314a;
+    --link: #61a2ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+header { padding: 20px 24px 12px; border-bottom: 1px solid var(--border); }
+h1 { font-size: 18px; margin: 0 0 8px; font-weight: 600; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); }
+.meta a { color: var(--link); }
+.pill {
+  display: inline-flex; align-items: center;
+  padding: 0 7px; border-radius: 3px; font-size: 11px; line-height: 18px;
+  background: var(--tag-bg); color: var(--text); white-space: nowrap;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+main { padding: 16px 24px 32px; max-width: 1200px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+tr:hover td { background: var(--bg-hover); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.idx { color: var(--muted); width: 2.5em; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.note { margin-top: 16px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>APM waterfalls — main vs PR #304858 (scenarios #1–#5, r3)</h1>
+  <div class="meta">
+    <span class="pill mono">2026-11-12T0852</span>
+    <span class="pill mono">r3</span>
+    <span class="pill">main-at-545231e</span>
+    <span class="pill">sdesalas.pr.304858.skip-endpoint-authz</span>
+    <span>1,000 rules · 2 GB Kibana · monitoring <span class="mono">d7b1ce</span></span>
+    <a href="https://github.com/elastic/kibana/pull/304858">PR #304858</a>
+    <a href="https://github.com/sdesalas/kibana-knowledge/blob/main/benchmarks/published/2026-11-12T0852.full-bench-main5452-vs-pr304858-r3/SUMMARY.md">SUMMARY</a>
+  </div>
+</header>
+<main>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Scenario</th>
+        <th class="num">main APM</th>
+        <th class="num">main spans</th>
+        <th>main waterfall</th>
+        <th class="num">PR APM</th>
+        <th class="num">PR spans</th>
+        <th>PR waterfall</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="idx">1</td>
+        <td>Import → Create 1,000 disabled rules.</td>
+        <td class="num mono">14.2s</td>
+        <td class="num mono">1245</td>
+        <td><a href="apm/01-import-1000-disabled.main.html">01-import-1000-disabled.main.html</a></td>
+        <td class="num mono">13.4s</td>
+        <td class="num mono">245</td>
+        <td><a href="apm/01-import-1000-disabled.pr.html">01-import-1000-disabled.pr.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">2</td>
+        <td>Import → Create 1,000 enabled rules.</td>
+        <td class="num mono">15.9s</td>
+        <td class="num mono">3273</td>
+        <td><a href="apm/02-import-1000-enabled.main.html">02-import-1000-enabled.main.html</a></td>
+        <td class="num mono">15.4s</td>
+        <td class="num mono">2274</td>
+        <td><a href="apm/02-import-1000-enabled.pr.html">02-import-1000-enabled.pr.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">3</td>
+        <td>Enable 1,000 existing disabled rules.</td>
+        <td class="num mono">12.6s</td>
+        <td class="num mono">3104</td>
+        <td><a href="apm/03-enable-1000-disabled.main.html">03-enable-1000-disabled.main.html</a></td>
+        <td class="num mono">11.9s</td>
+        <td class="num mono">2102</td>
+        <td><a href="apm/03-enable-1000-disabled.pr.html">03-enable-1000-disabled.pr.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">4</td>
+        <td>Edit 1,000 enabled rules (add tag).</td>
+        <td class="num mono">20.0s</td>
+        <td class="num mono">3190</td>
+        <td><a href="apm/04-edit-1000-add-tag.main.html">04-edit-1000-add-tag.main.html</a></td>
+        <td class="num mono">19.8s</td>
+        <td class="num mono">2145</td>
+        <td><a href="apm/04-edit-1000-add-tag.pr.html">04-edit-1000-add-tag.pr.html</a></td>
+      </tr>
+      <tr>
+        <td class="idx">5</td>
+        <td>Import → Fully update 1,000 enabled rules.</td>
+        <td class="num mono">32.1s</td>
+        <td class="num mono">3739</td>
+        <td><a href="apm/05-import-full-update-1000-enabled.main.html">05-import-full-update-1000-enabled.main.html</a></td>
+        <td class="num mono">29.2s</td>
+        <td class="num mono">2713</td>
+        <td><a href="apm/05-import-full-update-1000-enabled.pr.html">05-import-full-update-1000-enabled.pr.html</a></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">Durations and span counts from the exported r3 transactions (main vs PR). Each waterfall is a static export of the matching monitoring transaction. Rows marked <span class="pill">incomplete</span> have fewer indexed span docs than <span class="mono">span_count.started</span> (not-indexed / orphans — see page banner).</p>
+</main>
+</body>
+</html>
