@@ -955,6 +955,11 @@ DEFAULT_NOTE = (
 )
 
 SIDE_ORDER = {"main": 0, "baseline": 1, "before": 2, "pr": 10, "after": 11}
+SIDE_LABEL = {"pr": "PR", "main": "main", "baseline": "baseline", "before": "before", "after": "after"}
+
+
+def side_label(side: str) -> str:
+    return SIDE_LABEL.get(side, side)
 
 
 def esc(s: str) -> str:
@@ -1107,9 +1112,10 @@ def render_single(rows: list[dict]) -> tuple[str, str]:
 def render_multi(rows: list[dict], sides: list[str]) -> tuple[str, str]:
     head_cells = ["        <th>#</th>", "        <th>Scenario</th>"]
     for side in sides:
-        head_cells.append(f'        <th class="num">{esc(side)} APM</th>')
-        head_cells.append(f'        <th class="num">{esc(side)} spans</th>')
-        head_cells.append(f"        <th>{esc(side)} waterfall</th>")
+        label = side_label(side)
+        head_cells.append(f'        <th class="num">{esc(label)} APM</th>')
+        head_cells.append(f'        <th class="num">{esc(label)} spans</th>')
+        head_cells.append(f"        <th>{esc(label)} waterfall</th>")
     thead = "      <tr>\n" + "\n".join(head_cells) + "\n      </tr>"
 
     body = []
