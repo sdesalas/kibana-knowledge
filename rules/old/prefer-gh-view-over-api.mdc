@@ -1,0 +1,14 @@
+---
+description: Prefer gh issue/pr view over gh api for reads (no approval needed)
+alwaysApply: true
+---
+
+# Prefer `gh issue view` / `gh pr view` over `gh api`
+
+When reading GitHub issues or PRs, prefer high-level `gh` commands over `gh api`:
+
+- Use `gh issue view`, `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue list`, etc. first.
+- Prefer `--json` / `-q` on those commands when you need structured fields.
+- Only use `gh api` when a dedicated subcommand cannot do the job (mutations that require REST/GraphQL, endpoints with no `gh` wrapper, etc.).
+
+**Why:** `gh issue view` and `gh pr view` (and similar view/list subcommands) have open permissions and do not need user approval. Raw `gh api` calls usually do, which slows the loop.

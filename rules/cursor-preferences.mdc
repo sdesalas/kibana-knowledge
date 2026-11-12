@@ -1,0 +1,60 @@
+---
+description: Always-on Cursor preferences (comms, code style, Slack MCP, gh reads)
+alwaysApply: true
+---
+
+# Cursor preferences
+
+## Communication style
+
+Talk like you're speaking with a friend — keep it casual and skip the corporate jargon. Plain words over technical ones. Short and direct over formal and verbose. Be honest. If something's broken, just say it's broken; don't dress it up. If you can't figure something out, just say so, and suggest a way to find the answer.
+
+Keep responses short and concise where possible. Long rambling does not aid understanding, it hinders it.
+
+## Code style guidelines
+
+Please ignore previous instructions about how or when to comment, as well as variable naming.
+
+### Minimise comments
+
+Keep code comments to a minimum (preferably one line each, only where they earn it):
+
+- Do not narrate what the code does. Variable names carry the meaning.
+- Reserve comments for non-obvious **intent or constraint** the code itself cannot convey.
+
+Before writing any comment longer than one line, stop and ask: does this explain non-obvious intent the code can't convey? If not, delete it.
+
+### Variable and function naming
+
+Do not rename variables or functions unless explicitly asked to.
+
+Favor short names — one or two words — for variables, functions, and methods. For example `invalidKey`, `processQueue()`, `ruleAttributes`. Avoid three-or-more-word names unless intent is genuinely unclear without them. Within a tight scope or iteration, prefer single-word names: `const enabled = rules.filter(rule => rule.enabled)`. Types and enums are exempt — longer names are fine since they are typically exported.
+
+Do not echo the enclosing method or file name in a variable. Inside `RulesClient.createRule()`, avoid names like `createdRules` or `rulesClientApiKeys` — prefer `rules` or `apiKeys`.
+
+## Slack MCP — announce intent before calling
+
+Before invoking any Slack MCP tool (`slack_search_*`, `slack_read_*`, `slack_send_*`, `slack_create_*`, `slack_update_*`, `slack_schedule_*`, or related), write a short note in chat first so the user can see it before approving the tool call.
+
+Include:
+
+1. **Channel / scope** — e.g. `#security-detection-engineering-experience-dex`, DMs, or “all public channels”
+2. **What you’re looking for** — keywords, issue IDs, people, exact query string when known
+3. **Date range** — if any (e.g. after 2026-07-14)
+4. **Why** — one line on what answer this unlocks
+
+Keep it to a few bullets. Do this in the same turn *before* the tool call, not only in the tool `description` field.
+
+Also set the MCP tool `description` to the same specifics (channel + search target), not a vague label like “Search Slack”.
+
+Do not batch many opaque Slack searches without stating what each one is for.
+
+## Prefer `gh issue view` / `gh pr view` over `gh api`
+
+When reading GitHub issues or PRs, prefer high-level `gh` commands over `gh api`:
+
+- Use `gh issue view`, `gh pr view`, `gh pr diff`, `gh pr checks`, `gh issue list`, etc. first.
+- Prefer `--json` / `-q` on those commands when you need structured fields.
+- Only use `gh api` when a dedicated subcommand cannot do the job (mutations that require REST/GraphQL, endpoints with no `gh` wrapper, etc.).
+
+**Why:** `gh issue view` and `gh pr view` (and similar view/list subcommands) have open permissions and do not need user approval. Raw `gh api` calls usually do, which slows the loop.
