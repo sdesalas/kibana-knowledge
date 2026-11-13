@@ -1,5 +1,6 @@
 .env
 .env.*
+.vscode/
 skip/
 handoff/private/
 reviews/docs-274337/
@@ -14,5 +15,6 @@ skills/model-explorer/
 demos/
 issues/
 telemetry/
+drafts/
+test-runs/
 __pycache__
-/drafts/
