@@ -1,0 +1,136 @@
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
+index a2515c815862..dec46e5fdd50 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/bulk_create_rules.ts
+@@ -284,6 +284,7 @@ async function runBatch<Params extends RuleParams>({
+   const errors: BulkOperationError[] = [];
+ 
+   // Phase B1: per-rule prepare (high latency validation + API key generation).
++  // HERE: pMap fan-out — each prepareRule repeats connector getBulk (#273680)
+   await withSpan({ name: 'bulkCreateRules.runBatch.pMap.prepareRule', type: 'rules' }, () =>
+     pMap(
+       batch,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts
+index bcbbfa80758e..fd735e9531e6 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_create/utils.ts
+@@ -53,7 +53,9 @@ export const prepareRule = async <Params extends RuleParams>({
+       request: context.request,
+     });
+ 
++    // HERE: per-rule validateActions → getBulk (#273680)
+     await validateActions(context, ruleType, data, allowMissingConnectorSecrets);
++    // HERE: per-rule system-action validate → getBulk again (#273680)
+     await validateAndAuthorizeSystemActions({
+       actionsClient,
+       actionsAuthorization: context.actionsAuthorization,
+@@ -89,6 +91,7 @@ export const prepareRule = async <Params extends RuleParams>({
+ 
+     const allActions = [...data.actions, ...(data.systemActions ?? [])];
+     const artifacts = data.artifacts ?? {};
++    // HERE: extractReferences → denormalizeActions → getBulk again (#273680)
+     const {
+       references,
+       params: updatedParams,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_edit/bulk_edit_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_edit/bulk_edit_rules.ts
+index 27fff07c6b2c..803b4581f615 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_edit/bulk_edit_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_edit/bulk_edit_rules.ts
+@@ -282,6 +282,7 @@ async function getUpdatedAttributesFromOperations<Params extends RuleParams>({
+           value: [...genActions, ...genSystemActions],
+         };
+ 
++        // HERE: per-rule system-action validate when editing actions (#273680)
+         await validateAndAuthorizeSystemActions({
+           actionsClient,
+           actionsAuthorization: context.actionsAuthorization,
+@@ -291,6 +292,7 @@ async function getUpdatedAttributesFromOperations<Params extends RuleParams>({
+         });
+ 
+         try {
++          // HERE: per-rule validateActions when operation.field === 'actions' (#273680)
+           await validateActions(context, ruleType, {
+             ...updatedRule,
+             actions: genActions,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts
+index 47d8b3c40508..08697b4df62f 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/bulk_update_rules.ts
+@@ -362,6 +362,7 @@ async function putAttempt<Params extends RuleParams>({
+   const invalidKeys: ApiKeyEntry[] = [];
+   const errors: BulkOperationError[] = [];
+ 
++  // HERE: pMap fan-out — each prepareUpdate repeats connector getBulk (#273680)
+   await withSpan(
+     {
+       name: 'bulkUpdateRules.putAttempt.pMap.prepareUpdate',
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts
+index c8d4f3bd0476..e2425218825b 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_update/utils.ts
+@@ -130,7 +130,9 @@ export const prepareUpdate = async <Params extends RuleParams>({
+       request: context.request,
+       previousParams: originalRule.params,
+     });
++    // HERE: per-rule validateActions → getBulk (#273680; same as bulkCreate)
+     await validateActions(context, ruleType, data, allowMissingConnectorSecrets);
++    // HERE: per-rule system-action validate → getBulk again (#273680)
+     await validateAndAuthorizeSystemActions({
+       actionsClient,
+       actionsAuthorization: context.actionsAuthorization,
+@@ -159,6 +161,7 @@ export const prepareUpdate = async <Params extends RuleParams>({
+ 
+     const allActions = [...data.actions, ...(data.systemActions ?? [])];
+     const artifacts = data.artifacts ?? {};
++    // HERE: extractReferences → denormalizeActions → getBulk again (#273680)
+     const {
+       references,
+       params: updatedParams,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/lib/validate_authorize_system_actions.ts b/x-pack/platform/plugins/shared/alerting/server/lib/validate_authorize_system_actions.ts
+index 9995869b6d9f..40f3b8341e9b 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/lib/validate_authorize_system_actions.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/lib/validate_authorize_system_actions.ts
+@@ -45,6 +45,7 @@ export const validateAndAuthorizeSystemActions = async ({
+ 
+   const actionIds: string[] = Array.from(systemActionCounts.keys());
+ 
++  // HERE: N× getBulk for system-action connectors during bulkCreate (#273680)
+   const actionResults = await actionsClient.getBulk({
+     ids: actionIds,
+     throwIfSystemAction: false,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/denormalize_actions.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/denormalize_actions.ts
+index 906fbc6b0f63..ebc31e5a6570 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/denormalize_actions.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/denormalize_actions.ts
+@@ -22,6 +22,7 @@ export async function denormalizeActions(
+   if (alertActions.length) {
+     const actionIds = [...new Set(alertActions.map((alertAction) => alertAction.id))];
+ 
++    // HERE: N× getBulk again just for action refs / actionTypeId (#273680)
+     const actionResults = await actionsClient.getBulk({
+       ids: actionIds,
+       throwIfSystemAction: false,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/extract_references.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/extract_references.ts
+index ae4322d912e0..16aac8ecd960 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/extract_references.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/extract_references.ts
+@@ -30,6 +30,7 @@ export async function extractReferences<
+   references: SavedObjectReference[];
+ }> {
+   const actionsClient = await context.getActionsClient();
++  // HERE: denormalizeActions → third getBulk for same connector IDs (#273680)
+   const { references: actionReferences, actions } = await denormalizeActions(
+     actionsClient,
+     ruleActions
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/validate_actions.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/validate_actions.ts
+index 38fbe19776a6..4dac8f3ba540 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/validate_actions.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/lib/validate_actions.ts
+@@ -54,6 +54,7 @@ export async function validateActions(
+   const actionsClient = await context.getActionsClient();
+   const actionIds = [...new Set(actions.map((action) => action.id))];
+ 
++  // HERE: N× getBulk of shared connector IDs during bulkCreate (#273680)
+   const actionResults =
+     (await actionsClient.getBulk({ ids: actionIds, throwIfSystemAction: false })) || [];
+ 
