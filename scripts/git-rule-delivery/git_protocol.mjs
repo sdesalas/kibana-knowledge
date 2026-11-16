@@ -1,9 +1,10 @@
 /*
- * Shared git wire protocol code (smart HTTP, protocol v2) for the POC scripts.
+ * Shared git wire protocol code (protocol v2, over HTTPS or SSH) for the POC scripts.
  *
  * Quick reminder of the moving parts:
  *   - pkt-line:  git's framing. 4 hex digits of length, then the payload.
- *   - commands:  POST <repo>/git-upload-pack with "command=ls-refs" or "command=fetch".
+ *   - commands:  "command=ls-refs" or "command=fetch". Over HTTPS each is a POST to
+ *                <repo>/git-upload-pack; over SSH it is written to a session running git-upload-pack.
  *   - packfile:  what "fetch" returns. A list of compressed git objects
  *                (commits, trees = directory listings, blobs = file contents).
  */
@@ -56,7 +57,7 @@ function* readPktLines(buffer) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP transport
+// Transports: HTTPS and SSH
 // ---------------------------------------------------------------------------
 
 const GIT_HEADERS = {

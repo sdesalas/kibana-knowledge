@@ -195,7 +195,7 @@ Done. ${written} files written to ${outDir}
 Peak memory seen:
   heap      ${mb(peak.heapUsed)}  (${heapVerdict} the ${mb(HEAP_TARGET)} target)
   buffers   ${mb(peak.arrayBuffers)}
-  rss       ${mb(peak.rss)}  (also counts Node itself and the setup of fetch())
+  rss       ${mb(peak.rss)}  (also counts Node itself)
   Peaks are sampled (every 10ms, plus after each batch), so a short spike in between can be missed.`);
 };
 

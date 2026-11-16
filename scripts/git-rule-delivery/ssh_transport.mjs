@@ -41,6 +41,10 @@ const CHANNEL_WINDOW = 2 * 1024 * 1024;
 const CHANNEL_MAX_PACKET = 32 * 1024;
 const MAX_PACKET_LENGTH = 256 * 1024;
 const IDLE_TIMEOUT_MS = 60_000;
+// Upper bound for one request (or the initial greeting). The idle timeout alone
+// is not enough: a server that sends a byte every few seconds would hold a
+// request open forever.
+const EXCHANGE_TIMEOUT_MS = 120_000;
 
 const MSG = {
   DISCONNECT: 1,
@@ -640,7 +644,7 @@ export const openSshSession = async ({ target, keyFile, knownHostsFile, acceptNe
       }
     };
 
-    const exchange = async (body) => {
+    const runExchange = async (body) => {
       const response = { chunks: [], stderr: '', done: false, track: createResponseTracker() };
       for (let offset = 0; body && offset < body.length; ) {
         while (remote.window === 0) handle(await stream.next(), response);
@@ -653,6 +657,20 @@ export const openSshSession = async ({ target, keyFile, knownHostsFile, acceptNe
       }
       while (!response.done) handle(await stream.next(), response);
       return Buffer.concat(response.chunks);
+    };
+
+    // Destroying the socket with an error rejects whatever the exchange is waiting on.
+    // The session is unusable afterwards, which is fine: a stalled server is a failed run.
+    const exchange = async (body) => {
+      const timer = setTimeout(
+        () => socket.destroy(new Error(`SSH request timed out after ${EXCHANGE_TIMEOUT_MS / 1000}s`)),
+        EXCHANGE_TIMEOUT_MS
+      );
+      try {
+        return await runExchange(body);
+      } finally {
+        clearTimeout(timer);
+      }
     };
 
     const advertisement = await exchange(null);

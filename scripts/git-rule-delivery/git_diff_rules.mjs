@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
  * POC: diff detection rules between two commits of a git repo, talking git's
- * wire protocol directly over HTTPS. No git binary, no clone, no disk cache.
+ * wire protocol directly over HTTPS or SSH. No git binary, no clone, no disk cache.
  *
  * Usage:
  *   node git_diff_rules.mjs <from> <to> [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]
@@ -11,11 +11,13 @@
  *   --out         where to write rule files (default: ./out next to this script)
  *   --repo        defaults to https://github.com/elastic/detection-rules
  *
- * How it works (git "smart HTTP", protocol v2; the protocol code itself lives
- * in git_protocol.mjs):
+ * How it works (git protocol v2; the protocol code itself lives in git_protocol.mjs,
+ * the SSH client in ssh_transport.mjs). The steps below name the HTTPS requests;
+ * over SSH the same commands go through one SSH session instead:
  *
  *   1. GET  <repo>/info/refs?service=git-upload-pack
- *        Handshake. The server lists the commands and features it supports.
+ *        Handshake (over SSH: the greeting the server sends on connect).
+ *        The server lists the commands and features it supports.
  *        We check it supports protocol v2 and the "filter" feature.
  *
  *   2. POST <repo>/git-upload-pack   command=ls-refs
@@ -38,7 +40,7 @@
  *        and drop it before asking for the next one. So only one rule file
  *        is in memory at any time.
  *
- * Requires Node 22+ (global fetch, import.meta.dirname). Written on Node 24.
+ * Requires Node 22+ (import.meta.dirname). Written on Node 24.
  */
 
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -86,7 +88,7 @@ const printMemory = () => {
   // maxRSS is the highest rss reached at any point, reported by Node in KB.
   console.log(`  Peak rss: ${mb(process.resourceUsage().maxRSS * 1024)}`);
   console.log('  heap + buffers = the script\'s own data. rss also counts Node itself');
-  console.log('  (see "start") and the one-off setup of fetch() (see "handshake").');
+  console.log('  (see "start").');
   if (!globalThis.gc) console.log('  Tip: run with --expose-gc for numbers without leftover garbage.');
 };
 

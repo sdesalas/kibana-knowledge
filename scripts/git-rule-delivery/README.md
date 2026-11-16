@@ -1,11 +1,11 @@
 # git-rule-delivery
 
-Proof-of-concept scripts that read detection rules straight from a git repository over git's own wire protocol, through HTTPS or SSH. They need no `git` binary, no `ssh` binary, no clone and no local cache. They were written to test whether Kibana could pull prebuilt rules from git instead of Fleet.
+Proof-of-concept scripts that read detection rules straight from a git repository over git's own wire protocol (HTTPS or SSH). They need no `git` binary, no clone and no local cache. They were written to test whether Kibana could pull prebuilt rules from git instead of Fleet.
 
 ## Requirements
 
 - Node 22 or newer (tested on Node 24). No `npm install`: only Node built-ins are used.
-- Network access to the repo. By default that's `https://github.com/elastic/detection-rules`. GitHub over HTTPS and SSH, and a local Gitea over HTTPS and SSH, have been tested (see [Self-hosted servers, TLS and SSH](#self-hosted-servers-tls-and-ssh)).
+- Network access to the repo (default `https://github.com/elastic/detection-rules`). For other servers and for SSH, see [HTTPS and SSH options](#https-and-ssh-options).
 
 ## Scripts
 
@@ -14,15 +14,15 @@ Proof-of-concept scripts that read detection rules straight from a git repositor
 | [`git_diff_rules.mjs`](#git_diff_rulesmjs) | Compares two commits and downloads only the rule files that changed (both sides of each edit) | 1 per changed file |
 | [`git_download_rules.mjs`](#git_download_rulesmjs) | Downloads every rule file as it was at one commit | ~1 per 100 files |
 | [`git_download_history.mjs`](#git_download_historymjs) | Downloads every version of every rule file from a date in the past up to now | ~1 per 100 versions |
-| `git_protocol.mjs` | Shared code the other three import: git protocol and HTTPS transport. Not run directly. | |
-| `ssh_transport.mjs` | SSH client written on `node:crypto`, used by `git_protocol.mjs` for `ssh://` and `git@host:path` repos. Not run directly. | |
+| `git_protocol.mjs` | Shared git protocol code and HTTPS transport. Not run directly. | |
+| `ssh_transport.mjs` | SSH client for `ssh://` repos. Not run directly. | |
 
 ## What they have in common
 
 - **Which files count as rules:** `*.toml` files under `rules/` and `rules_building_block/` (the `elastic/detection-rules` layout). Everything else in the repo is ignored.
 - **Output files** are named `<rule_id>_<commit sha>.toml`, where `rule_id` comes from the file itself. The content is the file exactly as it is in git.
 - **Commits** can be given as a full 40-character SHA or a branch name (`main`). Short SHAs don't work: the protocol only accepts full ids.
-- **Options:** `--repo <url>` points at another repo. `--out <dir>` sets the output folder, which defaults to `out/` next to the script. The HTTPS and SSH options are described under [Self-hosted servers, TLS and SSH](#self-hosted-servers-tls-and-ssh). The repo URL picks the transport.
+- **Options:** `--repo <url>` points at another repo. `--out <dir>` sets the output folder, which defaults to `out/` next to the script. See [HTTPS and SSH options](#https-and-ssh-options) for the connection flags.
 - **Memory report:** each script ends by printing memory use, split into:
   - `heap`: JavaScript objects;
   - `buffers`: raw bytes like downloaded data;
@@ -105,18 +105,18 @@ Downloading changed files one at a time into ./out
 Done.
   HTTP requests:        19
   Downloaded total:     313.0 KB
-    listing + diff:     271.2 KB in 1.0s
-    changed files:      41.8 KB in 3.3s
+    listing + diff:     271.1 KB in 0.9s
+    changed files:      41.8 KB in 3.2s
 
 Memory after each phase:
   phase                 heap   buffers       rss
-  start               5.2 MB    0.1 MB   51.6 MB
-  handshake           9.3 MB    0.3 MB   71.2 MB
-  listing + diff     10.3 MB    1.1 MB  107.9 MB
-  downloads          11.5 MB    1.6 MB  109.5 MB
-  Peak rss: 109.5 MB
+  start               7.5 MB    0.1 MB   57.0 MB
+  handshake           8.8 MB    0.1 MB   62.5 MB
+  listing + diff      9.3 MB    1.0 MB   74.5 MB
+  downloads           9.4 MB    1.4 MB   76.5 MB
+  Peak rss: 76.5 MB
   heap + buffers = the script's own data. rss also counts Node itself
-  (see "start") and the one-off setup of fetch() (see "handshake").
+  (see "start").
   Tip: run with --expose-gc for numbers without leftover garbage.
 ```
 
@@ -170,19 +170,19 @@ Downloading changed files one at a time into ./out
 
 Done.
   HTTP requests:        492
-  Downloaded total:     1803.5 KB
-    listing + diff:     269.0 KB in 1.2s
-    changed files:      1534.6 KB in 115.8s
+  Downloaded total:     1803.3 KB
+    listing + diff:     269.0 KB in 0.9s
+    changed files:      1534.3 KB in 99.7s
 
 Memory after each phase:
   phase                 heap   buffers       rss
-  start               5.2 MB    0.1 MB   51.4 MB
-  handshake           8.6 MB    0.3 MB   71.0 MB
-  listing + diff     10.3 MB    1.1 MB  108.5 MB
-  downloads          12.5 MB    2.7 MB  106.3 MB
-  Peak rss: 113.3 MB
+  start               7.5 MB    0.1 MB   57.0 MB
+  handshake           8.7 MB    0.1 MB   62.1 MB
+  listing + diff      9.3 MB    1.1 MB   74.3 MB
+  downloads          10.2 MB    7.0 MB   84.0 MB
+  Peak rss: 84.0 MB
   heap + buffers = the script's own data. rss also counts Node itself
-  (see "start") and the one-off setup of fetch() (see "handshake").
+  (see "start").
   Tip: run with --expose-gc for numbers without leftover garbage.
 ```
 
@@ -202,42 +202,42 @@ node git_download_rules.mjs <commit sha | branch> [--batch 100] [--out <dir>] [-
 
 ```sh
 $ node --max-old-space-size=50 git_download_rules.mjs 28a7a93c0eaa791e9548989c0c3ef3437cab8c07 --out ./out
-Start: heap   5.2 MB  buffers   0.1 MB  rss   51.2 MB
+Start: heap   7.5 MB  buffers   0.1 MB  rss   56.8 MB
 Repo: https://github.com/elastic/detection-rules
 Commit: 28a7a93c0eaa791e9548989c0c3ef3437cab8c07
 
 Listing rule files (directory listings only)...
   28a7a93c0eaa: 2485 rule files, pack 135.4 KB
-After listing: heap  11.2 MB  buffers   1.0 MB  rss  105.0 MB
+After listing: heap  10.2 MB  buffers   1.0 MB  rss   70.2 MB
 
 Cleared 0 old files from ./out
 Downloading 2485 files in 25 batches of up to 100...
 
-  batch  1/25   100 files  pack  142.7 KB  0.4s  heap   9.9 MB  buffers   1.8 MB  rss  107.4 MB
-  batch  2/25   100 files  pack  258.0 KB  0.9s  heap   9.6 MB  buffers   3.8 MB  rss  109.6 MB
-  batch  3/25   100 files  pack  241.5 KB  0.4s  heap  12.3 MB  buffers   6.4 MB  rss  110.5 MB
-  batch  4/25   100 files  pack  250.4 KB  0.4s  heap  12.2 MB  buffers   6.9 MB  rss  110.8 MB
-  batch  5/25   100 files  pack  279.0 KB  0.4s  heap  12.3 MB  buffers   8.4 MB  rss  111.2 MB
-  batch  6/25   100 files  pack  250.7 KB  0.3s  heap  11.9 MB  buffers   4.7 MB  rss  111.5 MB
-  batch  7/25   100 files  pack  277.9 KB  0.4s  heap  11.9 MB  buffers   6.8 MB  rss  111.8 MB
+  batch  1/25   100 files  pack  142.7 KB  0.3s  heap   8.9 MB  buffers   1.6 MB  rss   72.6 MB
+  batch  2/25   100 files  pack  258.0 KB  0.4s  heap  10.9 MB  buffers   4.1 MB  rss   76.1 MB
+  batch  3/25   100 files  pack  241.5 KB  0.4s  heap  10.0 MB  buffers   5.3 MB  rss   79.2 MB
+  batch  4/25   100 files  pack  250.4 KB  0.3s  heap  11.9 MB  buffers   7.7 MB  rss   82.1 MB
+  batch  5/25   100 files  pack  279.0 KB  0.3s  heap  10.3 MB  buffers   4.4 MB  rss   83.7 MB
+  batch  6/25   100 files  pack  250.7 KB  0.3s  heap   9.3 MB  buffers   5.5 MB  rss   85.3 MB
+  batch  7/25   100 files  pack  277.9 KB  0.4s  heap  11.4 MB  buffers   8.3 MB  rss   85.5 MB
   …
-  batch 19/25   100 files  pack  279.8 KB  0.4s  heap  10.7 MB  buffers   7.7 MB  rss  118.9 MB
-  batch 20/25   100 files  pack  329.3 KB  0.4s  heap  13.1 MB  buffers  11.5 MB  rss  118.9 MB
-  batch 21/25   100 files  pack  332.7 KB  0.4s  heap  11.2 MB  buffers   6.5 MB  rss  119.9 MB
-  batch 22/25   100 files  pack  318.6 KB  0.5s  heap  13.7 MB  buffers  10.1 MB  rss  119.9 MB
-  batch 23/25   100 files  pack  304.4 KB  0.4s  heap  10.0 MB  buffers   9.9 MB  rss  120.0 MB
-  batch 24/25   100 files  pack  250.7 KB  0.4s  heap  12.2 MB  buffers  12.8 MB  rss  120.1 MB
-  batch 25/25    85 files  pack   97.3 KB  0.4s  heap  10.4 MB  buffers   3.2 MB  rss  120.2 MB
+  batch 19/25   100 files  pack  279.8 KB  0.4s  heap   9.6 MB  buffers   5.7 MB  rss   88.2 MB
+  batch 20/25   100 files  pack  329.3 KB  0.4s  heap  11.5 MB  buffers   9.2 MB  rss   88.2 MB
+  batch 21/25   100 files  pack  332.7 KB  0.3s  heap   9.0 MB  buffers   6.1 MB  rss   88.9 MB
+  batch 22/25   100 files  pack  318.6 KB  0.4s  heap  11.1 MB  buffers   9.4 MB  rss   89.1 MB
+  batch 23/25   100 files  pack  304.4 KB  0.4s  heap  12.9 MB  buffers  12.6 MB  rss   93.0 MB
+  batch 24/25   100 files  pack  250.7 KB  0.3s  heap  14.7 MB  buffers  15.2 MB  rss   97.5 MB
+  batch 25/25    85 files  pack   97.3 KB  0.2s  heap  10.0 MB  buffers  11.0 MB  rss   97.8 MB
 
 Done. 2485 files written to ./out
   HTTP requests:     27
-  Downloaded total:  6470.0 KB
-  Time:              listing 0.8s, downloads 9.9s
+  Downloaded total:  6470.1 KB
+  Time:              listing 0.7s, downloads 8.6s
 
 Peak memory seen:
-  heap      16.5 MB  (under the 25.0 MB target)
-  buffers   12.8 MB
-  rss       120.2 MB  (also counts Node itself and the setup of fetch())
+  heap      14.7 MB  (under the 25.0 MB target)
+  buffers   15.2 MB
+  rss       97.8 MB  (also counts Node itself)
   Peaks are sampled (every 10ms, plus after each batch), so a short spike in between can be missed.
 ```
 
@@ -259,7 +259,7 @@ node git_download_history.mjs <YYYY-MM-DD> [--batch 100] [--branch main] [--out 
 
 ```sh
 $ node --max-old-space-size=50 git_download_history.mjs 2026-11-10 --out ./out
-Start: heap   5.3 MB  buffers   0.1 MB  rss   51.4 MB
+Start: heap   7.5 MB  buffers   0.1 MB  rss   57.4 MB
 Repo: https://github.com/elastic/detection-rules
 
 Fetching main history after 2026-11-11T00:00:00Z...
@@ -270,36 +270,36 @@ Fetching main history after 2026-11-11T00:00:00Z...
   11 commits in between on main (first-parent)
 
 2494 rule file versions: 2479 at the start point, 15 added or changed since
-After listing: heap   9.2 MB  buffers   2.0 MB  rss  110.6 MB
+After listing: heap  13.3 MB  buffers   1.8 MB  rss   78.0 MB
 
 Cleared 0 old files from ./out
 Downloading 2494 versions in 25 batches of up to 100...
 
-  batch  1/25   100 files  pack  142.7 KB  0.9s  heap  11.4 MB  buffers   3.5 MB  rss  111.3 MB
-  batch  2/25   100 files  pack  258.0 KB  0.4s  heap  11.4 MB  buffers   5.5 MB  rss  112.3 MB
-  batch  3/25   100 files  pack  241.7 KB  0.4s  heap  11.1 MB  buffers   4.6 MB  rss  112.8 MB
-  batch  4/25   100 files  pack  250.4 KB  0.3s  heap  10.6 MB  buffers   5.8 MB  rss  113.0 MB
-  batch  5/25   100 files  pack  279.0 KB  0.3s  heap  10.7 MB  buffers   7.4 MB  rss  113.6 MB
-  batch  6/25   100 files  pack  250.7 KB  0.4s  heap  13.4 MB  buffers  10.0 MB  rss  113.9 MB
-  batch  7/25   100 files  pack  277.9 KB  0.3s  heap  12.4 MB  buffers   5.0 MB  rss  114.3 MB
+  batch  1/25   100 files  pack  142.7 KB  0.2s  heap   9.6 MB  buffers   1.6 MB  rss   79.8 MB
+  batch  2/25   100 files  pack  258.0 KB  0.3s  heap  10.9 MB  buffers   4.1 MB  rss   82.5 MB
+  batch  3/25   100 files  pack  241.7 KB  0.3s  heap  10.0 MB  buffers   5.4 MB  rss   84.5 MB
+  batch  4/25   100 files  pack  250.4 KB  0.3s  heap  11.9 MB  buffers   7.7 MB  rss   86.9 MB
+  batch  5/25   100 files  pack  279.0 KB  0.3s  heap  10.5 MB  buffers   4.5 MB  rss   89.0 MB
+  batch  6/25   100 files  pack  250.7 KB  0.4s  heap   9.4 MB  buffers   5.5 MB  rss   90.1 MB
+  batch  7/25   100 files  pack  277.9 KB  0.3s  heap  11.3 MB  buffers   8.3 MB  rss   90.2 MB
   …
-  batch 19/25   100 files  pack  281.7 KB  0.4s  heap  11.2 MB  buffers   5.2 MB  rss  120.7 MB
-  batch 20/25   100 files  pack  324.5 KB  0.8s  heap  13.7 MB  buffers   8.9 MB  rss  120.7 MB
-  batch 21/25   100 files  pack  337.1 KB  0.4s  heap  10.3 MB  buffers   9.3 MB  rss  120.7 MB
-  batch 22/25   100 files  pack  321.0 KB  0.4s  heap  12.9 MB  buffers  13.0 MB  rss  120.9 MB
-  batch 23/25   100 files  pack  307.3 KB  0.3s  heap  11.4 MB  buffers   6.1 MB  rss  120.9 MB
-  batch 24/25   100 files  pack  236.2 KB  0.3s  heap  13.6 MB  buffers   8.7 MB  rss  120.9 MB
-  batch 25/25    94 files  pack  128.4 KB  0.3s  heap  15.4 MB  buffers  10.1 MB  rss  121.0 MB
+  batch 19/25   100 files  pack  281.7 KB  0.4s  heap   8.8 MB  buffers   4.8 MB  rss  100.8 MB
+  batch 20/25   100 files  pack  324.5 KB  0.8s  heap  10.8 MB  buffers   8.2 MB  rss  100.8 MB
+  batch 21/25   100 files  pack  337.1 KB  0.3s  heap  12.7 MB  buffers  11.8 MB  rss  101.2 MB
+  batch 22/25   100 files  pack  321.0 KB  0.4s  heap  14.6 MB  buffers  15.1 MB  rss  102.8 MB
+  batch 23/25   100 files  pack  307.3 KB  0.4s  heap  10.3 MB  buffers  13.0 MB  rss  102.8 MB
+  batch 24/25   100 files  pack  236.2 KB  0.3s  heap  12.0 MB  buffers  15.4 MB  rss  104.2 MB
+  batch 25/25    94 files  pack  128.4 KB  0.2s  heap  13.5 MB  buffers  16.7 MB  rss  104.4 MB
 
 Done. 2494 versions of 2488 rules written to ./out
   HTTP requests:     29
-  Downloaded total:  6638.6 KB
-  Time:              history + listing 1.6s, downloads 10.9s
+  Downloaded total:  6638.5 KB
+  Time:              history + listing 1.0s, downloads 8.8s
 
 Peak memory seen:
-  heap      17.1 MB
-  buffers   13.0 MB
-  rss       123.5 MB  (also counts Node itself and the setup of fetch())
+  heap      14.9 MB
+  buffers   16.7 MB
+  rss       107.8 MB  (also counts Node itself)
   Peaks are sampled (every 10ms, plus after each batch), so a short spike in between can be missed.
 ```
 
@@ -337,109 +337,107 @@ $ ls out | head -3
 
 ```sh
 $ node --max-old-space-size=50 git_download_history.mjs 2026-04-30 --out ./out
-Start: heap   5.3 MB  buffers   0.1 MB  rss   51.4 MB
+Start: heap   7.6 MB  buffers   0.1 MB  rss   57.0 MB
 Repo: https://github.com/elastic/detection-rules
 
 Fetching main history after 2026-05-01T00:00:00Z...
-  history pack 1451.2 KB, 3990 objects (commits + trees)
+  history pack 1450.4 KB, 3990 objects (commits + trees)
   start commit pack 109.8 KB
   start: eb32e7a2424dd9f597917bd7d7473f8c29dde6c1  2026-04-30T21:15:40Z  (last commit on or before 2026-04-30)
   end:   9398c9d4f51bcb2841253cca7ebcca325e9aea71  2026-11-16T14:51:48Z  (latest on main)
   722 commits in between on main (first-parent)
 
 8001 rule file versions: 1898 at the start point, 6103 added or changed since
-After listing: heap  21.3 MB  buffers   4.5 MB  rss  175.0 MB
+After listing: heap  20.6 MB  buffers  12.6 MB  rss  138.2 MB
 
 Cleared 0 old files from ./out
 Downloading 8001 versions in 81 batches of up to 100...
 
-  batch  1/81   100 files  pack  133.4 KB  0.5s  heap  25.1 MB  buffers   5.9 MB  rss  175.1 MB
-  batch  2/81   100 files  pack  246.0 KB  0.5s  heap  13.5 MB  buffers   3.7 MB  rss  175.0 MB
-  batch  3/81   100 files  pack  271.0 KB  0.5s  heap  16.1 MB  buffers   6.5 MB  rss  175.1 MB
-  batch  4/81   100 files  pack  259.1 KB  0.6s  heap  12.4 MB  buffers   4.8 MB  rss  175.1 MB
-  batch  5/81   100 files  pack  255.2 KB  0.6s  heap  15.2 MB  buffers   7.5 MB  rss  175.3 MB
-  batch  6/81   100 files  pack  224.6 KB  0.5s  heap  12.6 MB  buffers   4.4 MB  rss  175.1 MB
-  batch  7/81   100 files  pack  240.0 KB  0.6s  heap  15.1 MB  buffers   6.9 MB  rss  175.2 MB
+  batch  1/81   100 files  pack  133.4 KB  0.2s  heap  10.8 MB  buffers   1.5 MB  rss  138.3 MB
+  batch  2/81   100 files  pack  246.0 KB  0.4s  heap  12.7 MB  buffers   3.8 MB  rss  138.4 MB
+  batch  3/81   100 files  pack  271.0 KB  0.3s  heap  10.6 MB  buffers   4.3 MB  rss  138.6 MB
+  batch  4/81   100 files  pack  259.1 KB  0.3s  heap  12.4 MB  buffers   6.9 MB  rss  138.9 MB
+  batch  5/81   100 files  pack  255.2 KB  0.3s  heap  10.5 MB  buffers   4.4 MB  rss  139.0 MB
+  batch  6/81   100 files  pack  224.6 KB  0.3s  heap  12.3 MB  buffers   6.7 MB  rss  139.7 MB
+  batch  7/81   100 files  pack  240.0 KB  0.3s  heap  11.1 MB  buffers   4.1 MB  rss  139.8 MB
   …
-  batch 75/81   100 files  pack  256.0 KB  0.4s  heap  13.0 MB  buffers   2.9 MB  rss  177.2 MB
-  batch 76/81   100 files  pack  257.2 KB  0.4s  heap  12.9 MB  buffers   2.9 MB  rss  177.2 MB
-  batch 77/81   100 files  pack  260.6 KB  0.7s  heap  13.0 MB  buffers   3.0 MB  rss  177.2 MB
-  batch 78/81   100 files  pack  282.0 KB  0.4s  heap  13.0 MB  buffers   3.3 MB  rss  177.2 MB
-  batch 79/81   100 files  pack  281.8 KB  0.3s  heap  13.8 MB  buffers   5.3 MB  rss  177.2 MB
-  batch 80/81   100 files  pack  239.9 KB  0.4s  heap  12.9 MB  buffers   2.8 MB  rss  177.2 MB
-  batch 81/81     1 files  pack    2.8 KB  0.2s  heap  12.7 MB  buffers   2.1 MB  rss  177.5 MB
+  batch 75/81   100 files  pack  256.0 KB  0.3s  heap  12.9 MB  buffers   4.4 MB  rss  144.1 MB
+  batch 76/81   100 files  pack  257.2 KB  0.4s  heap  14.5 MB  buffers   6.9 MB  rss  144.1 MB
+  batch 77/81   100 files  pack  260.6 KB  0.3s  heap  13.0 MB  buffers   4.6 MB  rss  144.2 MB
+  batch 78/81   100 files  pack  282.0 KB  0.3s  heap  14.5 MB  buffers   7.5 MB  rss  144.2 MB
+  batch 79/81   100 files  pack  281.8 KB  0.3s  heap  13.0 MB  buffers   5.1 MB  rss  144.2 MB
+  batch 80/81   100 files  pack  239.9 KB  0.3s  heap  14.5 MB  buffers   7.5 MB  rss  144.2 MB
+  batch 81/81     1 files  pack    2.8 KB  0.2s  heap  12.5 MB  buffers   2.0 MB  rss  144.2 MB
 
 Done. 8001 versions of 2488 rules written to ./out
   HTTP requests:     85
-  Downloaded total:  22287.3 KB
-  Time:              history + listing 2.1s, downloads 30.6s
+  Downloaded total:  22286.8 KB
+  Time:              history + listing 1.9s, downloads 27.7s
 
 Peak memory seen:
-  heap      25.1 MB
-  buffers   17.7 MB
-  rss       183.4 MB  (also counts Node itself and the setup of fetch())
+  heap      23.2 MB
+  buffers   17.5 MB
+  rss       150.3 MB  (also counts Node itself)
   Peaks are sampled (every 10ms, plus after each batch), so a short spike in between can be missed.
 ```
 
-Compared with the one-week run, the history is 10× bigger (1.45 MB vs 150 KB) and there are about 3× more versions. Peak heap went from 17 to 25 MB and peak rss from 124 to 183 MB. Most of that is short-lived garbage from unpacking the history; once the listing is done, heap drops back to 12–16 MB per batch.
+Compared with the one-week run, the history is 10× bigger (1.45 MB vs 150 KB) and there are about 3× more versions. Peak heap went from 15 to 23 MB and peak rss from 108 to 150 MB. Most of that is short-lived garbage from unpacking the history; once the listing is done, heap drops back to 10–15 MB per batch.
 
 Bigger windows, for scale (all with `--max-old-space-size=50`, one run each; peaks vary between runs):
 
 | Since | Commits | Versions | Requests | Downloaded | Time | Peak heap | Peak rss |
 |---|---|---|---|---|---|---|---|
-| 2026-11-10 | 11 | 2,494 | 29 | 6.6 MB | ~13s | 17 MB | 124 MB |
-| 2026-04-30 | 722 | 8,001 | 85 | 22.3 MB | ~33s | 25 MB | 183 MB |
-| 2024-11-16 | 1,854 | 14,929 | 154 | 38.6 MB | ~59s | 27 MB | 240 MB |
+| 2026-11-10 | 11 | 2,494 | 29 | 6.6 MB | ~10s | 15 MB | 108 MB |
+| 2026-04-30 | 722 | 8,001 | 85 | 22.3 MB | ~30s | 23 MB | 150 MB |
+| 2024-11-16 | 1,854 | 14,929 | 154 | 38.6 MB | ~52s | 35 MB | 229 MB |
 
 ## Memory recap
 
-All runs with `--max-old-space-size=50`, one run each on macOS. Peaks vary between runs.
+Measured with `--max-old-space-size=50` on macOS (Node 24): the same runs as the examples above, plus the two-year history.
 
-| Example | Peak heap | Peak rss |
+| Example | Peak heap (MB) | Peak rss (MB) |
 |---|---|---|
-| `git_diff_rules.mjs`, 6 commits apart | 11.5 MB* | 110 MB |
-| `git_diff_rules.mjs`, 70 commits apart | 12.5 MB* | 113 MB |
-| `git_download_rules.mjs`, all rules at one commit | 16.5 MB | 120 MB |
-| `git_download_history.mjs`, 1 week | 17 MB | 124 MB |
-| `git_download_history.mjs`, 6 months | 25 MB | 183 MB |
-| `git_download_history.mjs`, 2 years | 27 MB | 240 MB |
+| `git_diff_rules.mjs`, 6 commits apart | 9* | 77 |
+| `git_diff_rules.mjs`, 70 commits apart | 10* | 84 |
+| `git_download_rules.mjs`, all rules at one commit | 15 | 98 |
+| `git_download_history.mjs`, 1 week | 15 | 108 |
+| `git_download_history.mjs`, 6 months | 23 | 150 |
+| `git_download_history.mjs`, 2 years | 35 | 229 |
+
+SSH gives similar numbers. Peaks vary between runs.
 
 \* `git_diff_rules.mjs` measures heap at the end of each phase rather than sampling peaks, so its real peak may be a little higher.
 
-None of them come close to the 50 MB cap. Most of the rss is Node itself and the setup of `fetch()`, about 70 MB before any work starts.
+## HTTPS and SSH options
 
-## Self-hosted servers, TLS and SSH
-
-The repo URL picks the transport: `https://…` (or `http://…`) uses HTTPS, `ssh://[user@]host[:port]/path` and the scp-like `[user@]host:path` use SSH. Both give the same results; only how the bytes travel differs.
+The repo URL picks the transport: `https://…` or `http://…` for HTTPS, `ssh://[user@]host[:port]/path` or `[user@]host:path` for SSH.
 
 ### HTTPS
 
-Requests go through `node:https`, so a server with a private CA or a self-signed certificate works without changing Node's global settings. All scripts take these optional flags:
-
 | Flag | What it does |
 |---|---|
-| `--ca <pem>` | Trust this certificate (or CA) **instead of** Node's built-in CA list. Fine for a private server, but it means `github.com` would no longer verify in the same run. |
-| `--cert <pem>` `--key <pem>` | Client certificate and key, for servers that require mutual TLS. |
-| `--insecure` | Skip server certificate verification (and, over SSH, host key verification). For testing only. |
+| `--ca <pem>` | Trust this certificate or CA instead of Node's built-in list (so `github.com` won't verify in the same run) |
+| `--cert <pem>` `--key <pem>` | Client certificate and key (mutual TLS) |
+| `--insecure` | Skip certificate verification, and SSH host key verification. Testing only |
 
-`http://` URLs also work. Redirects are not followed.
+Redirects are not followed.
 
 ### SSH
 
-`ssh_transport.mjs` is a minimal SSH 2 client with no dependencies, just enough to run `git-upload-pack` and keep one session open for all requests of a script run. Git protocol v2 is requested through the `GIT_PROTOCOL` variable, so the server has to accept it (sshd `AcceptEnv GIT_PROTOCOL`; GitHub and Gitea do).
+`ssh_transport.mjs` is a minimal SSH client written on `node:crypto`: just enough to run `git-upload-pack` and reuse one session for a whole run. The server must accept the `GIT_PROTOCOL` variable (sshd `AcceptEnv`) so protocol v2 can be used; GitHub and Gitea do.
 
 | Flag | What it does |
 |---|---|
-| `--ssh-key <file>` | Private key to log in with. Default `~/.ssh/id_ed25519`. Must be an **unencrypted ed25519 key in OpenSSH format**, which is what `ssh-keygen -t ed25519 -N ''` writes. |
-| `--known-hosts <file>` | Where server host keys are checked. Default `~/.ssh/known_hosts`. Plain and hashed entries and the `[host]:port` form work. |
-| `--accept-new-host` | Trust a host that isn't in the file yet and add it (like `StrictHostKeyChecking=accept-new`). A host whose key *changed* is always refused. |
-| `--insecure` | Skip host key verification. For testing only. |
+| `--ssh-key <file>` | Private key to log in with (default `~/.ssh/id_ed25519`). Must be an unencrypted ed25519 key in OpenSSH format, e.g. from `ssh-keygen -t ed25519 -N ''` |
+| `--known-hosts <file>` | Where host keys are checked (default `~/.ssh/known_hosts`) |
+| `--accept-new-host` | Trust and record a host that isn't in the file yet. A host whose key changed is always refused |
+| `--insecure` | Skip host key verification. Testing only |
 
-What's implemented: `curve25519-sha256` key exchange, `ssh-ed25519` host and user keys, `aes128-ctr` with `hmac-sha2-256`, one session channel with window handling. Both OpenSSH and GitHub offer all of these by default. What isn't: encrypted keys, RSA or ECDSA keys, ssh-agent, re-keying (a long-lived session that the server re-keys fails with a clear error), compression, the strict-kex extension, and `@revoked` / `@cert-authority` lines in `known_hosts` (they are skipped). The code is a compact reading of RFC 4253, 4252 and 4254; it has had no outside review, so treat it as a POC.
+Supported: `curve25519-sha256` key exchange, `ssh-ed25519` host and user keys, `aes128-ctr` with `hmac-sha2-256`. Not supported: encrypted keys, RSA/ECDSA keys, ssh-agent, re-keying, compression. It has not been security-reviewed; treat it as a POC.
 
 ### Local Gitea for testing
 
-[`gitea/setup.sh`](gitea/setup.sh) starts Gitea in Docker with HTTPS on `localhost:3443` and SSH on `localhost:2222`, creates the `poc` admin user and registers a new ed25519 key for it (`~/.ssh/gitea-poc/id_ed25519`). It expects a certificate and key at `~/.ssh/gitea-poc/cert.pem` and `key.pem` (override the folder with `CERT_DIR`), valid for `localhost` and `127.0.0.1`:
+[`gitea/setup.sh`](gitea/setup.sh) starts Gitea in Docker (HTTPS on `localhost:3443`, SSH on `localhost:2222`), creates a `poc` admin user and registers an ed25519 key for it. It needs docker, openssl, ssh-keygen and curl, and a certificate for `localhost` and `127.0.0.1` in `~/.ssh/gitea-poc/` (override with `CERT_DIR`):
 
 ```sh
 mkdir -m 700 ~/.ssh/gitea-poc && cd ~/.ssh/gitea-poc
@@ -460,29 +458,27 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 -config openssl.cnf -keyout 
 chmod 600 key.pem
 ```
 
-The container is recreated on every run (users and repos stay in the `gitea-poc-data` volume). If `poc/detection-rules` doesn't exist yet, the script prints how to have Gitea copy it from GitHub (a few minutes), or you can create an empty repo and push `main` from an existing clone:
+Run `gitea/setup.sh`. The SSH key and the generated admin password end up in the same folder, and users and repos persist in the `gitea-poc-data` Docker volume. Then add the rules repo: the script prints a command that makes Gitea copy it from GitHub, or you can create an empty `poc/detection-rules` repo and push `main` from a local clone:
 
 ```sh
 git -c http.sslCAInfo=$HOME/.ssh/gitea-poc/cert.pem push https://poc:<password>@localhost:3443/poc/detection-rules.git main:main
 ```
 
-The admin password is written to `~/.ssh/gitea-poc/admin_password`. Then point any script at it:
+Then point any script at it:
 
 ```sh
 node git_diff_rules.mjs <from> <to> --repo https://localhost:3443/poc/detection-rules --ca ~/.ssh/gitea-poc/cert.pem
 
-# the same repo over SSH (port 2222); --accept-new-host is only needed on the first run
+# over SSH; --accept-new-host is only needed on the first run
 node git_diff_rules.mjs <from> <to> --repo ssh://git@localhost:2222/poc/detection-rules.git \
   --ssh-key ~/.ssh/gitea-poc/id_ed25519 --known-hosts ~/.ssh/gitea-poc/known_hosts --accept-new-host
 ```
 
-Against this Gitea (git 2.54), all three scripts produced the same request counts and byte-identical rule files over HTTPS and over SSH, and the same as GitHub over HTTPS. The SSH client was also run against GitHub's SSH server (`git@github.com:<owner>/detection-rules.git`, a fork with the key registered on the account): key exchange, host key verification (the fingerprint matches `ssh-keyscan`) and login work, and `git_download_history.mjs` wrote the same files and manifest as the Gitea runs. Gitea reports `fetch=shallow wait-for-done filter`, and tree-only listings and blob-by-id fetches work without setting any `uploadpack.*` options (checked by unsetting `uploadpack.allowFilter` and `uploadpack.allowAnySHA1InWant` in the container's global git config).
-
-The memory numbers elsewhere in this README were measured when the scripts used `fetch()`.
+All three scripts return identical rule files from GitHub (HTTPS, SSH) and from this Gitea (HTTPS, SSH). Gitea needs no extra configuration for partial clone or fetching blobs by id.
 
 ## Limits
 
-- **Reads only.** Auth is limited to HTTPS client certificates and unencrypted ed25519 SSH keys. There are no tokens or passwords, and no pushing back to the repo.
+- **Reads only.** Auth is limited to HTTPS client certificates and ed25519 SSH keys. No tokens or passwords, and no pushing back to the repo.
 - **No retries.** A dropped connection fails the whole run (for example `Failed: socket hang up`). This happens now and then on long history downloads (hundreds of requests); just run it again.
 - **Only tested against GitHub and Gitea.** Other servers need git protocol v2 and must allow `filter` (partial clone) and fetching objects by id.
 - **`rule_id` is read with a simple text match,** not a TOML parser. It worked on every file in `elastic/detection-rules`, but it isn't a general TOML reader.
