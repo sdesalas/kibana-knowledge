@@ -4,7 +4,7 @@
  * the past and now, over git's wire protocol. No git binary, no clone.
  *
  * Usage:
- *   node git_download_history.mjs <YYYY-MM-DD> [--batch 100] [--branch main] [--out <dir>] [--repo <url>]
+ *   node git_download_history.mjs <YYYY-MM-DD> [--batch 100] [--branch main] [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]
  *
  *   The date is read as UTC. The start point is the last commit on the branch
  *   on or before the end of that day, i.e. what main looked like that evening.
@@ -43,6 +43,9 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   DEFAULT_REPO,
+  TRANSPORT_OPTIONS,
+  closeTransport,
+  configureTransport,
   fetchPack,
   getCapabilities,
   isRuleFile,
@@ -277,15 +280,17 @@ const main = async () => {
       branch: { type: 'string', default: 'main' },
       out: { type: 'string', default: join(import.meta.dirname, 'out') },
       repo: { type: 'string', default: DEFAULT_REPO },
+      ...TRANSPORT_OPTIONS,
     },
   });
   const batchSize = Number(values.batch);
   if (positionals.length !== 1 || !Number.isInteger(batchSize) || batchSize < 1) {
-    console.error('Usage: node git_download_history.mjs <YYYY-MM-DD> [--batch 100] [--branch main] [--out <dir>] [--repo <url>]');
+    console.error('Usage: node git_download_history.mjs <YYYY-MM-DD> [--batch 100] [--branch main] [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]');
     process.exit(1);
   }
   const sinceSeconds = endOfDay(positionals[0]);
   if (sinceSeconds * 1000 > Date.now()) throw new Error('The date must be in the past');
+  configureTransport(values);
   const repoUrl = values.repo.replace(/\/$/, '');
   const outDir = values.out;
   const startedAt = performance.now();
@@ -363,4 +368,4 @@ Peak memory seen:
 main().catch((error) => {
   console.error(`\nFailed: ${error.message}`);
   process.exit(1);
-});
+}).finally(closeTransport);

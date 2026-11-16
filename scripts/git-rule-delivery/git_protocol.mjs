@@ -10,6 +10,12 @@
 
 import { inflateSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { openSshSession, parseSshUrl } from './ssh_transport.mjs';
 
 export const DEFAULT_REPO = 'https://github.com/elastic/detection-rules';
 
@@ -58,11 +64,82 @@ const GIT_HEADERS = {
   'User-Agent': 'git/rule-delivery-poc',
 };
 
-const download = async (response) => {
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText}: ${await response.text()}`);
+/** Command line options every script accepts for HTTPS and SSH. Spread into parseArgs options. */
+export const TRANSPORT_OPTIONS = {
+  ca: { type: 'string' }, // HTTPS: PEM file to trust instead of Node's built-in CAs
+  cert: { type: 'string' }, // HTTPS: PEM client certificate (mutual TLS)
+  key: { type: 'string' }, // HTTPS: PEM private key for --cert
+  'ssh-key': { type: 'string' }, // SSH: unencrypted ed25519 private key (default ~/.ssh/id_ed25519)
+  'known-hosts': { type: 'string' }, // SSH: known_hosts file (default ~/.ssh/known_hosts)
+  'accept-new-host': { type: 'boolean' }, // SSH: trust and record an unknown host key
+  insecure: { type: 'boolean' }, // skip server certificate / host key verification
+};
+
+let httpsAgent = new HttpsAgent({ keepAlive: true });
+let sshOptions = {
+  keyFile: join(homedir(), '.ssh', 'id_ed25519'),
+  knownHostsFile: join(homedir(), '.ssh', 'known_hosts'),
+  acceptNewHost: false,
+  insecure: false,
+};
+const sshSessions = new Map(); // repo url -> open session
+
+/** Apply the transport options. Call once, before the first request. */
+export const configureTransport = (options = {}) => {
+  const { ca, cert, key, insecure } = options;
+  httpsAgent = new HttpsAgent({
+    keepAlive: true,
+    ca: ca ? readFileSync(ca) : undefined,
+    cert: cert ? readFileSync(cert) : undefined,
+    key: key ? readFileSync(key) : undefined,
+    rejectUnauthorized: !insecure,
+  });
+  sshOptions = {
+    keyFile: options['ssh-key'] ?? sshOptions.keyFile,
+    knownHostsFile: options['known-hosts'] ?? sshOptions.knownHostsFile,
+    acceptNewHost: Boolean(options['accept-new-host']),
+    insecure: Boolean(insecure),
+  };
+};
+
+/** Close any open SSH sessions. HTTPS needs nothing. Call when the script is done. */
+export const closeTransport = async () => {
+  await Promise.all([...sshSessions.values()].map((session) => session.close()));
+  sshSessions.clear();
+};
+
+const sshTargetOf = (repoUrl) => (/^https?:\/\//.test(repoUrl) ? null : parseSshUrl(repoUrl));
+
+const getSshSession = async (repoUrl, target) => {
+  const existing = sshSessions.get(repoUrl);
+  if (existing) return existing;
+  const session = await openSshSession({ target, ...sshOptions });
+  stats.requests += 1;
+  stats.bytesDownloaded += session.advertisement.length;
+  sshSessions.set(repoUrl, session);
+  return session;
+};
+
+const sendRequest = (url, { method = 'GET', headers, body } = {}) =>
+  new Promise((resolve, reject) => {
+    const isHttps = url.startsWith('https:');
+    const send = isHttps ? httpsRequest : httpRequest;
+    const request = send(url, { method, headers, agent: isHttps ? httpsAgent : undefined }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('error', reject);
+      response.on('end', () =>
+        resolve({ status: response.statusCode, statusText: response.statusMessage, body: Buffer.concat(chunks) })
+      );
+    });
+    request.on('error', reject);
+    request.end(body);
+  });
+
+const download = ({ status, statusText, body }) => {
+  if (status < 200 || status >= 300) {
+    throw new Error(`HTTP ${status} ${statusText}: ${body.toString()}`);
   }
-  const body = Buffer.from(await response.arrayBuffer());
   stats.requests += 1;
   stats.bytesDownloaded += body.length;
   return body;
@@ -70,15 +147,17 @@ const download = async (response) => {
 
 /** Handshake: returns the server's capability lines. Throws unless it speaks v2 with "filter". */
 export const getCapabilities = async (repoUrl) => {
-  const response = await fetch(`${repoUrl}/info/refs?service=git-upload-pack`, {
-    headers: GIT_HEADERS,
-  });
-  const lines = [...readPktLines(await download(response))]
+  const sshTarget = sshTargetOf(repoUrl);
+  const advertisement = sshTarget
+    ? (await getSshSession(repoUrl, sshTarget)).advertisement
+    : download(await sendRequest(`${repoUrl}/info/refs?service=git-upload-pack`, { headers: GIT_HEADERS }));
+  const lines = [...readPktLines(advertisement)]
     .filter((line) => line.kind === 'data')
     .map((line) => line.payload.toString().trim());
 
   if (!lines.includes('version 2')) {
-    throw new Error(`Server does not speak protocol v2. Got: ${lines.join(' | ')}`);
+    const hint = sshTarget ? ' (over SSH the server must accept the GIT_PROTOCOL variable, e.g. sshd AcceptEnv)' : '';
+    throw new Error(`Server does not speak protocol v2${hint}. Got: ${lines.join(' | ').slice(0, 200)}`);
   }
   const capabilities = lines.filter((line) => !line.startsWith('#') && line !== 'version 2');
   if (!capabilities.some((c) => c.startsWith('fetch=') && c.includes('filter'))) {
@@ -95,7 +174,15 @@ const runCommand = async (repoUrl, command, args) => {
     ...args.map((arg) => pktLine(`${arg}\n`)),
     FLUSH,
   ]);
-  const response = await fetch(`${repoUrl}/git-upload-pack`, {
+
+  const sshTarget = sshTargetOf(repoUrl);
+  if (sshTarget) {
+    const response = await (await getSshSession(repoUrl, sshTarget)).exchange(body);
+    stats.requests += 1;
+    stats.bytesDownloaded += response.length;
+    return response;
+  }
+  const response = await sendRequest(`${repoUrl}/git-upload-pack`, {
     method: 'POST',
     headers: {
       ...GIT_HEADERS,

@@ -4,7 +4,7 @@
  * protocol. No git binary, no clone.
  *
  * Usage:
- *   node git_download_rules.mjs <commit sha | branch> [--batch 100] [--out <dir>] [--repo <url>]
+ *   node git_download_rules.mjs <commit sha | branch> [--batch 100] [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]
  *
  * Steps:
  *   1. Handshake, and resolve a branch name to a SHA if needed.
@@ -27,6 +27,9 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   DEFAULT_REPO,
+  TRANSPORT_OPTIONS,
+  closeTransport,
+  configureTransport,
   fetchPack,
   getCapabilities,
   kb,
@@ -131,13 +134,15 @@ const main = async () => {
       batch: { type: 'string', default: '100' },
       out: { type: 'string', default: join(import.meta.dirname, 'out') },
       repo: { type: 'string', default: DEFAULT_REPO },
+      ...TRANSPORT_OPTIONS,
     },
   });
   const batchSize = Number(values.batch);
   if (positionals.length !== 1 || !Number.isInteger(batchSize) || batchSize < 1) {
-    console.error('Usage: node git_download_rules.mjs <commit sha | branch> [--batch 100] [--out <dir>] [--repo <url>]');
+    console.error('Usage: node git_download_rules.mjs <commit sha | branch> [--batch 100] [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]');
     process.exit(1);
   }
+  configureTransport(values);
   const repoUrl = values.repo.replace(/\/$/, '');
   const outDir = values.out;
   const startedAt = performance.now();
@@ -197,4 +202,4 @@ Peak memory seen:
 main().catch((error) => {
   console.error(`\nFailed: ${error.message}`);
   process.exit(1);
-});
+}).finally(closeTransport);

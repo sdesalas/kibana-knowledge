@@ -4,7 +4,7 @@
  * wire protocol directly over HTTPS. No git binary, no clone, no disk cache.
  *
  * Usage:
- *   node git_diff_rules.mjs <from> <to> [--out <dir>] [--repo <url>]
+ *   node git_diff_rules.mjs <from> <to> [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]
  *
  *   <from>, <to>  full 40-char commit SHAs, or a branch name like "main".
  *                 Short SHAs won't work: the protocol only accepts full ids.
@@ -46,6 +46,9 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   DEFAULT_REPO,
+  TRANSPORT_OPTIONS,
+  closeTransport,
+  configureTransport,
   fetchPack,
   getCapabilities,
   kb,
@@ -156,12 +159,14 @@ const main = async () => {
     options: {
       out: { type: 'string', default: join(import.meta.dirname, 'out') },
       repo: { type: 'string', default: DEFAULT_REPO },
+      ...TRANSPORT_OPTIONS,
     },
   });
   if (positionals.length !== 2) {
-    console.error('Usage: node git_diff_rules.mjs <from> <to> [--out <dir>] [--repo <url>]');
+    console.error('Usage: node git_diff_rules.mjs <from> <to> [--out <dir>] [--repo <url>] [--ca <pem>] [--cert <pem>] [--key <pem>] [--ssh-key <file>] [--known-hosts <file>] [--accept-new-host] [--insecure]');
     process.exit(1);
   }
+  configureTransport(values);
   const repoUrl = values.repo.replace(/\/$/, '');
   const outDir = values.out;
   const startedAt = performance.now();
@@ -234,4 +239,4 @@ Done.
 main().catch((error) => {
   console.error(`\nFailed: ${error.message}`);
   process.exit(1);
-});
+}).finally(closeTransport);

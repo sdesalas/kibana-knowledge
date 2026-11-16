@@ -1,11 +1,11 @@
 # git-rule-delivery
 
-Proof-of-concept scripts that read detection rules straight from a git repository over git's own HTTPS protocol. They need no `git` binary, no clone and no local cache. They were written to test whether Kibana could pull prebuilt rules from git instead of Fleet.
+Proof-of-concept scripts that read detection rules straight from a git repository over git's own wire protocol, through HTTPS or SSH. They need no `git` binary, no `ssh` binary, no clone and no local cache. They were written to test whether Kibana could pull prebuilt rules from git instead of Fleet.
 
 ## Requirements
 
 - Node 22 or newer (tested on Node 24). No `npm install`: only Node built-ins are used.
-- Network access to the repo. By default that's `https://github.com/elastic/detection-rules`. Only public GitHub repos have been tested; there's no auth support yet.
+- Network access to the repo. By default that's `https://github.com/elastic/detection-rules`. GitHub over HTTPS and SSH, and a local Gitea over HTTPS and SSH, have been tested (see [Self-hosted servers, TLS and SSH](#self-hosted-servers-tls-and-ssh)).
 
 ## Scripts
 
@@ -14,14 +14,15 @@ Proof-of-concept scripts that read detection rules straight from a git repositor
 | [`git_diff_rules.mjs`](#git_diff_rulesmjs) | Compares two commits and downloads only the rule files that changed (both sides of each edit) | 1 per changed file |
 | [`git_download_rules.mjs`](#git_download_rulesmjs) | Downloads every rule file as it was at one commit | ~1 per 100 files |
 | [`git_download_history.mjs`](#git_download_historymjs) | Downloads every version of every rule file from a date in the past up to now | ~1 per 100 versions |
-| `git_protocol.mjs` | Shared code the other three import. Not run directly. | |
+| `git_protocol.mjs` | Shared code the other three import: git protocol and HTTPS transport. Not run directly. | |
+| `ssh_transport.mjs` | SSH client written on `node:crypto`, used by `git_protocol.mjs` for `ssh://` and `git@host:path` repos. Not run directly. | |
 
 ## What they have in common
 
 - **Which files count as rules:** `*.toml` files under `rules/` and `rules_building_block/` (the `elastic/detection-rules` layout). Everything else in the repo is ignored.
 - **Output files** are named `<rule_id>_<commit sha>.toml`, where `rule_id` comes from the file itself. The content is the file exactly as it is in git.
 - **Commits** can be given as a full 40-character SHA or a branch name (`main`). Short SHAs don't work: the protocol only accepts full ids.
-- **Options:** `--repo <url>` points at another repo. `--out <dir>` sets the output folder, which defaults to `out/` next to the script.
+- **Options:** `--repo <url>` points at another repo. `--out <dir>` sets the output folder, which defaults to `out/` next to the script. The HTTPS and SSH options are described under [Self-hosted servers, TLS and SSH](#self-hosted-servers-tls-and-ssh). The repo URL picks the transport.
 - **Memory report:** each script ends by printing memory use, split into:
   - `heap`: JavaScript objects;
   - `buffers`: raw bytes like downloaded data;
@@ -407,10 +408,82 @@ All runs with `--max-old-space-size=50`, one run each on macOS. Peaks vary betwe
 
 None of them come close to the 50 MB cap. Most of the rss is Node itself and the setup of `fetch()`, about 70 MB before any work starts.
 
+## Self-hosted servers, TLS and SSH
+
+The repo URL picks the transport: `https://…` (or `http://…`) uses HTTPS, `ssh://[user@]host[:port]/path` and the scp-like `[user@]host:path` use SSH. Both give the same results; only how the bytes travel differs.
+
+### HTTPS
+
+Requests go through `node:https`, so a server with a private CA or a self-signed certificate works without changing Node's global settings. All scripts take these optional flags:
+
+| Flag | What it does |
+|---|---|
+| `--ca <pem>` | Trust this certificate (or CA) **instead of** Node's built-in CA list. Fine for a private server, but it means `github.com` would no longer verify in the same run. |
+| `--cert <pem>` `--key <pem>` | Client certificate and key, for servers that require mutual TLS. |
+| `--insecure` | Skip server certificate verification (and, over SSH, host key verification). For testing only. |
+
+`http://` URLs also work. Redirects are not followed.
+
+### SSH
+
+`ssh_transport.mjs` is a minimal SSH 2 client with no dependencies, just enough to run `git-upload-pack` and keep one session open for all requests of a script run. Git protocol v2 is requested through the `GIT_PROTOCOL` variable, so the server has to accept it (sshd `AcceptEnv GIT_PROTOCOL`; GitHub and Gitea do).
+
+| Flag | What it does |
+|---|---|
+| `--ssh-key <file>` | Private key to log in with. Default `~/.ssh/id_ed25519`. Must be an **unencrypted ed25519 key in OpenSSH format**, which is what `ssh-keygen -t ed25519 -N ''` writes. |
+| `--known-hosts <file>` | Where server host keys are checked. Default `~/.ssh/known_hosts`. Plain and hashed entries and the `[host]:port` form work. |
+| `--accept-new-host` | Trust a host that isn't in the file yet and add it (like `StrictHostKeyChecking=accept-new`). A host whose key *changed* is always refused. |
+| `--insecure` | Skip host key verification. For testing only. |
+
+What's implemented: `curve25519-sha256` key exchange, `ssh-ed25519` host and user keys, `aes128-ctr` with `hmac-sha2-256`, one session channel with window handling. Both OpenSSH and GitHub offer all of these by default. What isn't: encrypted keys, RSA or ECDSA keys, ssh-agent, re-keying (a long-lived session that the server re-keys fails with a clear error), compression, the strict-kex extension, and `@revoked` / `@cert-authority` lines in `known_hosts` (they are skipped). The code is a compact reading of RFC 4253, 4252 and 4254; it has had no outside review, so treat it as a POC.
+
+### Local Gitea for testing
+
+[`gitea/setup.sh`](gitea/setup.sh) starts Gitea in Docker with HTTPS on `localhost:3443` and SSH on `localhost:2222`, creates the `poc` admin user and registers a new ed25519 key for it (`~/.ssh/gitea-poc/id_ed25519`). It expects a certificate and key at `~/.ssh/gitea-poc/cert.pem` and `key.pem` (override the folder with `CERT_DIR`), valid for `localhost` and `127.0.0.1`:
+
+```sh
+mkdir -m 700 ~/.ssh/gitea-poc && cd ~/.ssh/gitea-poc
+cat > openssl.cnf <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = localhost
+[ext]
+subjectAltName = DNS:localhost, IP:127.0.0.1
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, digitalSignature, keyEncipherment, keyCertSign
+extendedKeyUsage = serverAuth
+EOF
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -config openssl.cnf -keyout key.pem -out cert.pem
+chmod 600 key.pem
+```
+
+The container is recreated on every run (users and repos stay in the `gitea-poc-data` volume). If `poc/detection-rules` doesn't exist yet, the script prints how to have Gitea copy it from GitHub (a few minutes), or you can create an empty repo and push `main` from an existing clone:
+
+```sh
+git -c http.sslCAInfo=$HOME/.ssh/gitea-poc/cert.pem push https://poc:<password>@localhost:3443/poc/detection-rules.git main:main
+```
+
+The admin password is written to `~/.ssh/gitea-poc/admin_password`. Then point any script at it:
+
+```sh
+node git_diff_rules.mjs <from> <to> --repo https://localhost:3443/poc/detection-rules --ca ~/.ssh/gitea-poc/cert.pem
+
+# the same repo over SSH (port 2222); --accept-new-host is only needed on the first run
+node git_diff_rules.mjs <from> <to> --repo ssh://git@localhost:2222/poc/detection-rules.git \
+  --ssh-key ~/.ssh/gitea-poc/id_ed25519 --known-hosts ~/.ssh/gitea-poc/known_hosts --accept-new-host
+```
+
+Against this Gitea (git 2.54), all three scripts produced the same request counts and byte-identical rule files over HTTPS and over SSH, and the same as GitHub over HTTPS. The SSH client was also run against GitHub's SSH server (`git@github.com:<owner>/detection-rules.git`, a fork with the key registered on the account): key exchange, host key verification (the fingerprint matches `ssh-keyscan`) and login work, and `git_download_history.mjs` wrote the same files and manifest as the Gitea runs. Gitea reports `fetch=shallow wait-for-done filter`, and tree-only listings and blob-by-id fetches work without setting any `uploadpack.*` options (checked by unsetting `uploadpack.allowFilter` and `uploadpack.allowAnySHA1InWant` in the container's global git config).
+
+The memory numbers elsewhere in this README were measured when the scripts used `fetch()`.
+
 ## Limits
 
-- **Reads only, public repos only.** There's no auth, and no pushing back to the repo.
-- **No retries.** A dropped connection fails the whole run with `Failed: fetch failed`. This happens now and then on long history downloads (hundreds of requests); just run it again.
-- **Only tested against GitHub.** Other servers need git protocol v2 and must allow `filter` (partial clone) and fetching objects by id.
+- **Reads only.** Auth is limited to HTTPS client certificates and unencrypted ed25519 SSH keys. There are no tokens or passwords, and no pushing back to the repo.
+- **No retries.** A dropped connection fails the whole run (for example `Failed: socket hang up`). This happens now and then on long history downloads (hundreds of requests); just run it again.
+- **Only tested against GitHub and Gitea.** Other servers need git protocol v2 and must allow `filter` (partial clone) and fetching objects by id.
 - **`rule_id` is read with a simple text match,** not a TOML parser. It worked on every file in `elastic/detection-rules`, but it isn't a general TOML reader.
 - **The `.toml` files are rule *source*, not what Kibana installs.** Rule `version`, `required_fields` and `related_integrations` are added by the detection-rules build. `elastic/integrations` holds the built JSON (`packages/security_detection_engine/kibana/security_rule/`), which may be a better source.
