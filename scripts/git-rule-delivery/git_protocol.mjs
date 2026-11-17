@@ -204,14 +204,26 @@ export const resolveCommit = async (repoUrl, refOrSha) => {
   if (/^[0-9a-f]{4,39}$/.test(refOrSha)) {
     throw new Error(`"${refOrSha}" looks like a short SHA. Pass the full 40-char SHA.`);
   }
-  const refName = `refs/heads/${refOrSha}`;
-  const response = await runCommand(repoUrl, 'ls-refs', [`ref-prefix ${refName}`]);
+  const candidates = [`refs/heads/${refOrSha}`, `refs/tags/${refOrSha}`];
+  const refs = await listRefs(repoUrl, candidates);
+  for (const candidate of candidates) {
+    const match = refs.find(({ name }) => name === candidate);
+    if (match) return match.sha;
+  }
+  throw new Error(`Branch or tag "${refOrSha}" not found`);
+};
+
+/** Refs whose name starts with one of `prefixes`, as [{ name, sha }]. Annotated tags resolve to their commit. */
+export const listRefs = async (repoUrl, prefixes) => {
+  const response = await runCommand(repoUrl, 'ls-refs', ['peel', ...prefixes.map((prefix) => `ref-prefix ${prefix}`)]);
+  const refs = [];
   for (const line of readPktLines(response)) {
     if (line.kind !== 'data') continue;
-    const [sha, name] = line.payload.toString().trim().split(' ');
-    if (name === refName) return sha;
+    const [sha, name, ...rest] = line.payload.toString().trim().split(' ');
+    const peeled = rest.find((attribute) => attribute.startsWith('peeled:'))?.slice('peeled:'.length);
+    refs.push({ name, sha: peeled ?? sha });
   }
-  throw new Error(`Branch "${refOrSha}" not found`);
+  return refs;
 };
 
 // ---------------------------------------------------------------------------
@@ -473,7 +485,7 @@ export const parseTree = (data) => {
 export const isRuleFile = (path) => path.endsWith('.toml') && RULE_DIRS.some((dir) => path.startsWith(dir));
 
 /** Map of { path -> blob id } for every rule file at `commitSha`. One request. */
-export const listRuleFiles = async (repoUrl, commitSha) => {
+export const listRuleFiles = async (repoUrl, commitSha, isMatch = isRuleFile) => {
   const pack = await fetchPack(repoUrl, [
     `want ${commitSha}`,
     'deepen 1', // just this commit, no history
@@ -490,7 +502,7 @@ export const listRuleFiles = async (repoUrl, commitSha) => {
     for (const { mode, name, id } of parseTree(objects.get(treeId).data)) {
       const path = prefix + name;
       if (mode === '40000') walk(id, `${path}/`);
-      else if (isRuleFile(path)) files.set(path, id);
+      else if (isMatch(path)) files.set(path, id);
     }
   };
   walk(rootTreeId, '');

@@ -14,14 +14,15 @@ Proof-of-concept scripts that read detection rules straight from a git repositor
 | [`git_diff_rules.mjs`](#git_diff_rulesmjs) | Compares two commits and downloads only the rule files that changed (both sides of each edit) | 1 per changed file |
 | [`git_download_rules.mjs`](#git_download_rulesmjs) | Downloads every rule file as it was at one commit | ~1 per 100 files |
 | [`git_download_history.mjs`](#git_download_historymjs) | Downloads every version of every rule file from a date in the past up to now | ~1 per 100 versions |
+| [`git_update_rule_library.mjs`](#git_update_rule_librarymjs) | Simulates the update from a [detection-rules-library](https://github.com/sdesalas/detection-rules-library) repo: finds the latest release tag, downloads every rule and writes it to an Elasticsearch index | ~1 per 100 files, plus 1 `_bulk` per 100 rules |
 | `git_protocol.mjs` | Shared git protocol code and HTTPS transport. Not run directly. | |
 | `ssh_transport.mjs` | SSH client for `ssh://` repos. Not run directly. | |
 
 ## What they have in common
 
-- **Which files count as rules:** `*.toml` files under `rules/` and `rules_building_block/` (the `elastic/detection-rules` layout). Everything else in the repo is ignored.
+- **Which files count as rules:** `*.toml` files under `rules/` and `rules_building_block/` (the `elastic/detection-rules` layout). Everything else in the repo is ignored. `git_update_rule_library.mjs` is the exception: it reads the library layout and writes to Elasticsearch, not to files (see its section).
 - **Output files** are named `<rule_id>_<commit sha>.toml`, where `rule_id` comes from the file itself. The content is the file exactly as it is in git.
-- **Commits** can be given as a full 40-character SHA or a branch name (`main`). Short SHAs don't work: the protocol only accepts full ids.
+- **Commits** can be given as a full 40-character SHA, a branch name (`main`) or a tag name (`main/v9.6.1`). Short SHAs don't work: the protocol only accepts full ids.
 - **Options:** `--repo <url>` points at another repo. `--out <dir>` sets the output folder, which defaults to `out/` next to the script. See [HTTPS and SSH options](#https-and-ssh-options) for the connection flags.
 - **Memory report:** each script ends by printing memory use, split into:
   - `heap`: JavaScript objects;
@@ -391,6 +392,35 @@ Bigger windows, for scale (all with `--max-old-space-size=50`, one run each; pea
 | 2026-04-30 | 722 | 8,001 | 85 | 22.3 MB | ~30s | 23 MB | 150 MB |
 | 2024-11-16 | 1,854 | 14,929 | 154 | 38.6 MB | ~52s | 35 MB | 229 MB |
 
+## git_update_rule_library.mjs
+
+Simulates the update of a rule library. It reads a [detection-rules-library](https://github.com/sdesalas/detection-rules-library) repo (one tag per package release, `<branch>/v<version>`; one JSON file per rule under `rules/<folder>/`) and writes to Elasticsearch instead of files.
+
+```bash
+ES_DEV_PORT=9203 node --max-old-space-size=50 git_update_rule_library.mjs \
+  --repo https://localhost:3443/poc/detection-rules-library --ca ~/.ssh/gitea-poc/cert.pem \
+  [--branch main] [--prerelease] [--batch 100] [--index security-rule-library] [--clean none|all] [--force]
+```
+
+1. **Latest release:** one `ls-refs` request for `refs/tags/<branch>/v*`, highest version first (semver order, so `v9.6.1` beats `v9.6.1-beta.1`). Betas only with `--prerelease`.
+2. **Up to date?** The index records the tag and commit it last loaded in its mapping `_meta`. If they match, the script stops there, unless `--force`.
+3. **Listing:** one request for the directory listings. Rule files are `.json` files in a folder under `rules/`; the package files at the root of `rules/` (`manifest.yml`, `changelog.yml`, ...) are skipped.
+4. **Batches:** one git request for the blobs of 100 files, parse each file, one `_bulk` request of 100 documents. Documents keep the file's `{ id, type, attributes }` shape, with `_id` `security-rule:<rule_id>_<version>` as for the `security-rule` saved object. The index mappings copy the saved object's (`dynamic: false`).
+5. **Checks:** indexed count equals the listing, no bulk errors, no duplicate `rule_id`, documents in the index.
+
+`--clean all` empties the index before writing. Elasticsearch settings come from `ES_URL` (default `http://localhost:${ES_DEV_PORT:-9200}`) and `ES_AUTH` (default `elastic:changeme`).
+
+### Example: simulated update, `main/v9.6.1`, 2,479 rules
+
+Local Elasticsearch 9.7.0-SNAPSHOT, `--max-old-space-size=50`, `--clean all --force`. Three runs each; the table shows the middle one.
+
+| Source | Git requests | Downloaded | ES requests | Total | Git fetch + unpack | Elasticsearch | Peak heap | Peak rss |
+|---|---|---|---|---|---|---|---|---|
+| Gitea (localhost) | 28 | 6.5 MB | 30 (18.5 MB sent) | 1.75s | 0.75s | 0.78s | 27 MB | 160 MB |
+| GitHub | 28 | 6.5 MB | 30 (18.5 MB sent) | 9.3s | 7.2s | 1.1s | 25 MB | 140 MB |
+
+Totals ranged 1.67 to 1.75s on Gitea and 8.9 to 10.9s on GitHub. Listing took 0.02s (Gitea) and 0.29s (GitHub), parsing 0.06 to 0.10s. When the index is already at the latest tag, a run costs 2 git requests (15 KB) and 1 Elasticsearch request: 0.03s on Gitea, 0.49s on GitHub.
+
 ## Memory recap
 
 Measured with `--max-old-space-size=50` on macOS (Node 24): the same runs as the examples above, plus the two-year history.
@@ -403,6 +433,7 @@ Measured with `--max-old-space-size=50` on macOS (Node 24): the same runs as the
 | `git_download_history.mjs`, 1 week | 15 | 108 |
 | `git_download_history.mjs`, 6 months | 23 | 150 |
 | `git_download_history.mjs`, 2 years | 35 | 229 |
+| `git_update_rule_library.mjs`, 2,479 rules into Elasticsearch | 27 | 160 |
 
 SSH gives similar numbers. Peaks vary between runs.
 
