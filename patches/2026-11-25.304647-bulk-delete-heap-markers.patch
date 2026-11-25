@@ -1,0 +1,365 @@
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_delete/bulk_delete_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_delete/bulk_delete_rules.ts
+index 1325995a2eed..83df0756f339 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_delete/bulk_delete_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_delete/bulk_delete_rules.ts
+@@ -57,13 +57,16 @@ export const bulkDeleteRules = async <Params extends RuleParams>(
+   const actionsClient = await context.getActionsClient();
+   const ignoreInternalRuleTypes = options.ignoreInternalRuleTypes ?? true;
+ 
++  // [#304647] ids become one KQL should-clause each, hence the 1000 cap
+   const kueryNodeFilter = ids ? convertRuleIdsToKueryNode(ids) : buildKueryNodeFilter(filter);
+ 
++  // [#304647] Adds the DELETE authorization filter and excludes internal rule types
+   const { searchFilterWithAuth, searchFilterWithoutAuth } = await buildSearchFilters(context, {
+     kueryNodeFilter,
+     ignoreInternalRuleTypes,
+   });
+ 
++  // [#304647] Count query that checks DELETE authorization for all matched rules
+   const { total } = await checkAuthorizationAndGetTotal(context, {
+     filter: searchFilterWithAuth,
+     baseFilter: searchFilterWithoutAuth,
+@@ -73,6 +76,7 @@ export const bulkDeleteRules = async <Params extends RuleParams>(
+   const { rules, errors, accListSpecificForBulkOperation } = await withSpan(
+     { name: 'retryIfBulkOperationConflicts', type: 'rules' },
+     () =>
++      // [#304647] Runs bulkDeleteWithOCC, re-runs for 409 conflicts, and merges rules/errors across passes
+       retryIfBulkOperationConflicts({
+         action: 'DELETE',
+         logger: context.logger,
+@@ -90,16 +94,19 @@ export const bulkDeleteRules = async <Params extends RuleParams>(
+   const [apiKeysToInvalidate, taskIdsToDelete] = accListSpecificForBulkOperation;
+ 
+   const [result] = await Promise.allSettled([
++    // [#304647] Removes the scheduled tasks of the deleted rules
+     tryToRemoveTasks({
+       taskIdsToDelete,
+       logger: context.logger,
+       taskManager: context.taskManager,
+     }),
++    // [#304647] Deletes manual-run backfills of the deleted rules
+     context.backfillClient.deleteBackfillForRules({
+       ruleIds: rules.map(({ id }) => id),
+       namespace: context.namespace,
+       unsecuredSavedObjectsClient: context.unsecuredSavedObjectsClient,
+     }),
++    // [#304647] Queues the rules' API keys for invalidation (encrypted SO bulkCreate)
+     bulkMarkApiKeysForInvalidation(
+       {
+         apiKeys: apiKeysToInvalidate,
+@@ -117,6 +124,7 @@ export const bulkDeleteRules = async <Params extends RuleParams>(
+         // fix the type cast from SavedObjectsBulkUpdateObject to SavedObjectsBulkUpdateObject
+         // when we are doing the bulk delete and this should fix itself
+         const ruleType = context.ruleTypeRegistry.get(attributes.alertTypeId!);
++        // [#304647] Decrypted SO to domain object: a second copy of each rule in the chunk
+         const ruleDomain = transformRuleAttributesToRuleDomain<Params>(
+           attributes as RawRule,
+           {
+@@ -129,6 +137,7 @@ export const bulkDeleteRules = async <Params extends RuleParams>(
+         );
+ 
+         try {
++          // [#304647] Result is discarded, failure only logs a warning (#302840: ~0.5s event-loop block per 1000 rules)
+           ruleDomainSchema.validate(ruleDomain);
+         } catch (e) {
+           context.logger.warn(
+@@ -141,6 +150,7 @@ export const bulkDeleteRules = async <Params extends RuleParams>(
+ 
+   // // TODO (http-versioning): This should be of type Rule, change this when all rule types are fixed
+   const deletedPublicRules = deletedRules.map((rule: RuleDomain<Params>) => {
++    // [#304647] Domain to public rule: the third copy, and the one returned (and retained) upstream
+     return transformRuleDomainToRule<Params>(rule);
+   }) as Array<SanitizedRule<Params>>;
+ 
+@@ -191,6 +201,7 @@ const bulkDeleteWithOCC = async (
+     changeTracking,
+   }: { filter: KueryNode | null; changeTracking: RuleChangeTracking<never> }
+ ) => {
++  // [#304647] PIT finder that decrypts as the internal user (apiKey included), 100 rules per page
+   const rulesFinder = await withSpan(
+     {
+       name: 'encryptedSavedObjectsClient.createPointInTimeFinderDecryptedAsInternalUser',
+@@ -215,8 +226,10 @@ const bulkDeleteWithOCC = async (
+   await withSpan(
+     { name: 'Get rules, collect them and their attributes', type: 'rules' },
+     async () => {
++      // [#304647] Pages through every rule of the chunk; pages are kept (see rulesToDelete.push below)
+       for await (const response of rulesFinder.find()) {
+         // the deleted rules are returned with their legacy actions
++        // [#304647] Looks up and migrates legacy SIEM sidecar actions for this page
+         const migratedIds = await bulkMigrateLegacyActions({
+           context,
+           rules: response.saved_objects,
+@@ -239,8 +252,10 @@ const bulkDeleteWithOCC = async (
+           if (rule.attributes.scheduledTaskId) {
+             taskIdToRuleIdMapping[rule.id] = rule.attributes.scheduledTaskId;
+           }
++          // [#304647] Every loaded SO of the chunk stays in memory until the chunk finishes
+           rulesToDelete.push(rule);
+ 
++          // [#304647] One audit event per rule
+           context.auditLogger?.log(
+             ruleAuditEvent({
+               action: RuleAuditAction.DELETE,
+@@ -259,12 +274,14 @@ const bulkDeleteWithOCC = async (
+   );
+ 
+   for (const { id, attributes } of rulesToDelete) {
++    // [#304647] Serial, one task manager get per rule with a task (#264895)
+     await untrackRuleAlerts(context, id, attributes as RawRule);
+   }
+ 
+   const result = await withSpan(
+     { name: 'unsecuredSavedObjectsClient.bulkDelete', type: 'rules' },
+     () =>
++      // [#304647] One SO bulkDelete for the chunk (core also fires an _update_by_query per rule, #141136)
+       bulkDeleteRulesSo({
+         savedObjectsClient: context.unsecuredSavedObjectsClient,
+         ids: rulesToDelete.map(({ id }) => id),
+@@ -303,6 +320,7 @@ const bulkDeleteWithOCC = async (
+   const rules = rulesToDelete.filter((rule) => deletedRuleIds.includes(rule.id));
+ 
+   // Legacy actions are deleted only once the rules are deleted
++  // [#304647] Removes the legacy sidecar action SOs that were migrated above
+   await deleteLegacyActionsForRules(
+     context,
+     deletedRuleIds.filter((id) => migratedRuleIds.has(id))
+@@ -311,6 +329,7 @@ const bulkDeleteWithOCC = async (
+   if (deletedRuleIds.length > 0) {
+     try {
+       const eventLogClient = await context.getEventLogClient();
++      // [#304647] Soft-deletes the event log gaps of the deleted rules
+       await softDeleteGapsByQuery({
+         ruleIds: deletedRuleIds,
+         eventLogClient,
+@@ -326,6 +345,7 @@ const bulkDeleteWithOCC = async (
+     }
+   }
+ 
++  // [#304647] Builds a domain object and a snapshot per rule, then bulk-writes change history (on by default)
+   await logRuleChanges({
+     ruleSOs: rules,
+     rulesClientContext: context,
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/common/retry_if_bulk_operation_conflicts.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/common/retry_if_bulk_operation_conflicts.ts
+index 8e36ef10f5fd..4d159e1c8335 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/common/retry_if_bulk_operation_conflicts.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/common/retry_if_bulk_operation_conflicts.ts
+@@ -67,6 +67,7 @@ const handler = async ({
+   retries?: number;
+ }): Promise<BulkOperationResult> => {
+   try {
++    // [#304647] First pass runs for the whole chunk filter; later passes only for ids that got a 409
+     const {
+       errors: currentErrors,
+       rules: currentRules,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_actions_response.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_actions_response.ts
+index 52d3f85c3c92..4e5f684bbe9e 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_actions_response.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_actions_response.ts
+@@ -25,6 +25,7 @@ import { BulkActionTypeEnum } from '../../../../../../../common/api/detection_en
+ import type { PromisePoolError } from '../../../../../../utils/promise_pool';
+ import type { RuleAlertType } from '../../../../rule_schema';
+ import type { DryRunError } from '../../../logic/bulk_actions/dry_run';
++import { heapMark } from '../../../logic/heap_mark';
+ import { internalRuleToAPIResponse } from '../../../logic/detection_rules_client/converters/internal_rule_to_api_response';
+ 
+ const MAX_ERROR_MESSAGE_LENGTH = 1000;
+@@ -77,10 +78,13 @@ export const buildBulkResponse = (
+     : {
+         updated: updated.map((rule) => internalRuleToAPIResponse(rule)),
+         created: created.map((rule) => internalRuleToAPIResponse(rule)),
++        // [#304647] Full API-shaped copy of every deleted rule, alive until the response body is serialised
+         deleted: deleted.map((rule) => internalRuleToAPIResponse(rule)),
+         skipped,
+       };
+ 
++  if (deleted.length > 0) heapMark('5-API copy built');
++
+   if (numFailed > 0) {
+     let message = summary.succeeded > 0 ? 'Bulk edit partially failed' : 'Bulk edit failed';
+     if (bulkAction === BulkActionTypeEnum.run) {
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts
+index 833bceca802e..ae930e60059b 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts
+@@ -52,6 +52,7 @@ export const fetchRulesByQueryOrIds = async ({
+       if (ids) {
+         const fallbackErrorMessage = 'Error resolving the rule';
+         try {
++          // [#304647] ids path (max 1000): loads the full rules by id
+           const { rules, errors } = await rulesClient.bulkGetRules({ ids });
+           return {
+             results: rules.map((rule) => ({
+@@ -106,6 +107,7 @@ export const fetchRulesByQueryOrIds = async ({
+         }
+       }
+ 
++      // [#304647] query path: one find with perPage = maxRules (10K), so ES response, SOs and rules are all in memory at once
+       const { data, total } = await findRules({
+         rulesClient,
+         perPage: maxRules,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts
+index 9974b4e9627a..1edbad57bd3d 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts
+@@ -6,6 +6,7 @@
+  */
+ 
+ import { partition } from 'lodash';
++import { getHeapStatistics } from 'v8';
+ import type { IKibanaResponse, Logger } from '@kbn/core/server';
+ import type { ExceptionListClient } from '@kbn/lists-plugin/server';
+ import { ExceptionListTypeEnum } from '@kbn/securitysolution-io-ts-list-types';
+@@ -18,6 +19,7 @@ import type {
+   GapReasonType,
+ } from '@kbn/alerting-plugin/common';
+ import { RULES_API_ALL, RULES_API_READ } from '@kbn/security-solution-features/constants';
++import { heapMark } from '../../../logic/heap_mark';
+ import { SecurityRuleChangeTrackingAction } from '../../../../../../../common/detection_engine/rule_management/rule_change_tracking';
+ import { validateRuleResponseActions } from '../../../../../../endpoint/services';
+ import { transformAlertToRuleResponseAction } from '../../../../../../../common/detection_engine/transform_actions';
+@@ -69,6 +71,33 @@ const MAX_RULES_IDS_FOR_BULK_ACTION = 1000;
+ const MAX_RULES_TO_BULK_EDIT = 2000;
+ const MAX_ROUTE_CONCURRENCY = 5;
+ 
++const HEAP_MB = 1024 * 1024;
++
++// [#304647] TEMP: logs heap every 100ms until stopped, then the peak (a blocked event loop delays ticks)
++const startHeapSampler = (logger: Logger): (() => void) => {
++  const startedAt = Date.now();
++  let peak = 0;
++  logger.warn(
++    `[#304647] heap sampler on, limit=${Math.round(
++      getHeapStatistics().heap_size_limit / HEAP_MB
++    )}MB used=${Math.round(process.memoryUsage().heapUsed / HEAP_MB)}MB`
++  );
++  const timer = setInterval(() => {
++    const { heapUsed, heapTotal, rss } = process.memoryUsage();
++    peak = Math.max(peak, heapUsed);
++    logger.warn(
++      `[#304647] heap t=${Date.now() - startedAt}ms used=${Math.round(
++        heapUsed / HEAP_MB
++      )}MB total=${Math.round(heapTotal / HEAP_MB)}MB rss=${Math.round(rss / HEAP_MB)}MB`
++    );
++  }, 100);
++  return () => {
++    clearInterval(timer);
++    heapMark('6-request completed');
++    logger.warn(`[#304647] heap peak used=${Math.round(peak / HEAP_MB)}MB`);
++  };
++};
++
+ interface ValidationError {
+   body: string;
+   statusCode: number;
+@@ -256,6 +285,12 @@ export const performBulkActionRoute = (
+           const logger = ctx.securitySolution.getLogger();
+           const analytics = ctx.securitySolution.getAnalytics();
+ 
++          // [#304647] TEMP: sample heap until the request completes or aborts
++          if (body.action === BulkActionTypeEnum.delete) {
++            heapMark('1-request start');
++            request.events.completed$.subscribe(startHeapSampler(logger));
++          }
++
+           const { getExporter, getClient } = ctx.core.savedObjects;
+           const client = getClient({ includedHiddenTypes: ['action'] });
+ 
+@@ -274,6 +309,7 @@ export const performBulkActionRoute = (
+             gapsRangeStart: body.gaps_range_start,
+             gapsRangeEnd: body.gaps_range_end,
+           });
++          // [#304647] Loads ALL matched rules in full (up to 10K) and keeps them for the whole request
+           const fetchRulesOutcome = await fetchRulesByQueryOrIds({
+             rulesClient,
+             query,
+@@ -287,6 +323,7 @@ export const performBulkActionRoute = (
+             schedulerId: body.gap_auto_fill_scheduler_id,
+           });
+ 
++          // [#304647] Array of references to the same fetched rules, so none can be freed until the handler returns
+           const rules = fetchRulesOutcome.results.map(({ result }) => result);
+           const fetchErrors = fetchRulesOutcome.errors;
+           const errors: BulkActionError[] = [];
+@@ -346,6 +383,9 @@ export const performBulkActionRoute = (
+                 break;
+               }
+ 
++              heapMark(`2-fetched ${rules.length} rules`);
++
++              // [#304647] Only reads rule ids/names from `rules`; returns the full deleted rules again, from alerting
+               const bulkDeleteResult = await detectionRulesClient.bulkDeleteRules({ rules });
+ 
+               errors.push(...bulkDeleteResult.errors);
+@@ -567,6 +607,8 @@ export const performBulkActionRoute = (
+             throw new AbortError('Bulk action was aborted');
+           }
+ 
++          // [#304647] Converts every deleted rule to the API shape (another full copy) and serialises them all into one body
++          if (body.action === BulkActionTypeEnum.delete) heapMark('4-before buildBulkResponse');
+           return buildBulkResponse(response, {
+             bulkAction: body.action,
+             updated,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_delete_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_delete_rules.ts
+index 10e0ec1dc4fe..37fbd47876d7 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_delete_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/detection_rules_client/methods/bulk_delete_rules.ts
+@@ -9,6 +9,7 @@ import { chunk } from 'lodash';
+ import { RulesNotFoundError } from '@kbn/alerting-plugin/server';
+ import type { RulesClient, BulkOperationError } from '@kbn/alerting-plugin/server';
+ import type { BulkDeleteActionSkipResult } from '@kbn/alerting-plugin/common';
++import { heapMark } from '../../heap_mark';
+ import type { SecurityRuleChangeTracking } from '../../../../../../../common/detection_engine/rule_management/rule_change_tracking';
+ import type { RuleAlertType } from '../../../../rule_schema';
+ 
+@@ -36,6 +37,7 @@ export const bulkDeleteRules = async ({
+ }: BulkDeleteRulesParams): Promise<BulkDeleteRulesResult> => {
+   const ruleIds = rules.map((rule) => rule.id);
+   const rulesById = new Map(rules.map((rule) => [rule.id, rule]));
++  // [#304647] ids only, split into chunks of 1000 (KQL clause limit in alerting)
+   const chunks = chunk(ruleIds, CHUNK_SIZE);
+   const allRules: RuleAlertType[] = [];
+   const allErrors: BulkOperationError[] = [];
+@@ -43,12 +45,15 @@ export const bulkDeleteRules = async ({
+ 
+   for (const idsChunk of chunks) {
+     try {
++      // [#304647] Alerting deletes one chunk and returns the full deleted rules for it
+       const result = await rulesClient.bulkDeleteRules({
+         ids: idsChunk,
+         changeTracking: { metadata: { bulkCount: ruleIds.length, ...changeTracking?.metadata } },
+       });
+ 
++      // [#304647] Accumulates every deleted rule (full body) across chunks, for the response
+       allRules.push(...(result.rules as RuleAlertType[]));
++      heapMark(`3-deleted chunk, allRules=${allRules.length}`);
+ 
+       for (const error of result.errors) {
+         if (error.status === 404 && rulesById.has(error.rule.id)) {
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/heap_mark.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/heap_mark.ts
+new file mode 100644
+index 000000000000..87077659acbb
+--- /dev/null
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/heap_mark.ts
+@@ -0,0 +1,21 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the Elastic License
++ * 2.0; you may not use this file except in compliance with the Elastic License
++ * 2.0.
++ */
++
++import { setFlagsFromString } from 'v8';
++import { runInNewContext } from 'vm';
++
++setFlagsFromString('--expose-gc');
++const gc = runInNewContext('gc') as () => void;
++
++// [#304647] TEMP: forces a GC, then logs the heap that is still reachable at this step
++export const heapMark = (label: string): void => {
++  gc();
++  const used = Math.round(process.memoryUsage().heapUsed / (1024 * 1024));
++  process.stderr.write(
++    `[${new Date().toISOString()}][WARN ][#304647] mark ${label} retained=${used}MB\n`
++  );
++};

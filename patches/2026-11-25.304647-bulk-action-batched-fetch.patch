@@ -1,0 +1,1150 @@
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/bulk_disable_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/bulk_disable_rules.ts
+index 4f468d1b26b7..868876809738 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/bulk_disable_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/bulk_disable_rules.ts
+@@ -33,11 +33,7 @@ import {
+   migrateLegacyLastRunOutcomeMsg,
+ } from '../../../../rules_client/lib';
+ import { transformRuleAttributesToRuleDomain, transformRuleDomainToRule } from '../../transforms';
+-import type {
+-  BulkOperationError,
+-  BulkDisableRulesResult,
+-  BulkDisableRulesRequestBody,
+-} from './types';
++import type { BulkOperationError, BulkDisableRulesResult, BulkDisableRulesParams } from './types';
+ import { validateBulkDisableRulesBody } from './validation';
+ import { ruleDomainSchema } from '../../schemas';
+ import type { RulesClientContext } from '../../../../rules_client/types';
+@@ -47,7 +43,7 @@ import { logRuleChanges } from '../common_utils/log_rule_changes';
+ 
+ export const bulkDisableRules = async <Params extends RuleParams>(
+   context: RulesClientContext,
+-  options: BulkDisableRulesRequestBody
++  options: BulkDisableRulesParams
+ ): Promise<BulkDisableRulesResult<Params>> => {
+   try {
+     validateBulkDisableRulesBody(options);
+@@ -82,6 +78,7 @@ export const bulkDisableRules = async <Params extends RuleParams>(
+             filter: filterKueryNode,
+             untrack,
+             totalNumOfRules: total,
++            changeTracking: options.changeTracking,
+           }),
+         filter: kueryNodeFilterWithAuth,
+       })
+@@ -143,10 +140,12 @@ const bulkDisableRulesWithOCC = async (
+     filter,
+     untrack,
+     totalNumOfRules,
++    changeTracking,
+   }: {
+     filter: KueryNode | null;
+     untrack: boolean;
+     totalNumOfRules: number;
++    changeTracking?: BulkDisableRulesParams['changeTracking'];
+   }
+ ) => {
+   const rulesFinder = await withSpan(
+@@ -273,7 +272,7 @@ const bulkDisableRulesWithOCC = async (
+     rulesClientContext: context,
+     changesContext: {
+       action: RuleChangeTrackingAction.ruleDisable,
+-      metadata: { bulkCount: totalNumOfRules },
++      metadata: { bulkCount: totalNumOfRules, ...changeTracking?.metadata },
+     },
+   });
+ 
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/index.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/index.ts
+index 3cc98307ff3e..f8137347b6be 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/index.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/index.ts
+@@ -6,4 +6,8 @@
+  */
+ 
+ export { bulkDisableRules } from './bulk_disable_rules';
+-export type { BulkDisableRulesResult, BulkDisableRulesRequestBody } from './types';
++export type {
++  BulkDisableRulesResult,
++  BulkDisableRulesRequestBody,
++  BulkDisableRulesParams,
++} from './types';
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/types/index.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/types/index.ts
+index 52b54d0172de..c2c4c847df15 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/types/index.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_disable/types/index.ts
+@@ -4,6 +4,7 @@
+  * 2.0; you may not use this file except in compliance with the Elastic License
+  * 2.0.
+  */
++import type { RuleChangeTracking } from '@kbn/alerting-types';
+ import type { TypeOf } from '@kbn/config-schema';
+ import type { bulkDisableRulesRequestBodySchema } from '../schemas';
+ import type { SanitizedRule } from '../../../../../types';
+@@ -20,6 +21,10 @@ export interface BulkOperationError {
+ 
+ export type BulkDisableRulesRequestBody = TypeOf<typeof bulkDisableRulesRequestBodySchema>;
+ 
++export interface BulkDisableRulesParams extends BulkDisableRulesRequestBody {
++  changeTracking?: Omit<RuleChangeTracking, 'action'>;
++}
++
+ export interface BulkDisableRulesResult<Params extends RuleParams> {
+   rules: Array<SanitizedRule<Params>>;
+   errors: BulkOperationError[];
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/bulk_enable_rules.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/bulk_enable_rules.ts
+index 94df89a278f3..1eaeb0e755a9 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/bulk_enable_rules.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/bulk_enable_rules.ts
+@@ -92,7 +92,9 @@ export const bulkEnableRules = async <Params extends RuleParams>(
+   const actionsClient = await context.getActionsClient();
+ 
+   try {
+-    bulkEnableRulesParamsSchema.validate(params);
++    // INFO: only { ids, filter } are validated so changeTracking gets through, which means unknown
++    // params are no longer rejected here. The alerting HTTP route still validates its own request body.
++    bulkEnableRulesParamsSchema.validate({ ids, filter });
+   } catch (error) {
+     throw Boom.badRequest(`Error validating bulk enable rules data - ${error.message}`);
+   }
+@@ -114,7 +116,11 @@ export const bulkEnableRules = async <Params extends RuleParams>(
+     action: 'ENABLE',
+     logger: context.logger,
+     bulkOperation: (filterKueryNode: KueryNode | null) =>
+-      bulkEnableRulesWithOCC(context, { filter: filterKueryNode, totalNumOfRules: total }),
++      bulkEnableRulesWithOCC(context, {
++        filter: filterKueryNode,
++        totalNumOfRules: total,
++        changeTracking: params.changeTracking,
++      }),
+     filter: kueryNodeFilterWithAuth,
+   });
+ 
+@@ -166,7 +172,15 @@ export const bulkEnableRules = async <Params extends RuleParams>(
+ 
+ const bulkEnableRulesWithOCC = async (
+   context: RulesClientContext,
+-  { filter, totalNumOfRules }: { filter: KueryNode | null; totalNumOfRules: number }
++  {
++    filter,
++    totalNumOfRules,
++    changeTracking,
++  }: {
++    filter: KueryNode | null;
++    totalNumOfRules: number;
++    changeTracking?: BulkEnableRulesParams['changeTracking'];
++  }
+ ) => {
+   const rulesFinder = await withSpan(
+     {
+@@ -416,7 +430,7 @@ const bulkEnableRulesWithOCC = async (
+     rulesClientContext: context,
+     changesContext: {
+       action: RuleChangeTrackingAction.ruleEnable,
+-      metadata: { bulkCount: totalNumOfRules },
++      metadata: { bulkCount: totalNumOfRules, ...changeTracking?.metadata },
+     },
+   });
+ 
+diff --git a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/types/bulk_enable_rules_types.ts b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/types/bulk_enable_rules_types.ts
+index c93394366f06..5393a7203270 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/types/bulk_enable_rules_types.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/application/rule/methods/bulk_enable/types/bulk_enable_rules_types.ts
+@@ -5,12 +5,14 @@
+  * 2.0.
+  */
+ 
++import type { RuleChangeTracking } from '@kbn/alerting-types';
+ import type { RuleParams } from '../../../types/rule';
+ import type { SanitizedRule } from '../../../../../types';
+ 
+ export interface BulkEnableRulesParams {
+   filter?: string;
+   ids?: string[];
++  changeTracking?: Omit<RuleChangeTracking, 'action'>;
+ }
+ 
+ export interface BulkEnableRulesError {
+diff --git a/x-pack/platform/plugins/shared/alerting/server/rules_client/rules_client.ts b/x-pack/platform/plugins/shared/alerting/server/rules_client/rules_client.ts
+index b55901a08ead..b069483df67e 100644
+--- a/x-pack/platform/plugins/shared/alerting/server/rules_client/rules_client.ts
++++ b/x-pack/platform/plugins/shared/alerting/server/rules_client/rules_client.ts
+@@ -63,7 +63,7 @@ import type { DeleteRuleParams } from '../application/rule/methods/delete';
+ import { deleteRule } from '../application/rule/methods/delete';
+ import type { BulkDeleteRulesParams } from '../application/rule/methods/bulk_delete/types';
+ import { bulkDeleteRules } from '../application/rule/methods/bulk_delete';
+-import type { BulkDisableRulesRequestBody } from '../application/rule/methods/bulk_disable';
++import type { BulkDisableRulesParams } from '../application/rule/methods/bulk_disable';
+ import { bulkDisableRules } from '../application/rule/methods/bulk_disable';
+ import type { BulkEditOptions } from '../application/rule/methods/bulk_edit/bulk_edit_rules';
+ import { bulkEditRules } from '../application/rule/methods/bulk_edit/bulk_edit_rules';
+@@ -245,7 +245,7 @@ export class RulesClient {
+     withSpan({ name: 'RulesClient.bulkEnableRules', type: 'rules' }, () =>
+       bulkEnableRules(this.context, params)
+     );
+-  public bulkDisableRules = (options: BulkDisableRulesRequestBody) =>
++  public bulkDisableRules = (options: BulkDisableRulesParams) =>
+     withSpan({ name: 'RulesClient.bulkDisableRules', type: 'rules' }, () =>
+       bulkDisableRules(this.context, options)
+     );
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_enable_disable_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_enable_disable_rules.ts
+index 53c5133d543e..8a2ec6d33fc7 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_enable_disable_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_enable_disable_rules.ts
+@@ -7,6 +7,7 @@
+ 
+ import type { RulesClient } from '@kbn/alerting-plugin/server';
+ import type { DetectionRulesAuthz } from '../../../../../../../common/detection_engine/rule_management/authz';
++import type { SecurityRuleChangeTracking } from '../../../../../../../common/detection_engine/rule_management/rule_change_tracking';
+ import { invariant } from '../../../../../../../common/utils/invariant';
+ import type { PromisePoolError } from '../../../../../../utils/promise_pool';
+ import { withSecuritySpan } from '../../../../../../utils/with_security_span';
+@@ -24,6 +25,7 @@ interface BulkEnableDisableRulesArgs {
+   rulesClient: RulesClient;
+   mlAuthz: MlAuthz;
+   rulesAuthz: DetectionRulesAuthz;
++  changeTracking?: SecurityRuleChangeTracking<never>;
+ }
+ 
+ interface BulkEnableDisableRulesOutcome {
+@@ -38,6 +40,7 @@ export const bulkEnableDisableRules = async ({
+   action: operation,
+   mlAuthz,
+   rulesAuthz,
++  changeTracking,
+ }: BulkEnableDisableRulesArgs): Promise<BulkEnableDisableRulesOutcome> =>
+   withSecuritySpan(
+     {
+@@ -77,8 +80,8 @@ export const bulkEnableDisableRules = async ({
+       // Perform actual update using the rulesClient
+       const results =
+         operation === 'enable'
+-          ? await rulesClient.bulkEnableRules({ ids: ruleIds })
+-          : await rulesClient.bulkDisableRules({ ids: ruleIds });
++          ? await rulesClient.bulkEnableRules({ ids: ruleIds, changeTracking })
++          : await rulesClient.bulkDisableRules({ ids: ruleIds, changeTracking });
+ 
+       // Rule objects returned from the bulkEnableRules are not
+       // compatible with the response type. So we need to map them to
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_schedule_rule_gap_filling.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_schedule_rule_gap_filling.ts
+index 725ce4760bae..fe38936bd61b 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_schedule_rule_gap_filling.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/bulk_schedule_rule_gap_filling.ts
+@@ -22,6 +22,8 @@ interface BuildScheduleRuleGapFillingParams {
+   rulesAuthz: DetectionRulesAuthz;
+   fillGapsPayload: BulkManualRuleFillGaps['fill_gaps'];
+   excludedReasons?: GapReasonType[];
++  /** Rules in the whole bulk action, when `rules` is only one batch of it. */
++  total?: number;
+ }
+ 
+ interface BulkScheduleBackfillOutcome {
+@@ -38,6 +40,7 @@ export const bulkScheduleRuleGapFilling = async ({
+   rulesAuthz,
+   fillGapsPayload,
+   excludedReasons,
++  total = rules.length,
+ }: BuildScheduleRuleGapFillingParams): Promise<BulkScheduleBackfillOutcome> => {
+   const errors: Array<PromisePoolError<RuleAlertType, Error> | BulkOperationError> = [];
+   // In the first step, we validate if it is possible to schedule backfill for the rules
+@@ -75,7 +78,8 @@ export const bulkScheduleRuleGapFilling = async ({
+   // Due to performance considerations we will backfill a maximum of 1000 gaps per rule when called with many rules
+   // however, this endpoint will be called with one rule as well. In that case, we will increase the limit to 10_000
+   // in order to attempt to fill all the gaps of the rule in the specified time range
+-  const maxGapCountPerRule = rules.length === 1 ? 10_000 : 1000;
++  // WARNING: must use the whole action's total, not the batch size, or a last batch of one rule gets the 10_000 limit
++  const maxGapCountPerRule = total === 1 ? 10_000 : 1000;
+ 
+   const { backfilled, skipped, errored } = await rulesClient.bulkFillGapsByRuleIds(
+     {
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts
+index 833bceca802e..aecb3a83fb80 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/fetch_rules_by_query_or_ids.ts
+@@ -6,7 +6,6 @@
+  */
+ 
+ import type { RulesClient } from '@kbn/alerting-plugin/server';
+-import { RulesNotFoundError, RulesNotVisibleError } from '@kbn/alerting-plugin/server';
+ import { BadRequestError } from '@kbn/securitysolution-es-utils';
+ import type { GapFillStatus } from '@kbn/alerting-plugin/common/constants/gap_status';
+ import { MAX_RULES_WITH_GAPS_TO_FETCH } from '../../../../../../../common/constants';
+@@ -16,6 +15,8 @@ import type { RuleAlertType } from '../../../../rule_schema';
+ import { findRules } from '../../../logic/search/find_rules';
+ import { getGapFilteredRuleIds } from '../../../logic/search/get_gap_filtered_rule_ids';
+ 
++export const MAX_IDS_PER_FETCH = 1000;
++
+ /**
+  * Returned for rule ids that could not be found while fetching rules for a bulk action.
+  */
+@@ -26,7 +27,10 @@ export class BulkActionRuleNotFoundError extends Error {
+   }
+ }
+ 
+-export const fetchRulesByQueryOrIds = async ({
++/**
++ * Resolves the ids of the rules targeted by a bulk action, without loading the rules.
++ */
++export const fetchRuleIds = async ({
+   query,
+   ids,
+   rulesClient,
+@@ -42,90 +46,106 @@ export const fetchRulesByQueryOrIds = async ({
+   gapRange?: { start: string; end: string };
+   gapFillStatuses?: GapFillStatus[];
+   schedulerId?: string;
+-}): Promise<PromisePoolOutcome<string, RuleAlertType>> =>
+-  withSecuritySpan(
+-    {
+-      name: 'ruleManagement.fetchRulesByQueryOrIds',
+-      labels: ids ? { count: String(ids.length) } : undefined,
+-    },
+-    async () => {
+-      if (ids) {
+-        const fallbackErrorMessage = 'Error resolving the rule';
+-        try {
+-          const { rules, errors } = await rulesClient.bulkGetRules({ ids });
+-          return {
+-            results: rules.map((rule) => ({
+-              item: rule.id,
+-              result: rule,
+-            })),
+-            errors: errors.map(({ id, error }) => ({
+-              item: id,
+-              error:
+-                error.statusCode === 404
+-                  ? new BulkActionRuleNotFoundError()
+-                  : new Error(fallbackErrorMessage),
+-            })),
+-          };
+-        } catch (error) {
+-          // When there is an authorization error or it doesn't resolve any rule,
+-          // bulkGetRules will not return a partial object but throw an error instead.
+-          const isRuleNotFound =
+-            error instanceof RulesNotFoundError || error instanceof RulesNotVisibleError;
+-          return {
+-            results: [],
+-            errors: ids.map((id) => ({
+-              item: id,
+-              // We do this to remove any status code set by the bulkGetRules client
+-              error: isRuleNotFound
+-                ? new BulkActionRuleNotFoundError()
+-                : new Error(error.message || fallbackErrorMessage),
+-            })),
+-          };
+-        }
++}): Promise<string[]> =>
++  withSecuritySpan('ruleManagement.fetchRuleIds', async () => {
++    // WARNING: ids sent in the request are not checked here. Missing or hidden rules only show up
++    // as not found when their batch is loaded by `fetchRulesByIds`.
++    // INFO: repeated ids are not removed. With request ids capped at 1000 and BATCH_SIZE 1000 they all
++    // land in one batch, matching bulkGetRules (one result per requested id). If BATCH_SIZE is lowered, a
++    // repeat in a later batch is processed again (e.g. delete reports it as not found). Consider uniq(ids).
++    if (ids) {
++      return ids;
++    }
++
++    let ruleIdsWithGaps: string[] | undefined;
++    if (gapRange && gapFillStatuses && gapFillStatuses.length > 0) {
++      const { ruleIds } = await getGapFilteredRuleIds({
++        rulesClient,
++        gapRange,
++        gapFillStatuses,
++        maxRuleIds: MAX_RULES_WITH_GAPS_TO_FETCH,
++        filter: query,
++        schedulerId,
++      });
++
++      if (ruleIds.length === 0) {
++        return [];
+       }
++      ruleIdsWithGaps = ruleIds;
++    }
++
++    // TODO: alerting's find still runs the legacy actions lookup for every SIEM rule here, even though only ids are read
++    const { data, total } = await findRules({
++      rulesClient,
++      perPage: maxRules,
++      filter: query,
++      page: undefined,
++      sortField: undefined,
++      sortOrder: undefined,
++      fields: ['id'],
++      ruleIds: ruleIdsWithGaps,
++    });
+ 
+-      let ruleIdsWithGaps: string[] | undefined;
+-      // If there is a gap range, we need to find the rules that have gaps in that range
+-      if (gapRange && gapFillStatuses && gapFillStatuses.length > 0) {
+-        const { ruleIds } = await getGapFilteredRuleIds({
+-          rulesClient,
+-          gapRange,
+-          gapFillStatuses,
+-          maxRuleIds: MAX_RULES_WITH_GAPS_TO_FETCH,
+-          filter: query,
+-          schedulerId,
+-        });
++    if (total > maxRules) {
++      throw new BadRequestError(
++        `More than ${maxRules} rules matched the filter query. Try to narrow it down.`
++      );
++    }
+ 
+-        ruleIdsWithGaps = ruleIds;
++    return data.map(({ id }) => id);
++  });
+ 
+-        if (ruleIdsWithGaps.length === 0) {
+-          return {
+-            results: [],
+-            errors: [],
+-          };
+-        }
++/**
++ * Loads full rules for a batch of ids, in the same order as `ids`.
++ * Ids that don't resolve to a visible rule are returned as `BulkActionRuleNotFoundError`.
++ */
++export const fetchRulesByIds = async ({
++  rulesClient,
++  ids,
++}: {
++  rulesClient: RulesClient;
++  ids: string[];
++}): Promise<PromisePoolOutcome<string, RuleAlertType>> =>
++  withSecuritySpan(
++    { name: 'ruleManagement.fetchRulesByIds', labels: { count: String(ids.length) } },
++    async () => {
++      // One OR clause per id, so the cap keeps the query within ES max_clause_count
++      if (ids.length > MAX_IDS_PER_FETCH) {
++        throw new Error(
++          `fetchRulesByIds accepts at most ${MAX_IDS_PER_FETCH} ids, received ${ids.length}`
++        );
+       }
+ 
+-      const { data, total } = await findRules({
++      // WARNING: error handling changed. bulkGetRules reported 404s as not found, other per-id errors as
++      // 'Error resolving the rule', and if it threw, every id got an error while the request still succeeded.
++      // Here an id is either found or not found, and if findRules throws the whole request fails
++      // (after any earlier batches were already applied).
++      const { data } = await findRules({
+         rulesClient,
+-        perPage: maxRules,
+-        filter: query,
++        perPage: ids.length,
++        filter: undefined,
+         page: undefined,
+         sortField: undefined,
+         sortOrder: undefined,
+-        fields: undefined,
+-        ruleIds: ruleIdsWithGaps,
++        ruleIds: ids,
+       });
+ 
+-      if (total > maxRules) {
+-        throw new BadRequestError(
+-          `More than ${maxRules} rules matched the filter query. Try to narrow it down.`
+-        );
+-      }
++      const rulesById = new Map(data.map((rule) => [rule.id, rule]));
+ 
+-      return {
+-        results: data.map((rule) => ({ item: rule.id, result: rule })),
+-        errors: [],
+-      };
++      // WARNING: behaviour change for ids sent in the request. Previously loaded with `bulkGetRules`,
++      // which also returned non-security rule types and per-id errors; `findRules` scopes to security
++      // rule types and the user's authorization, so those ids now come back as not found.
++      return ids.reduce<PromisePoolOutcome<string, RuleAlertType>>(
++        (outcome, id) => {
++          const rule = rulesById.get(id);
++          if (rule) {
++            outcome.results.push({ item: id, result: rule });
++          } else {
++            outcome.errors.push({ item: id, error: new BulkActionRuleNotFoundError() });
++          }
++          return outcome;
++        },
++        { results: [], errors: [] }
++      );
+     }
+   );
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts
+index 9974b4e9627a..a6494958fea7 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/api/rules/bulk_actions/route.ts
+@@ -5,7 +5,7 @@
+  * 2.0.
+  */
+ 
+-import { partition } from 'lodash';
++import { chunk, partition } from 'lodash';
+ import type { IKibanaResponse, Logger } from '@kbn/core/server';
+ import type { ExceptionListClient } from '@kbn/lists-plugin/server';
+ import { ExceptionListTypeEnum } from '@kbn/securitysolution-io-ts-list-types';
+@@ -52,7 +52,11 @@ import { RULE_MANAGEMENT_BULK_ACTION_SOCKET_TIMEOUT_MS } from '../../constants';
+ import type { BulkActionError } from './bulk_actions_response';
+ import { buildBulkResponse } from './bulk_actions_response';
+ import { bulkEnableDisableRules } from './bulk_enable_disable_rules';
+-import { fetchRulesByQueryOrIds, BulkActionRuleNotFoundError } from './fetch_rules_by_query_or_ids';
++import {
++  fetchRuleIds,
++  fetchRulesByIds,
++  BulkActionRuleNotFoundError,
++} from './fetch_rules_by_query_or_ids';
+ import { bulkScheduleBackfill } from './bulk_schedule_rule_run';
+ import { createPrebuiltRuleAssetsClient } from '../../../../prebuilt_rules/logic/rule_assets/prebuilt_rule_assets_client';
+ import { checkAlertSuppressionBulkEditSupport } from '../../../logic/bulk_actions/check_alert_suppression_bulk_edit_support';
+@@ -63,10 +67,19 @@ const MAX_RULES_TO_PROCESS_TOTAL = 10000;
+ // ES maxClauseCount defaults to 1024, so all IDs-based paths are capped at 1000 to leave
+ // headroom for the authorization filter clauses that are ANDed in.
+ // The alerting-layer schemas for bulkDelete/bulkEnable/bulkDisable also enforce maxSize: 1000.
++// TODO: stale reasoning. The route now always calls alerting in batches of BATCH_SIZE ids, so the
++// request cap no longer protects alerting. It still bounds the request body; decide whether to relax it.
+ const MAX_RULES_IDS_FOR_BULK_ACTION = 1000;
+ // Edit has a lower cap than query-path limits because the bulk edit operation does
+ // heavier per-rule work and the initial edit query is not chunked like the conflict retry is.
++// TODO: stale reasoning. Edit is now chunked per BATCH_SIZE like every other action, so the
++// "not chunked" argument no longer holds. Decide whether edit can use MAX_RULES_TO_PROCESS_TOTAL.
+ const MAX_RULES_TO_BULK_EDIT = 2000;
++// WARNING: must stay <= MAX_IDS_PER_FETCH (1000); fetchRulesByIds and the alerting bulk methods reject larger batches.
++// INFO: each batch costs its own round trips: a findRules to load the rules, then alerting's own
++// count query and point-in-time search. At 10k rules that is 10x the requests of a single call,
++// which adds latency against RULE_MANAGEMENT_BULK_ACTION_SOCKET_TIMEOUT_MS.
++const BATCH_SIZE = 1000;
+ const MAX_ROUTE_CONCURRENCY = 5;
+ 
+ interface ValidationError {
+@@ -274,7 +287,18 @@ export const performBulkActionRoute = (
+             gapsRangeStart: body.gaps_range_start,
+             gapsRangeEnd: body.gaps_range_end,
+           });
+-          const fetchRulesOutcome = await fetchRulesByQueryOrIds({
++          if (body.action === BulkActionTypeEnum.edit) {
++            const suppressionSupportError = await checkAlertSuppressionBulkEditSupport({
++              editActions: body.edit,
++              licensing: ctx.licensing,
++            });
++
++            if (suppressionSupportError) {
++              return siemResponse.error(suppressionSupportError);
++            }
++          }
++
++          const ids = await fetchRuleIds({
+             rulesClient,
+             query,
+             ids: body.ids,
+@@ -287,279 +311,291 @@ export const performBulkActionRoute = (
+             schedulerId: body.gap_auto_fill_scheduler_id,
+           });
+ 
+-          const rules = fetchRulesOutcome.results.map(({ result }) => result);
+-          const fetchErrors = fetchRulesOutcome.errors;
++          // INFO: bulkCount is the number of targeted ids, including ids that are later not found,
++          // fail validation or are skipped. Before batching, alerting set it from the rules it actually
++          // matched, and duplicate used the number of rules found. Only differs when some ids drop out.
++          const changeTracking = { metadata: { bulkCount: ids.length } };
+           const errors: BulkActionError[] = [];
+-          let updated: RuleAlertType[] = [];
+-          let created: RuleAlertType[] = [];
+-          let deleted: RuleAlertType[] = [];
+-          let skipped: BulkActionSkipResult[] = [];
+-
+-          // Delete handles fetch errors itself, rules that were not found are reported as skipped
+-          if (body.action !== BulkActionTypeEnum.delete) {
+-            errors.push(...fetchErrors);
+-          }
+-
+-          switch (body.action) {
+-            case BulkActionTypeEnum.enable: {
+-              const { updatedRules, errors: bulkActionErrors } = await bulkEnableDisableRules({
+-                rules,
+-                isDryRun,
+-                rulesClient,
+-                action: 'enable',
+-                mlAuthz,
+-                rulesAuthz,
+-              });
+-              errors.push(...bulkActionErrors);
+-              updated = updatedRules;
+-              break;
+-            }
+-            case BulkActionTypeEnum.disable: {
+-              const { updatedRules, errors: bulkActionErrors } = await bulkEnableDisableRules({
+-                rules,
+-                isDryRun,
+-                rulesClient,
+-                action: 'disable',
+-                mlAuthz,
+-                rulesAuthz,
+-              });
+-              errors.push(...bulkActionErrors);
+-              updated = updatedRules;
+-              break;
+-            }
+-            case BulkActionTypeEnum.delete: {
+-              // Rules not found at fetch time are skipped for delete (idempotent semantics)
+-              const [notFoundErrors, otherFetchErrors] = partition(
+-                fetchErrors,
+-                ({ error }) => error instanceof BulkActionRuleNotFoundError
+-              );
+-              errors.push(...otherFetchErrors);
+-              skipped = notFoundErrors.map(({ item }) => ({
+-                id: item,
+-                skip_reason: 'RULE_NOT_FOUND',
+-              }));
+-
+-              // during dry run return early for delete, as no validations needed for this action
+-              if (isDryRun) {
+-                // Populate `deleted` so the summary reflects the correct count of affected rules
+-                deleted = rules;
+-                break;
+-              }
+-
+-              const bulkDeleteResult = await detectionRulesClient.bulkDeleteRules({ rules });
+-
+-              errors.push(...bulkDeleteResult.errors);
+-              deleted = bulkDeleteResult.rules;
+-              skipped = [...skipped, ...bulkDeleteResult.skipped];
+-              break;
++          const updated: RuleAlertType[] = [];
++          const created: RuleAlertType[] = [];
++          const deleted: RuleAlertType[] = [];
++          const skipped: BulkActionSkipResult[] = [];
++          const exportRuleIds: string[] = [];
++
++          // WARNING: the ids are a snapshot. Rules deleted after it come back as not found in their batch,
++          // rules changed after it are processed in their current state, and rules created after it are left out.
++          // WARNING: no rollback across batches. If a batch throws (alerting authorization failure, ES error,
++          // findRules failure) or the request is aborted between batches, the earlier batches stay applied
++          // and the caller only gets an error, with no record of what succeeded. New for enable, disable and
++          // edit, which used to be a single alerting call; delete already chunked by 1000 internally.
++          for (const batch of chunk(ids, BATCH_SIZE)) {
++            if (abortController.signal.aborted === true) {
++              throw new AbortError('Bulk action was aborted');
+             }
+-            case BulkActionTypeEnum.duplicate: {
+-              const bulkActionOutcome = await initPromisePool({
+-                concurrency: MAX_RULES_TO_UPDATE_IN_PARALLEL,
+-                items: rules,
+-                executor: async (rule) => {
+-                  await validateBulkDuplicateRule({ mlAuthz, rule });
+-
+-                  await validateRuleResponseActions({
+-                    // A duplicate persists the source rule's response actions on a brand-new
+-                    // rule, so it is validated exactly like a create: the actions are the
+-                    // payload and there is no `existingRule`. Passing `{}` with `existingRule`
+-                    // instead makes every action look like it is being *removed*, which trips
+-                    // the removal carve-outs and skips validation entirely - the dry run would
+-                    // then report success for a duplicate that `rulesClient.create` denies.
+-                    // Skip Defend runscript *payload* revalidation (script library) so dry-run
+-                    // does not newly fail copies whose scripts have changed since the source
+-                    // rule was saved. Osquery authz and Endpoint authz still run.
+-                    rulePayload: {
+-                      response_actions: rule.params.responseActions?.map(
+-                        transformAlertToRuleResponseAction
+-                      ),
+-                    },
+-                    endpointAuthz,
+-                    endpointService,
+-                    spaceId,
+-                    checkOsqueryResponseActionAuthz:
+-                      ctx.securitySolution.getCheckOsqueryResponseActionAuthz(),
+-                    skipRunscriptPayloadValidation: true,
+-                  });
+-
+-                  // during dry run only validation is getting performed and rule is not saved in ES, thus return early
+-                  if (isDryRun) {
+-                    return rule;
+-                  }
+-
+-                  let shouldDuplicateExceptions = true;
+-                  let shouldDuplicateExpiredExceptions = true;
+-                  if (body.duplicate !== undefined) {
+-                    shouldDuplicateExceptions = body.duplicate.include_exceptions;
+-                    shouldDuplicateExpiredExceptions = body.duplicate.include_expired_exceptions;
+-                  }
+-
+-                  // Clone exceptions first so the rule can be created with them already
+-                  // attached, avoiding a follow-up update. If this throws, no rule is created.
+-                  const exceptions = shouldDuplicateExceptions
+-                    ? await duplicateExceptions({
+-                        ruleId: rule.params.ruleId,
+-                        exceptionLists: rule.params.exceptionsList,
+-                        includeExpiredExceptions: shouldDuplicateExpiredExceptions,
+-                        exceptionsClient,
+-                      })
+-                    : [];
+-
+-                  const duplicateRuleToCreate = await duplicateRule({
+-                    rule,
+-                  });
+-
+-                  const createdRule = await rulesClient
+-                    .create({
+-                      data: {
+-                        ...duplicateRuleToCreate,
+-                        params: {
+-                          ...duplicateRuleToCreate.params,
+-                          exceptionsList: exceptions,
+-                        },
+-                      },
+-                      changeTracking: {
+-                        action: SecurityRuleChangeTrackingAction.ruleDuplicate,
+-                        metadata: {
+-                          bulkCount: rules.length,
+-                          originalRuleSoId: rule.id,
+-                        },
+-                      },
+-                    })
+-                    .catch(async (createError) => {
+-                      await deleteOrphanedExceptions({ exceptions, exceptionsClient, logger });
+-                      throw createError;
+-                    });
+ 
+-                  sendRuleDuplicateTelemetryEvent(
+-                    analytics,
+-                    { createdRule, sourceRule: rule },
+-                    logger
+-                  );
++            const fetched = await fetchRulesByIds({ rulesClient, ids: batch });
++            const rules = fetched.results.map(({ result }) => result);
+ 
+-                  return createdRule;
+-                },
+-                abortSignal: abortController.signal,
+-              });
+-              errors.push(...bulkActionOutcome.errors);
+-              created = bulkActionOutcome.results
+-                .map(({ result }) => result)
+-                .filter((rule): rule is RuleAlertType => rule !== null);
+-              break;
++            // Delete handles fetch errors itself, rules that were not found are reported as skipped
++            if (body.action !== BulkActionTypeEnum.delete) {
++              errors.push(...fetched.errors);
+             }
+-            case BulkActionTypeEnum.export: {
+-              const exported = await getExportByObjectIds(
+-                rulesClient,
+-                exceptionsClient,
+-                rules.map(({ params }) => params.ruleId),
+-                exporter,
+-                request,
+-                actionsClient
+-              );
+-
+-              const responseBody = `${exported.rulesNdjson}${exported.exceptionLists}${exported.actionConnectors}${exported.exportDetails}`;
+-
+-              return response.ok({
+-                headers: {
+-                  'Content-Disposition': `attachment; filename="rules_export.ndjson"`,
+-                  'Content-Type': 'application/ndjson',
+-                },
+-                body: responseBody,
+-              });
+-            }
+-
+-            case BulkActionTypeEnum.edit: {
+-              const suppressionSupportError = await checkAlertSuppressionBulkEditSupport({
+-                editActions: body.edit,
+-                licensing: ctx.licensing,
+-              });
+ 
+-              if (suppressionSupportError) {
+-                return siemResponse.error(suppressionSupportError);
++            switch (body.action) {
++              // INFO: behaviour change. Before batching, enable by query on more than 1000 rules failed,
++              // because alerting's bulkEnableRules validates ids with maxSize: 1000. Disable has no such check,
++              // so the same request depended on ES max_clause_count. Both now work up to MAX_RULES_TO_PROCESS_TOTAL.
++              // A 1,001+ rule enable test written against main is expected to fail there.
++              case BulkActionTypeEnum.enable: {
++                const { updatedRules, errors: bulkActionErrors } = await bulkEnableDisableRules({
++                  rules,
++                  isDryRun,
++                  rulesClient,
++                  action: 'enable',
++                  mlAuthz,
++                  rulesAuthz,
++                  changeTracking,
++                });
++                errors.push(...bulkActionErrors);
++                updated.push(...updatedRules);
++                break;
++              }
++              case BulkActionTypeEnum.disable: {
++                const { updatedRules, errors: bulkActionErrors } = await bulkEnableDisableRules({
++                  rules,
++                  isDryRun,
++                  rulesClient,
++                  action: 'disable',
++                  mlAuthz,
++                  rulesAuthz,
++                  changeTracking,
++                });
++                errors.push(...bulkActionErrors);
++                updated.push(...updatedRules);
++                break;
+               }
++              case BulkActionTypeEnum.delete: {
++                // Rules not found at fetch time are skipped for delete (idempotent semantics)
++                const [notFoundErrors, otherFetchErrors] = partition(
++                  fetched.errors,
++                  ({ error }) => error instanceof BulkActionRuleNotFoundError
++                );
++                errors.push(...otherFetchErrors);
++                skipped.push(
++                  ...notFoundErrors.map(({ item }) => ({
++                    id: item,
++                    skip_reason: 'RULE_NOT_FOUND' as const,
++                  }))
++                );
++
++                // during dry run return early for delete, as no validations needed for this action
++                if (isDryRun) {
++                  // Populate `deleted` so the summary reflects the correct count of affected rules
++                  deleted.push(...rules);
++                  break;
++                }
++
++                const bulkDeleteResult = await detectionRulesClient.bulkDeleteRules({
++                  rules,
++                  changeTracking,
++                });
+ 
+-              if (isDryRun) {
+-                // during dry run only validation is getting performed and rule is not saved in ES
++                errors.push(...bulkDeleteResult.errors);
++                // TODO: still keeps every deleted rule (full body) until the response is built; convert per batch
++                deleted.push(...bulkDeleteResult.rules);
++                skipped.push(...bulkDeleteResult.skipped);
++                break;
++              }
++              case BulkActionTypeEnum.duplicate: {
+                 const bulkActionOutcome = await initPromisePool({
+                   concurrency: MAX_RULES_TO_UPDATE_IN_PARALLEL,
+                   items: rules,
+                   executor: async (rule) => {
+-                    await dryRunValidateBulkEditRule({
+-                      mlAuthz,
+-                      rulesAuthz,
++                    await validateBulkDuplicateRule({ mlAuthz, rule });
++
++                    await validateRuleResponseActions({
++                      // A duplicate persists the source rule's response actions on a brand-new
++                      // rule, so it is validated exactly like a create: the actions are the
++                      // payload and there is no `existingRule`. Passing `{}` with `existingRule`
++                      // instead makes every action look like it is being *removed*, which trips
++                      // the removal carve-outs and skips validation entirely - the dry run would
++                      // then report success for a duplicate that `rulesClient.create` denies.
++                      // Skip Defend runscript *payload* revalidation (script library) so dry-run
++                      // does not newly fail copies whose scripts have changed since the source
++                      // rule was saved. Osquery authz and Endpoint authz still run.
++                      rulePayload: {
++                        response_actions: rule.params.responseActions?.map(
++                          transformAlertToRuleResponseAction
++                        ),
++                      },
++                      endpointAuthz,
++                      endpointService,
++                      spaceId,
++                      checkOsqueryResponseActionAuthz:
++                        ctx.securitySolution.getCheckOsqueryResponseActionAuthz(),
++                      skipRunscriptPayloadValidation: true,
++                    });
++
++                    // during dry run only validation is getting performed and rule is not saved in ES, thus return early
++                    if (isDryRun) {
++                      return rule;
++                    }
++
++                    let shouldDuplicateExceptions = true;
++                    let shouldDuplicateExpiredExceptions = true;
++                    if (body.duplicate !== undefined) {
++                      shouldDuplicateExceptions = body.duplicate.include_exceptions;
++                      shouldDuplicateExpiredExceptions = body.duplicate.include_expired_exceptions;
++                    }
++
++                    // Clone exceptions first so the rule can be created with them already
++                    // attached, avoiding a follow-up update. If this throws, no rule is created.
++                    const exceptions = shouldDuplicateExceptions
++                      ? await duplicateExceptions({
++                          ruleId: rule.params.ruleId,
++                          exceptionLists: rule.params.exceptionsList,
++                          includeExpiredExceptions: shouldDuplicateExpiredExceptions,
++                          exceptionsClient,
++                        })
++                      : [];
++
++                    const duplicateRuleToCreate = await duplicateRule({
+                       rule,
+-                      edit: body.edit,
+-                      ruleCustomizationStatus: detectionRulesClient.getRuleCustomizationStatus(),
+                     });
+ 
+-                    return rule;
++                    const createdRule = await rulesClient
++                      .create({
++                        data: {
++                          ...duplicateRuleToCreate,
++                          params: {
++                            ...duplicateRuleToCreate.params,
++                            exceptionsList: exceptions,
++                          },
++                        },
++                        changeTracking: {
++                          action: SecurityRuleChangeTrackingAction.ruleDuplicate,
++                          metadata: {
++                            bulkCount: ids.length,
++                            originalRuleSoId: rule.id,
++                          },
++                        },
++                      })
++                      .catch(async (createError) => {
++                        await deleteOrphanedExceptions({ exceptions, exceptionsClient, logger });
++                        throw createError;
++                      });
++
++                    sendRuleDuplicateTelemetryEvent(
++                      analytics,
++                      { createdRule, sourceRule: rule },
++                      logger
++                    );
++
++                    return createdRule;
+                   },
+                   abortSignal: abortController.signal,
+                 });
+                 errors.push(...bulkActionOutcome.errors);
+-                updated = bulkActionOutcome.results
+-                  .map(({ result }) => result)
+-                  .filter((rule): rule is RuleAlertType => rule !== null);
+-              } else {
+-                const bulkEditResult = await bulkEditRules({
+-                  actionsClient,
+-                  rulesClient,
+-                  prebuiltRuleAssetClient,
++                created.push(
++                  ...bulkActionOutcome.results
++                    .map(({ result }) => result)
++                    .filter((rule): rule is RuleAlertType => rule !== null)
++                );
++                break;
++              }
++              case BulkActionTypeEnum.export: {
++                exportRuleIds.push(...rules.map(({ params }) => params.ruleId));
++                break;
++              }
++
++              case BulkActionTypeEnum.edit: {
++                if (isDryRun) {
++                  // during dry run only validation is getting performed and rule is not saved in ES
++                  const bulkActionOutcome = await initPromisePool({
++                    concurrency: MAX_RULES_TO_UPDATE_IN_PARALLEL,
++                    items: rules,
++                    executor: async (rule) => {
++                      await dryRunValidateBulkEditRule({
++                        mlAuthz,
++                        rulesAuthz,
++                        rule,
++                        edit: body.edit,
++                        ruleCustomizationStatus: detectionRulesClient.getRuleCustomizationStatus(),
++                      });
++
++                      return rule;
++                    },
++                    abortSignal: abortController.signal,
++                  });
++                  errors.push(...bulkActionOutcome.errors);
++                  updated.push(
++                    ...bulkActionOutcome.results
++                      .map(({ result }) => result)
++                      .filter((rule): rule is RuleAlertType => rule !== null)
++                  );
++                } else {
++                  const bulkEditResult = await bulkEditRules({
++                    actionsClient,
++                    rulesClient,
++                    prebuiltRuleAssetClient,
++                    rules,
++                    actions: body.edit,
++                    rulesAuthz,
++                    mlAuthz,
++                    ruleCustomizationStatus: detectionRulesClient.getRuleCustomizationStatus(),
++                    changeTracking,
++                  });
++                  updated.push(...bulkEditResult.rules);
++                  skipped.push(...bulkEditResult.skipped);
++                  errors.push(...bulkEditResult.errors);
++                }
++                break;
++              }
++
++              case BulkActionTypeEnum.run: {
++                const { backfilled, errors: bulkActionErrors } = await bulkScheduleBackfill({
+                   rules,
+-                  actions: body.edit,
+-                  rulesAuthz,
++                  isDryRun,
++                  rulesClient,
+                   mlAuthz,
+-                  ruleCustomizationStatus: detectionRulesClient.getRuleCustomizationStatus(),
++                  rulesAuthz,
++                  runPayload: body.run,
+                 });
+-                updated = bulkEditResult.rules;
+-                skipped = bulkEditResult.skipped;
+-                errors.push(...bulkEditResult.errors);
++                errors.push(...bulkActionErrors);
++                updated.push(...backfilled.filter((rule): rule is RuleAlertType => rule !== null));
++                break;
+               }
+-              break;
+-            }
+-
+-            case BulkActionTypeEnum.run: {
+-              const { backfilled, errors: bulkActionErrors } = await bulkScheduleBackfill({
+-                rules,
+-                isDryRun,
+-                rulesClient,
+-                mlAuthz,
+-                rulesAuthz,
+-                runPayload: body.run,
+-              });
+-              errors.push(...bulkActionErrors);
+-              updated = backfilled.filter((rule): rule is RuleAlertType => rule !== null);
+-              break;
+-            }
+ 
+-            case BulkActionTypeEnum.fill_gaps: {
+-              const uiSettingsClient = ctx.core.uiSettings.client;
+-              const excludedReasons = await uiSettingsClient.get<GapReasonType[]>(
+-                EXCLUDED_GAP_REASONS_KEY
+-              );
+-
+-              const {
+-                backfilled,
+-                errors: bulkActionErrors,
+-                skipped: skippedRules,
+-              } = await bulkScheduleRuleGapFilling({
+-                rules,
+-                isDryRun,
+-                rulesClient,
+-                mlAuthz,
+-                rulesAuthz,
+-                fillGapsPayload: body.fill_gaps,
+-                excludedReasons,
+-              });
+-              errors.push(...bulkActionErrors);
+-              updated = backfilled;
+-              skipped = skippedRules.map((rule) => {
+-                return {
+-                  ...rule,
+-                  skip_reason: 'NO_GAPS_TO_FILL',
+-                };
+-              });
++              case BulkActionTypeEnum.fill_gaps: {
++                const uiSettingsClient = ctx.core.uiSettings.client;
++                const excludedReasons = await uiSettingsClient.get<GapReasonType[]>(
++                  EXCLUDED_GAP_REASONS_KEY
++                );
++
++                const {
++                  backfilled,
++                  errors: bulkActionErrors,
++                  skipped: skippedRules,
++                } = await bulkScheduleRuleGapFilling({
++                  rules,
++                  isDryRun,
++                  rulesClient,
++                  mlAuthz,
++                  rulesAuthz,
++                  fillGapsPayload: body.fill_gaps,
++                  excludedReasons,
++                  total: ids.length,
++                });
++                errors.push(...bulkActionErrors);
++                updated.push(...backfilled);
++                skipped.push(
++                  ...skippedRules.map((rule) => ({
++                    ...rule,
++                    skip_reason: 'NO_GAPS_TO_FILL' as const,
++                  }))
++                );
++                break;
++              }
+             }
+           }
+ 
+@@ -567,6 +603,28 @@ export const performBulkActionRoute = (
+             throw new AbortError('Bulk action was aborted');
+           }
+ 
++          if (body.action === BulkActionTypeEnum.export) {
++            // TODO: export still loads every rule again, all at once, inside getExportByObjectIds
++            const exported = await getExportByObjectIds(
++              rulesClient,
++              exceptionsClient,
++              exportRuleIds,
++              exporter,
++              request,
++              actionsClient
++            );
++
++            const responseBody = `${exported.rulesNdjson}${exported.exceptionLists}${exported.actionConnectors}${exported.exportDetails}`;
++
++            return response.ok({
++              headers: {
++                'Content-Disposition': `attachment; filename="rules_export.ndjson"`,
++                'Content-Type': 'application/ndjson',
++              },
++              body: responseBody,
++            });
++          }
++
+           return buildBulkResponse(response, {
+             bulkAction: body.action,
+             updated,
+diff --git a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/bulk_actions/bulk_edit_rules.ts b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/bulk_actions/bulk_edit_rules.ts
+index 7226baf845a9..71d6707ca68c 100644
+--- a/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/bulk_actions/bulk_edit_rules.ts
++++ b/x-pack/solutions/security/plugins/security_solution/server/lib/detection_engine/rule_management/logic/bulk_actions/bulk_edit_rules.ts
+@@ -10,6 +10,7 @@ import type { RulesClient } from '@kbn/alerting-plugin/server';
+ 
+ import type { Rule } from '@kbn/alerting-plugin/common';
+ import type { DetectionRulesAuthz } from '../../../../../../common/detection_engine/rule_management/authz';
++import type { SecurityRuleChangeTracking } from '../../../../../../common/detection_engine/rule_management/rule_change_tracking';
+ import { convertObjectKeysToCamelCase } from '../../../../../utils/object_case_converters';
+ import type { BulkActionEditPayload } from '../../../../../../common/api/detection_engine/rule_management';
+ 
+@@ -38,6 +39,7 @@ export interface BulkEditRulesArguments {
+   mlAuthz: MlAuthz;
+   rulesAuthz: DetectionRulesAuthz;
+   ruleCustomizationStatus: PrebuiltRulesCustomizationStatus;
++  changeTracking?: SecurityRuleChangeTracking<never>;
+ }
+ 
+ /**
+@@ -56,6 +58,7 @@ export const bulkEditRules = async ({
+   mlAuthz,
+   rulesAuthz,
+   ruleCustomizationStatus,
++  changeTracking,
+ }: BulkEditRulesArguments) => {
+   // Split operations
+   const { attributesActions, paramsActions } = splitBulkEditActions(actions);
+@@ -119,6 +122,7 @@ export const bulkEditRules = async ({
+       // the necessary array logic for different operation types (e.g. add, set, delete)
+       operations: [],
+       paramsModifier,
++      changeTracking,
+     });
+   }
+ 
+@@ -132,6 +136,7 @@ export const bulkEditRules = async ({
+     // Rules Client applies operations to rules client aware fields like tags
+     // the rule before passing it to paramsModifier().
+     paramsModifier,
++    changeTracking,
+   });
+ 
+   return result;
