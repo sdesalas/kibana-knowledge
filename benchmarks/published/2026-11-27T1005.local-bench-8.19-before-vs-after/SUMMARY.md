@@ -4,6 +4,8 @@ Local before/after of [backport PR #307975](https://github.com/elastic/kibana/pu
 
 **Result:** yes. Every scenario makes exactly ~1,000 fewer calls. Wall clock is unchanged.
 
+**Context:** 8.19 is expected to be slow and span-heavy. The bulk-primitive and API-key work from the [Detections bulk performance epic (#264906)](https://github.com/elastic/kibana/issues/264906) shipped in 9.5.5, 9.5.6 and 9.6.0 and was not backported ([see the 9.5.4 vs 9.5.6/9.6.0 comparison](https://github.com/elastic/kibana/issues/264906#issuecomment-6313484568)). So absolute times and span counts here are not comparable to 9.x. Only the before/after delta is.
+
 ## Targets
 
 | Label | Commit | Server |
@@ -61,7 +63,12 @@ Within run-to-run noise. The endpoint authz calls are a small share of 8.19 requ
 
 - Imports on 8.19 still make ~2,000 `_has_privileges` calls after the backport (~3 per rule before, ~2 after). The remaining calls are not from endpoint authz, so "~1,000 fewer" is accurate; "1000x less" is not.
 - Bulk enable and edit go from ~1,000 calls to ~27.
-- 8.19 doesn't have the bulk-authz performance work from 9.5/9.6, so absolute counts differ from 9.x. Only the delta is comparable.
+- The high span counts and slow imports are expected on 8.19. None of this work was backported to 8.19, so it still processes imports and enables rule by rule. Missing 9.x changes, from the [epic comment](https://github.com/elastic/kibana/issues/264906#issuecomment-6313484568):
+  - [#275695](https://github.com/elastic/kibana/pull/275695): new rule imports go through `bulkCreateRules()` (9.5.5).
+  - [#290306](https://github.com/elastic/kibana/pull/290306): no refresh waits when bulk operations grant new API keys (9.5.5).
+  - [#291560](https://github.com/elastic/kibana/pull/291560): overwrite imports go through `bulkUpdateRules()`, and enable/disable transitions are batched (9.5.6).
+  - [#293948](https://github.com/elastic/kibana/pull/293948): unchanged rules are skipped on overwrite import (9.5.6).
+  - [#287065](https://github.com/elastic/kibana/pull/287065): gap cleanup is batched on delete (9.5.6).
 
 ## Caveats
 
