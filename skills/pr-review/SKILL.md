@@ -54,7 +54,7 @@ After confirming the PR to review and before starting the analysis, ask the user
 
 Accept answers like "yes", "no", "skip", or a different team handle (e.g. `@elastic/some-other-team`). If the user declines, skip this section entirely and proceed with a standard review.
 
-If the user accepts, determine ownership for each changed file:
+If the user accepts, determine ownership for each changed file. You may use ../../rules/codeowners/codeowners.md or the steps below:
 
 1. Read `CODEOWNERS` from the repo (check `.github/CODEOWNERS`, then repo root `CODEOWNERS`, then `docs/CODEOWNERS` — use the first one found).
 2. If no CODEOWNERS file exists, note "No CODEOWNERS file found — cannot determine ownership" and proceed with the standard review.
