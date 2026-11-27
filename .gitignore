@@ -16,5 +16,6 @@ demos/
 issues/
 telemetry/
 drafts/
-test-runs/
+test-runs/*
+!test-runs/published/
 __pycache__
